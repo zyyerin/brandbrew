@@ -47,7 +47,8 @@ export function DevPanel() {
       setLastFetched(new Date());
       setFetchState("ok");
     } catch (err) {
-      setError(String(err));
+      const msg = String(err);
+      setError(msg.includes("Not found") || msg.includes("404") ? "Dev routes disabled" : msg);
       setFetchState("error");
     }
   }, []);
@@ -62,7 +63,7 @@ export function DevPanel() {
       );
       setAllModels(data.models ?? []);
       setAllModelsState("ok");
-    } catch (err) {
+    } catch {
       setAllModelsState("error");
     }
   }, []);

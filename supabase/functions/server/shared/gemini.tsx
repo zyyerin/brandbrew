@@ -193,18 +193,50 @@ export async function callGeminiVision(
   return text;
 }
 
-// ── Fetch remote image as base64 ─────────────────────────────────────────────
+// ── Fetch remote image as base64 (SSRF-hardened) ───────────────────────────────
+
+const ALLOWED_IMAGE_HOSTS = [
+  /^[a-z0-9-]+\.supabase\.co$/i,
+  /^fonts\.googleapis\.com$/i,
+  /^fonts\.gstatic\.com$/i,
+];
+
+const MAX_IMAGE_BYTES = 8 * 1024 * 1024; // 8MB
+
+function isAllowedImageUrl(urlString: string): boolean {
+  try {
+    const u = new URL(urlString);
+    if (u.protocol !== "https:") return false;
+    const host = u.hostname;
+    return ALLOWED_IMAGE_HOSTS.some((re) => re.test(host));
+  } catch {
+    return false;
+  }
+}
 
 export async function fetchImageAsBase64(
   url: string,
 ): Promise<ImageResult | ImageError> {
+  if (!isAllowedImageUrl(url)) {
+    return { error: "fetchImage → URL not allowed" };
+  }
   try {
     const res = await fetch(url, { signal: AbortSignal.timeout(15_000) });
     if (!res.ok) {
       return { error: `fetchImage → HTTP ${res.status}` };
     }
+    const cl = res.headers.get("content-length");
+    if (cl != null) {
+      const n = parseInt(cl, 10);
+      if (!Number.isNaN(n) && n > MAX_IMAGE_BYTES) {
+        return { error: "fetchImage → response too large" };
+      }
+    }
     const mimeType = res.headers.get("content-type") ?? "image/png";
     const arrayBuf = await res.arrayBuffer();
+    if (arrayBuf.byteLength > MAX_IMAGE_BYTES) {
+      return { error: "fetchImage → response too large" };
+    }
     const bytes = new Uint8Array(arrayBuf);
     let binary = "";
     for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);

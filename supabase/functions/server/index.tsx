@@ -18,6 +18,7 @@ import {
 } from "./shared/gemini.tsx";
 import { IMAGE_CARD_CONFIGS } from "./shared/image-config.tsx";
 
+import { requireAuth, projectStorageKey } from "./auth-middleware.tsx";
 import strategist from "./agents/brand-strategist.tsx";
 import artDirector from "./agents/art-director.tsx";
 import visualDesigner from "./agents/visual-designer.tsx";
@@ -40,6 +41,8 @@ app.use(
   }),
 );
 
+app.use(`${PREFIX}/*`, requireAuth);
+
 // ── Mount agent sub-routers ──────────────────────────────────────────────────
 
 app.route(`${PREFIX}/strategist`, strategist);
@@ -52,9 +55,10 @@ app.get(`${PREFIX}/health`, (c) =>
   c.json({ status: "ok", version: "9-agents" }),
 );
 
-// ── Debug: list available Gemini models ──────────────────────────────────────
+// ── Debug: list available Gemini models (gated by ENABLE_DEV_ROUTES) ───────────
 
 app.get(`${PREFIX}/list-models`, async (c) => {
+  if (Deno.env.get("ENABLE_DEV_ROUTES") !== "true") return c.json({ error: "Not found" }, 404);
   const apiKey = Deno.env.get("GEMINI_API_KEY");
   if (!apiKey) return c.json({ error: "GEMINI_API_KEY not set" }, 500);
 
@@ -70,9 +74,10 @@ app.get(`${PREFIX}/list-models`, async (c) => {
   return c.json({ count: summary.length, models: summary });
 });
 
-// ── Dev info endpoint ─────────────────────────────────────────────────────────
+// ── Dev info endpoint (gated by ENABLE_DEV_ROUTES) ────────────────────────────
 
 app.get(`${PREFIX}/dev-info`, (c) => {
+  if (Deno.env.get("ENABLE_DEV_ROUTES") !== "true") return c.json({ error: "Not found" }, 404);
   return c.json({
     textModel: TEXT_MODEL,
     imageModel: getLastUsedImageModel() ?? null,
@@ -86,14 +91,15 @@ app.get(`${PREFIX}/dev-info`, (c) => {
   });
 });
 
-// ── Project persistence (KV store) ───────────────────────────────────────────
+// ── Project persistence (KV store, user-scoped) ───────────────────────────────
 
 app.post(`${PREFIX}/save-project`, async (c) => {
   try {
+    const userId = c.get("userId") as string;
     const body = await c.req.json();
     const { projectId: pid, data } = body;
     const id = pid ?? "default";
-    const key = `project:${id}`;
+    const key = projectStorageKey(userId, id);
     await kv.set(key, { ...data, _projectId: id, _savedAt: new Date().toISOString() });
     console.log(`Project saved: ${key}`);
     return c.json({ ok: true });
@@ -105,9 +111,18 @@ app.post(`${PREFIX}/save-project`, async (c) => {
 
 app.get(`${PREFIX}/load-project`, async (c) => {
   try {
+    const userId = c.get("userId") as string;
     const pid = c.req.query("projectId") ?? "default";
-    const key = `project:${pid}`;
-    const data = await kv.get(key);
+    const key = projectStorageKey(userId, pid);
+    let data = await kv.get(key);
+    if (!data) {
+      const legacyKey = `project:${pid}`;
+      const legacy = await kv.get(legacyKey);
+      if (legacy) {
+        await kv.set(key, { ...legacy, _projectId: pid, _savedAt: new Date().toISOString() });
+        data = legacy;
+      }
+    }
     if (!data) {
       console.log(`No saved project found for key: ${key}`);
       return c.json({ found: false });
@@ -122,18 +137,24 @@ app.get(`${PREFIX}/load-project`, async (c) => {
 
 app.get(`${PREFIX}/list-projects`, async (c) => {
   try {
+    const userId = c.get("userId") as string;
+    const prefix = projectStorageKey(userId, "");
     const supabase = getSupabaseClient();
     const { data, error } = await supabase
       .from("kv_store_e35291a5")
       .select("key, value")
-      .like("key", "project:%");
+      .like("key", prefix + "%");
     if (error) throw new Error(error.message);
 
-    const projects = (data ?? []).map((d: any) => ({
-      id: d.key.replace("project:", ""),
-      name: d.value?.projectName ?? "Untitled",
-      savedAt: d.value?._savedAt ?? null,
-    }));
+    const projects = (data ?? []).map((d: any) => {
+      const key = d.key as string;
+      const id = key.startsWith(prefix) ? key.slice(prefix.length) : key;
+      return {
+        id,
+        name: d.value?.projectName ?? "Untitled",
+        savedAt: d.value?._savedAt ?? null,
+      };
+    });
     projects.sort((a: any, b: any) =>
       (b.savedAt ?? "").localeCompare(a.savedAt ?? ""),
     );
@@ -146,10 +167,12 @@ app.get(`${PREFIX}/list-projects`, async (c) => {
 
 app.post(`${PREFIX}/delete-project`, async (c) => {
   try {
+    const userId = c.get("userId") as string;
     const { projectId: pid } = await c.req.json();
     if (!pid) return c.json({ error: "projectId required" }, 400);
-    await kv.del(`project:${pid}`);
-    console.log(`Project deleted: project:${pid}`);
+    const key = projectStorageKey(userId, pid);
+    await kv.del(key);
+    console.log(`Project deleted: ${key}`);
     return c.json({ ok: true });
   } catch (err) {
     console.log("delete-project error:", err);
@@ -157,7 +180,11 @@ app.post(`${PREFIX}/delete-project`, async (c) => {
   }
 });
 
-// ── User image upload ─────────────────────────────────────────────────────
+// ── User image upload (hardened) ─────────────────────────────────────────────
+
+const ALLOWED_MIME = new Set(["image/png", "image/jpeg", "image/webp"]);
+const CARD_TYPE_SLUG = /^[a-z0-9-]{1,40}$/i;
+const MAX_UPLOAD_DECODED_BYTES = 12 * 1024 * 1024; // 12MB
 
 app.post(`${PREFIX}/upload-image`, async (c) => {
   try {
@@ -165,7 +192,16 @@ app.post(`${PREFIX}/upload-image`, async (c) => {
     if (!base64 || !mimeType || !cardType) {
       return c.json({ error: "base64, mimeType, and cardType are required" }, 400);
     }
-    const signedUrl = await uploadAndSignImage(base64, mimeType, cardType);
+    const mime = String(mimeType).split(";")[0].trim().toLowerCase();
+    if (!ALLOWED_MIME.has(mime)) {
+      return c.json({ error: "Invalid mimeType" }, 400);
+    }
+    const slug = CARD_TYPE_SLUG.test(String(cardType).trim()) ? String(cardType).trim() : "upload";
+    const decodedLen = Math.ceil((String(base64).length * 3) / 4);
+    if (decodedLen > MAX_UPLOAD_DECODED_BYTES) {
+      return c.json({ error: "Image too large" }, 400);
+    }
+    const signedUrl = await uploadAndSignImage(String(base64), mime, slug);
     return c.json({ imageUrl: signedUrl });
   } catch (err) {
     console.error("upload-image error:", err);

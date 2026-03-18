@@ -434,8 +434,8 @@ export function GuidelinePage({
     const fontNames = [...new Set([titleFontName, bodyFontName].filter(Boolean))];
     const fontLinkTags = fontNames
       .map((name) => {
-        const slug = name.replace(/\s+/g, "+");
-        return `<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=${slug}:ital,wght@0,400;0,700;1,400&display=swap" />`;
+        const encoded = encodeURIComponent(name);
+        return `<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=${encoded}:ital,wght@0,400;0,700;1,400&display=swap" />`;
       })
       .join("\n  ");
 

@@ -1,7 +1,5 @@
-import {
-  functionsBaseUrl,
-  supabaseAnonKey,
-} from "../config/public-env";
+import { functionsBaseUrl } from "../config/public-env";
+import { supabase } from "../lib/supabase-client";
 
 export const BASE_URL = functionsBaseUrl;
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -10,6 +8,20 @@ export interface CallApiOptions {
   method?: "GET" | "POST";
   body?: unknown;
   timeoutMs?: number;
+}
+
+/**
+ * Ensure we have a user session and return the access token for Edge Function auth.
+ */
+async function ensureUserSession(): Promise<string> {
+  const {
+    data: { session },
+  } = await supabase.auth.getSession();
+  if (session?.access_token) return session.access_token;
+  const { data, error } = await supabase.auth.signInAnonymously();
+  if (error) throw new Error(error.message);
+  if (!data.session?.access_token) throw new Error("No session after sign-in");
+  return data.session.access_token;
 }
 
 /**
@@ -22,7 +34,7 @@ async function handleApiError(res: Response): Promise<never> {
 
 /**
  * Unified fetch wrapper for all Edge Function calls.
- * Handles auth, timeout, and error parsing.
+ * Uses authenticated user's access token. Retries once after sign-in on 401.
  */
 export async function callApi<T>(
   path: string,
@@ -33,21 +45,28 @@ export async function callApi<T>(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
-  const headers: Record<string, string> = {
-    Authorization: `Bearer ${supabaseAnonKey}`,
-  };
-  if (method === "POST") {
-    headers["Content-Type"] = "application/json";
-  }
-
-  try {
-    const res = await fetch(`${BASE_URL}/${path}`, {
+  let token = await ensureUserSession();
+  const doFetch = async (): Promise<Response> => {
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${token}`,
+    };
+    if (method === "POST") {
+      headers["Content-Type"] = "application/json";
+    }
+    return fetch(`${BASE_URL}/${path}`, {
       method,
       headers,
       body: method === "POST" && body != null ? JSON.stringify(body) : undefined,
       signal: controller.signal,
     });
+  };
 
+  try {
+    let res = await doFetch();
+    if (res.status === 401) {
+      token = await ensureUserSession();
+      res = await doFetch();
+    }
     if (!res.ok) await handleApiError(res);
 
     return res.json() as Promise<T>;
