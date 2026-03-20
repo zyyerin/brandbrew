@@ -1,0 +1,35 @@
+---
+description: Component development patterns and file organization conventions
+globs: "src/app/components/**"
+alwaysApply: false
+---
+
+# Component Patterns
+
+## Brand Element Cards
+
+- Every brand element card must use `ElementWrapper` as its outer container (from `brand-cards/ElementWrapper.tsx`). The old `CardWrapper` has been deleted.
+- Variation visual state is represented by `VariationState`: `"inactive" | "active" | "waiting" | "merging" | "available" | "uploading"`. Do not invent new states.
+- Variation overlay UI uses `VariationStateOverlay` (from `brand-cards/VariationStateOverlay.tsx`).
+
+## File Organization
+
+| What | Where |
+|------|-------|
+| Custom hooks | `src/app/hooks/` — one hook per file, named `use*.ts` |
+| Utility functions | `src/app/utils/` |
+| Type definitions | `src/app/types/` |
+| UI primitives | `src/app/components/ui/` (shadcn/ui) — do NOT create new base UI components here |
+| Board sub-components | `src/app/components/curation-board/` |
+| Card sub-components | `src/app/components/brand-cards/` |
+
+## Large File Discipline
+
+Several files exceed 700 lines (`direction-page.tsx`, `useBrandGeneration.ts`, `App.tsx`). When modifying files over 500 lines:
+
+1. Extract new logic into a dedicated hook or utility instead of adding more code inline
+2. If a component grows beyond 400 lines, split it into sub-components in the same directory
+
+## UI Components
+
+Use existing shadcn/ui components from `src/app/components/ui/` (Button, Dialog, Popover, Tooltip, etc.). Do not install new UI libraries or create custom base components for things shadcn already provides.

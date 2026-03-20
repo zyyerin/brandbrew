@@ -1,7 +1,7 @@
 import { useState, useEffect, useImperativeHandle, forwardRef, useRef } from "react";
 import { Sparkles, Coffee, X, PanelRightClose } from "lucide-react";
-import type { BrandData } from "../types/brand";
-import { LAYOUT } from "../utils/design-tokens";
+import type { BrandSummaryData } from "../types/project";
+import { LAYOUT, TYPOGRAPHY } from "../utils/design-tokens";
 import { CapsuleTagInput } from "./capsule-tag-input";
 
 type BriefFieldKey = keyof BrandContextFields;
@@ -11,25 +11,21 @@ export interface BrandContextRef {
 }
 
 interface BrandContextProps {
-  brandData: BrandData;
-  phase:
-    | "empty"
-    | "generating-concept"
-    | "generating-palette-fonts"
-    | "generating-logo-style"
-    | "generating-layout"
-    | "visual-complete"
-    | "guideline";
-  onSubmit?: (fields: BrandContextFields) => void;
+  brandSummary: BrandSummaryData;
+  projectPhase: "empty" | "curating";
   isGenerating?: boolean;
-  onApplicationsChange?: (apps: string[]) => void;
+  onSubmit?: (fields: BrandContextFields) => void;
   onAutoComplete?: (fields: BrandContextFields) => void;
   isAutoCompleting?: boolean;
-  generatedBriefFields?: Set<BriefFieldKey | "applications">;
-  onClearGeneratedField?: (key: BriefFieldKey | "applications") => void;
+  generatedBriefFields?: Set<BriefFieldKey>;
+  onClearGeneratedField?: (key: BriefFieldKey) => void;
   fieldSuggestions?: Partial<Record<BriefFieldKey, string[]>>;
   /** Called on every keystroke so the parent can keep its own state in sync. */
   onFieldChange?: (fields: BrandContextFields) => void;
+  /** Called when the user clicks the per-field auto-complete button. */
+  onFieldAutoFill?: (key: BriefFieldKey, fields: BrandContextFields) => void;
+  /** The field currently being auto-filled (single-field mode). */
+  autoFillingFieldKey?: BriefFieldKey | null;
   /** When true, used inside a combined panel; no full height so content stacks. */
   embedded?: boolean;
   /** When true, only render form content (footer rendered by parent for fixed positioning). */
@@ -37,60 +33,21 @@ interface BrandContextProps {
 }
 
 // Brand Summary naming: primary exported types, backed by BrandContext implementation.
-export type BrandSummaryPhase = BrandContextProps["phase"];
-export type BriefGeneratedKey = BriefFieldKey | "applications";
+/** After merging applications into BrandContextFields, BriefGeneratedKey == BriefFieldKey. Kept as alias for external consumers. */
+export type BriefGeneratedKey = BriefFieldKey;
 export interface BrandSummaryFields extends BrandContextFields {}
 export interface BrandSummaryRef extends BrandContextRef {}
 export interface BrandSummaryProps extends BrandContextProps {}
 
-type ApplicationSuggestionData = Pick<BrandData, "brandBrief" | "keywords">;
-
 /** True when at least one of name, tagline, description, targetAudience, or keywords is non-empty. */
-function hasMeaningfulBrandData(brandData: {
-  brandBrief?: { name?: string; tagline?: string; description?: string };
-  targetAudience?: string;
-  keywords?: string[];
-}): boolean {
-  const n = brandData.brandBrief?.name?.trim();
-  const t = brandData.brandBrief?.tagline?.trim();
-  const d = brandData.brandBrief?.description?.trim();
-  const a = brandData.targetAudience?.trim();
-  const kw = brandData.keywords && brandData.keywords.length > 0;
-  return !!(n || t || d || a || kw);
-}
-
-/**
- * Suggests 4 application mockup ideas based on brand description and keywords.
- */
-function suggestApplications(brandData: ApplicationSuggestionData): string[] {
-  const desc = (brandData.brandBrief?.description ?? "").toLowerCase();
-  const name = (brandData.brandBrief?.name ?? "").toLowerCase();
-  const kw = (brandData.keywords ?? []).map((k) => k.toLowerCase());
-  const all = `${desc} ${name} ${kw.join(" ")}`;
-
-  if (/cafe|coffee|brew|roast|barista|latte|espresso/.test(all)) {
-    return ["Interior", "Coffee Mug", "Togo Cup & Box", "Menu"];
-  }
-  if (/restaurant|food|dining|kitchen|chef|bistro/.test(all)) {
-    return ["Interior", "Menu Card", "Packaging", "Tableware"];
-  }
-  if (/skincare|beauty|cosmetic|serum|cream|lotion/.test(all)) {
-    return ["Product Bottle", "Packaging Box", "Shopping Bag", "Store Display"];
-  }
-  if (/tech|software|app|digital|saas|platform/.test(all)) {
-    return ["App Screen", "Website Hero", "Presentation Deck", "Business Card"];
-  }
-  if (/fashion|clothing|apparel|wear|boutique/.test(all)) {
-    return ["Hang Tag", "Shopping Bag", "Storefront", "Lookbook Spread"];
-  }
-  if (/fitness|gym|sport|wellness|health/.test(all)) {
-    return ["Water Bottle", "Gym Signage", "App Screen", "Merchandise T-Shirt"];
-  }
-  if (/eco|green|sustain|environment|organic|nature/.test(all)) {
-    return ["Eco Packaging", "Tote Bag", "Website Hero", "Sticker Sheet"];
-  }
-
-  return ["Business Card", "Letterhead", "Website Hero", "Social Media Post"];
+function hasMeaningfulBrandData(s: BrandSummaryData): boolean {
+  return !!(
+    s.name?.trim() ||
+    s.tagline?.trim() ||
+    s.description?.trim() ||
+    s.targetAudience?.trim() ||
+    (s.keywords && s.keywords.length > 0)
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -101,19 +58,23 @@ interface BriefFooterProps {
   onGenerate: () => void;
   isGenerating: boolean;
   isAutoCompleting: boolean;
+  /** Extra locked state (e.g. single-field auto-fill in progress). */
+  isLocked?: boolean;
   /** When true, the "Auto Complete" button is rendered. */
   showAutoComplete?: boolean;
 }
 
-function BriefFooter({ onAutoComplete, onGenerate, isGenerating, isAutoCompleting, showAutoComplete = true }: BriefFooterProps) {
+function BriefFooter({ onAutoComplete, onGenerate, isGenerating, isAutoCompleting, isLocked = false, showAutoComplete = true }: BriefFooterProps) {
+  const disabled = isGenerating || isAutoCompleting || isLocked;
   return (
     <div className="shrink-0 border-t border-border/40 bg-white px-4 py-4 flex items-center gap-2">
       {showAutoComplete && (
         <button
           type="button"
           onClick={onAutoComplete}
-          disabled={isGenerating || isAutoCompleting}
-          className="flex items-center justify-center gap-2 px-4 py-3 rounded-xl text-[13px] font-semibold border border-border bg-muted/30 text-foreground hover:bg-muted/50 active:scale-[0.98] transition-all shadow-sm select-none disabled:opacity-50 disabled:pointer-events-none shrink-0"
+          disabled={disabled}
+          className="flex items-center justify-center gap-2 px-4 py-3 rounded-xl font-semibold border border-border bg-muted/30 text-foreground hover:bg-muted/50 active:scale-[0.98] transition-all shadow-sm select-none disabled:opacity-50 disabled:pointer-events-none shrink-0"
+        style={{ fontSize: TYPOGRAPHY.cardBody.fontSize }}
         >
           {isAutoCompleting ? (
             <>
@@ -131,8 +92,9 @@ function BriefFooter({ onAutoComplete, onGenerate, isGenerating, isAutoCompletin
       <button
         type="button"
         onClick={onGenerate}
-        disabled={isGenerating || isAutoCompleting}
-        className="flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-xl text-[13px] font-semibold bg-foreground text-white hover:bg-foreground/85 active:scale-[0.98] transition-all shadow-sm select-none disabled:opacity-50 disabled:pointer-events-none whitespace-nowrap"
+        disabled={disabled}
+        className="flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-xl font-semibold bg-foreground text-white hover:bg-foreground/85 active:scale-[0.98] transition-all shadow-sm select-none disabled:opacity-50 disabled:pointer-events-none whitespace-nowrap"
+        style={{ fontSize: TYPOGRAPHY.cardBody.fontSize }}
       >
         {isGenerating ? (
           <>
@@ -157,21 +119,24 @@ export interface BrandContextFields {
   targetAudience: string;
   keywords: string;
   brandDescription: string;
+  /** Comma-separated list of brand touchpoint mockup ideas. */
+  applications: string;
 }
 
 export const BrandContext = forwardRef<BrandContextRef, BrandContextProps>(function BrandContext(
   {
-    brandData,
-    phase,
+    brandSummary,
+    projectPhase,
     onSubmit,
     isGenerating = false,
-    onApplicationsChange,
     onAutoComplete,
     isAutoCompleting = false,
     generatedBriefFields = new Set(),
     onClearGeneratedField,
     fieldSuggestions,
     onFieldChange,
+    onFieldAutoFill,
+    autoFillingFieldKey = null,
     embedded = false,
     contentOnly = false,
   },
@@ -183,44 +148,41 @@ export const BrandContext = forwardRef<BrandContextRef, BrandContextProps>(funct
     targetAudience: "",
     keywords: "",
     brandDescription: "",
+    applications: "",
   });
-
-  const [applications, setApplications] = useState<string[]>(() => {
-    if (brandData.guidelineApplications?.length) {
-      return brandData.guidelineApplications;
-    }
-    // For a fresh / empty project, start with a blank Applications field.
-    if (!hasMeaningfulBrandData(brandData)) {
-      return [];
-    }
-    return suggestApplications(brandData);
-  });
-
-  // Track whether the user has manually edited Applications so we don't overwrite it on every brandData change.
-  const userHasEditedApplicationsRef = useRef(false);
 
   // Internal tracking of which fields were changed by Auto Complete.
   // Merges with the external generatedBriefFields prop so the component works
   // correctly even when the parent doesn't pass generatedBriefFields.
-  const [internalGeneratedFields, setInternalGeneratedFields] = useState<Set<BriefGeneratedKey>>(new Set());
+  const [internalGeneratedFields, setInternalGeneratedFields] = useState<Set<BriefFieldKey>>(new Set());
+
+  // Fields that are empty when batch Auto Complete starts — shown with loading highlight.
+  const [fieldsBeingCompleted, setFieldsBeingCompleted] = useState<Set<BriefFieldKey>>(new Set());
 
   // Snapshot taken when isAutoCompleting becomes true, used to diff on completion.
-  const autoCompleteSnapshotRef = useRef<{ fields: BrandContextFields; applications: string[] } | null>(null);
+  const autoCompleteSnapshotRef = useRef<BrandContextFields | null>(null);
 
   useEffect(() => {
     if (isAutoCompleting) {
       // Capture state at the moment Auto Complete starts.
-      autoCompleteSnapshotRef.current = { fields, applications };
+      autoCompleteSnapshotRef.current = fields;
+
+      // Determine which fields are empty — these are the ones that will be filled.
+      const toComplete = new Set<BriefFieldKey>();
+      (Object.keys(fields) as BriefFieldKey[]).forEach((key) => {
+        if (!fields[key]?.trim()) toComplete.add(key);
+      });
+      setFieldsBeingCompleted(toComplete);
     } else if (autoCompleteSnapshotRef.current) {
       // Auto Complete just finished — diff against snapshot to find changed fields.
       const snapshot = autoCompleteSnapshotRef.current;
       autoCompleteSnapshotRef.current = null;
+      setFieldsBeingCompleted(new Set());
 
-      const changed = new Set<BriefGeneratedKey>();
+      const changed = new Set<BriefFieldKey>();
       (Object.keys(fields) as BriefFieldKey[]).forEach((key) => {
-        if (fields[key] !== snapshot.fields[key]) changed.add(key);
+        if (fields[key] !== snapshot[key]) changed.add(key);
       });
-      if (JSON.stringify(applications) !== JSON.stringify(snapshot.applications)) changed.add("applications");
 
       if (changed.size > 0) setInternalGeneratedFields(changed);
     }
@@ -232,53 +194,27 @@ export const BrandContext = forwardRef<BrandContextRef, BrandContextProps>(funct
   useEffect(() => {
     // When entering a brand-new empty project (no meaningful brand data and phase is "empty"),
     // clear all fields so the user starts from a blank state.
-    if (phase === "empty" && !hasMeaningfulBrandData(brandData)) {
+    if (projectPhase === "empty" && !hasMeaningfulBrandData(brandSummary)) {
       setFields({
         brandName: "",
         tagline: "",
         targetAudience: "",
         keywords: "",
         brandDescription: "",
+        applications: "",
       });
       return;
     }
 
     setFields((prev) => ({
-      brandName: brandData.brandBrief?.name ?? prev.brandName,
-      tagline: brandData.brandBrief?.tagline ?? prev.tagline,
-      targetAudience: brandData.targetAudience ?? prev.targetAudience,
-      keywords: brandData.keywords?.join(", ") ?? prev.keywords,
-      brandDescription: brandData.brandBrief?.description ?? prev.brandDescription,
+      brandName: brandSummary.name ?? prev.brandName,
+      tagline: brandSummary.tagline ?? prev.tagline,
+      targetAudience: brandSummary.targetAudience ?? prev.targetAudience,
+      keywords: brandSummary.keywords?.join(", ") ?? prev.keywords,
+      brandDescription: brandSummary.description ?? prev.brandDescription,
+      applications: brandSummary.applications?.join(", ") ?? prev.applications,
     }));
-  }, [brandData.brandBrief, brandData.targetAudience, brandData.keywords, phase]);
-
-  useEffect(() => {
-    // Skip auto-sync if user has manually edited the Applications field.
-    if (userHasEditedApplicationsRef.current) return;
-
-    // For a new empty project (no meaningful brand data), keep Applications blank.
-    if (phase === "empty" && !hasMeaningfulBrandData(brandData) && !brandData.guidelineApplications?.length) {
-      userHasEditedApplicationsRef.current = false;
-      setApplications([]);
-      return;
-    }
-
-    if (brandData.guidelineApplications?.length) {
-      setApplications(brandData.guidelineApplications);
-      return;
-    }
-    if (hasMeaningfulBrandData(brandData)) {
-      setApplications(suggestApplications(brandData));
-    }
-  }, [
-    brandData.brandBrief?.name,
-    brandData.brandBrief?.tagline,
-    brandData.brandBrief?.description,
-    brandData.targetAudience,
-    brandData.keywords,
-    brandData.guidelineApplications,
-    phase,
-  ]);
+  }, [brandSummary.name, brandSummary.tagline, brandSummary.description, brandSummary.targetAudience, brandSummary.keywords, brandSummary.applications, projectPhase]);
 
   const updateField = (key: BriefFieldKey, value: string) => {
     clearGenerated(key);
@@ -287,10 +223,10 @@ export const BrandContext = forwardRef<BrandContextRef, BrandContextProps>(funct
     onFieldChange?.(newFields);
   };
 
-  const isGenerated = (key: BriefGeneratedKey) =>
+  const isGenerated = (key: BriefFieldKey) =>
     internalGeneratedFields.has(key) || generatedBriefFields.has(key);
 
-  const clearGenerated = (key: BriefGeneratedKey) => {
+  const clearGenerated = (key: BriefFieldKey) => {
     onClearGeneratedField?.(key);
     setInternalGeneratedFields((prev) => {
       if (!prev.has(key)) return prev;
@@ -298,14 +234,6 @@ export const BrandContext = forwardRef<BrandContextRef, BrandContextProps>(funct
       next.delete(key);
       return next;
     });
-  };
-
-  const updateApplications = (apps: string[]) => {
-    // Once the user edits Applications, we stop auto-overwriting it from brandData.
-    userHasEditedApplicationsRef.current = true;
-    clearGenerated("applications");
-    setApplications(apps);
-    onApplicationsChange?.(apps);
   };
 
   const handleAutoComplete = () => {
@@ -316,275 +244,235 @@ export const BrandContext = forwardRef<BrandContextRef, BrandContextProps>(funct
     updateField(key, "");
   };
 
-  const handleClearApplications = () => {
-    // Clearing counts as explicit user intent; stop auto-sync from brandData.
-    userHasEditedApplicationsRef.current = true;
-    clearGenerated("applications");
-    setApplications([]);
-    onApplicationsChange?.([]);
-  };
-
   useImperativeHandle(ref, () => ({ getFields: () => fields }), [fields]);
 
   const inputBase =
     "w-full bg-transparent text-[13px] text-foreground placeholder:text-muted-foreground/40 outline-none resize-none border rounded-lg px-3 py-2 transition-all";
 
-  // Border color shifts to a soft violet while Auto Complete is running.
-  const fieldBorderClass = isAutoCompleting
-    ? "border-violet-300 focus:border-violet-400 focus:ring-1 focus:ring-violet-200"
-    : "border-border/50 focus:border-primary/40 focus:ring-1 focus:ring-primary/20";
+  const fieldBorderClass = "border-border/50 focus:border-primary/40 focus:ring-1 focus:ring-primary/20";
+  const fieldBorderGeneratedClass = "border-bb-ai-affordance-border focus:border-bb-ai-active-ring focus:ring-1 focus:ring-bb-ai-active-ring-outer bg-bb-ai-affordance-bg";
 
-  const fieldShell = "relative group";
+  // Per-field border: during batch auto-complete highlight only empty fields (fieldsBeingCompleted);
+  // during single-field auto-fill highlight only that field; after completion highlight changed fields.
+  const getFieldBorder = (key: BriefFieldKey) => {
+    if (autoFillingFieldKey === key) return fieldBorderGeneratedClass;
+    if (isAutoCompleting && fieldsBeingCompleted.has(key)) return fieldBorderGeneratedClass;
+    if (isGenerated(key)) return fieldBorderGeneratedClass;
+    return fieldBorderClass;
+  };
 
-  const fieldControlsBase =
-    "absolute inset-y-0 right-2 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity";
+  // Right padding accounts for the two action buttons (Sparkles + X) shown on hover.
+  const fieldShell = "group";
 
   const iconButtonBase =
-    "inline-flex items-center justify-center w-6 h-6 rounded-md border border-border/40 bg-white text-muted-foreground/60 hover:text-foreground hover:bg-muted disabled:opacity-40 disabled:cursor-not-allowed shadow-xs";
+    "inline-flex items-center justify-center w-5 h-5 rounded text-muted-foreground/40 hover:text-foreground hover:bg-muted/60 disabled:opacity-30 disabled:cursor-not-allowed transition-colors";
+
+  const labelRowClass = "flex justify-between items-center mb-1.5";
+  const labelClass = "font-medium text-muted-foreground/60 uppercase tracking-wider";
+  const labelActionsClass = "flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity";
+
+  // Whether any field-level loading is in flight (prevents triggering another).
+  const anyFieldAutoFilling = autoFillingFieldKey !== null;
+  const isLocked = isGenerating || isAutoCompleting || anyFieldAutoFilling;
 
   return (
     <div className={`flex flex-col bg-white overflow-hidden ${embedded ? "" : "h-full"}`}>
       <div className={embedded ? "" : "flex-1 overflow-y-auto"}>
         <div className="px-4 pt-4 pb-3 space-y-3">
           {/* Brand Name */}
-          <div>
-            <label className="block text-[11px] font-medium text-muted-foreground/60 uppercase tracking-wider mb-1.5">
-              Brand Name
-            </label>
-            <div className={fieldShell}>
-              <input
-                type="text"
-                value={fields.brandName}
-                onChange={(e) => updateField("brandName", e.target.value)}
-                placeholder="Enter you brand name"
-                className={`${inputBase} ${fieldBorderClass} ${isGenerated("brandName") ? "text-blue-600" : ""}`}
-                disabled={isGenerating || isAutoCompleting}
-              />
-              <div className={fieldControlsBase}>
-                <button
-                  type="button"
-                  onClick={() => handleClearField("brandName")}
-                  disabled={isGenerating || isAutoCompleting}
-                  className={iconButtonBase}
-                  title="Clear"
-                >
-                  <X size={11} />
+          <div className={fieldShell}>
+            <div className={labelRowClass}>
+              <label className={labelClass} style={{ fontSize: TYPOGRAPHY.queueLabel.fontSize }}>Brand Name</label>
+              <div className={labelActionsClass}>
+                {onFieldAutoFill && (
+                  <button type="button" onClick={() => onFieldAutoFill("brandName", fields)} disabled={isGenerating || isAutoCompleting || anyFieldAutoFilling}
+                    className={`${iconButtonBase} ${autoFillingFieldKey === "brandName" ? "text-bb-ai-active-ring" : ""}`} title="Auto-fill this field">
+                    {autoFillingFieldKey === "brandName" ? <div className="w-3 h-3 border-[1.5px] border-bb-ai-affordance-border border-t-bb-ai-active-ring rounded-full animate-spin" /> : <Sparkles size={TYPOGRAPHY.toggleIconSize} />}
+                  </button>
+                )}
+                <button type="button" onClick={() => handleClearField("brandName")} disabled={isLocked} className={iconButtonBase} title="Clear">
+                  <X size={TYPOGRAPHY.toggleIconSize} />
                 </button>
               </div>
             </div>
+            <input
+              type="text"
+              value={fields.brandName}
+              onChange={(e) => updateField("brandName", e.target.value)}
+              placeholder="Enter you brand name"
+              className={`${inputBase} ${getFieldBorder("brandName")} ${isGenerated("brandName") ? "text-bb-ai-active-ring" : ""}`}
+              disabled={isLocked}
+            />
             {fieldSuggestions?.brandName && fieldSuggestions.brandName.length > 0 && (
               <div className="mt-1.5 rounded-md border border-border/50 bg-white shadow-sm max-h-32 overflow-y-auto">
                 {fieldSuggestions.brandName.map((s, idx) => (
-                  <button
-                    key={idx}
-                    type="button"
-                    onClick={() => updateField("brandName", s)}
-                    className="w-full text-left px-2.5 py-1.5 text-[12px] hover:bg-muted/40 text-foreground/80"
-                  >
-                    {s}
-                  </button>
+                  <button key={idx} type="button" onClick={() => updateField("brandName", s)}
+                    className="w-full text-left px-2.5 py-1.5 text-[12px] hover:bg-muted/40 text-foreground/80">{s}</button>
                 ))}
               </div>
             )}
           </div>
 
           {/* Tagline */}
-          <div>
-            <label className="block text-[11px] font-medium text-muted-foreground/60 uppercase tracking-wider mb-1.5">
-              Tagline
-            </label>
-            <div className={fieldShell}>
-              <input
-                type="text"
-                value={fields.tagline}
-                onChange={(e) => updateField("tagline", e.target.value)}
-                placeholder="Concise, memorable, and unique"
-                className={`${inputBase} ${fieldBorderClass} ${isGenerated("tagline") ? "text-blue-600" : ""}`}
-                disabled={isGenerating || isAutoCompleting}
-              />
-              <div className={fieldControlsBase}>
-                <button
-                  type="button"
-                  onClick={() => handleClearField("tagline")}
-                  disabled={isGenerating || isAutoCompleting}
-                  className={iconButtonBase}
-                  title="Clear"
-                >
-                  <X size={11} />
+          <div className={fieldShell}>
+            <div className={labelRowClass}>
+              <label className={labelClass} style={{ fontSize: TYPOGRAPHY.queueLabel.fontSize }}>Tagline</label>
+              <div className={labelActionsClass}>
+                {onFieldAutoFill && (
+                  <button type="button" onClick={() => onFieldAutoFill("tagline", fields)} disabled={isGenerating || isAutoCompleting || anyFieldAutoFilling}
+                    className={`${iconButtonBase} ${autoFillingFieldKey === "tagline" ? "text-bb-ai-active-ring" : ""}`} title="Auto-fill this field">
+                    {autoFillingFieldKey === "tagline" ? <div className="w-3 h-3 border-[1.5px] border-bb-ai-affordance-border border-t-bb-ai-active-ring rounded-full animate-spin" /> : <Sparkles size={TYPOGRAPHY.toggleIconSize} />}
+                  </button>
+                )}
+                <button type="button" onClick={() => handleClearField("tagline")} disabled={isLocked} className={iconButtonBase} title="Clear">
+                  <X size={TYPOGRAPHY.toggleIconSize} />
                 </button>
               </div>
             </div>
+            <input
+              type="text"
+              value={fields.tagline}
+              onChange={(e) => updateField("tagline", e.target.value)}
+              placeholder="Concise, memorable, and unique"
+              className={`${inputBase} ${getFieldBorder("tagline")} ${isGenerated("tagline") ? "text-bb-ai-active-ring" : ""}`}
+              disabled={isLocked}
+            />
             {fieldSuggestions?.tagline && fieldSuggestions.tagline.length > 0 && (
               <div className="mt-1.5 rounded-md border border-border/50 bg-white shadow-sm max-h-32 overflow-y-auto">
                 {fieldSuggestions.tagline.map((s, idx) => (
-                  <button
-                    key={idx}
-                    type="button"
-                    onClick={() => updateField("tagline", s)}
-                    className="w-full text-left px-2.5 py-1.5 text-[12px] hover:bg-muted/40 text-foreground/80"
-                  >
-                    {s}
-                  </button>
+                  <button key={idx} type="button" onClick={() => updateField("tagline", s)}
+                    className="w-full text-left px-2.5 py-1.5 text-[12px] hover:bg-muted/40 text-foreground/80">{s}</button>
                 ))}
               </div>
             )}
           </div>
 
           {/* Target Audience */}
-          <div>
-            <label className="block text-[11px] font-medium text-muted-foreground/60 uppercase tracking-wider mb-1.5">
-              Target Audience
-            </label>
-            <div className={fieldShell}>
-              <input
-                type="text"
-                value={fields.targetAudience}
-                onChange={(e) => updateField("targetAudience", e.target.value)}
-                placeholder="Describe your target audience"
-                className={`${inputBase} ${fieldBorderClass} ${isGenerated("targetAudience") ? "text-blue-600" : ""}`}
-                disabled={isGenerating || isAutoCompleting}
-              />
-              <div className={fieldControlsBase}>
-                <button
-                  type="button"
-                  onClick={() => handleClearField("targetAudience")}
-                  disabled={isGenerating || isAutoCompleting}
-                  className={iconButtonBase}
-                  title="Clear"
-                >
-                  <X size={11} />
+          <div className={fieldShell}>
+            <div className={labelRowClass}>
+              <label className={labelClass} style={{ fontSize: TYPOGRAPHY.queueLabel.fontSize }}>Target Audience</label>
+              <div className={labelActionsClass}>
+                {onFieldAutoFill && (
+                  <button type="button" onClick={() => onFieldAutoFill("targetAudience", fields)} disabled={isGenerating || isAutoCompleting || anyFieldAutoFilling}
+                    className={`${iconButtonBase} ${autoFillingFieldKey === "targetAudience" ? "text-bb-ai-active-ring" : ""}`} title="Auto-fill this field">
+                    {autoFillingFieldKey === "targetAudience" ? <div className="w-3 h-3 border-[1.5px] border-bb-ai-affordance-border border-t-bb-ai-active-ring rounded-full animate-spin" /> : <Sparkles size={TYPOGRAPHY.toggleIconSize} />}
+                  </button>
+                )}
+                <button type="button" onClick={() => handleClearField("targetAudience")} disabled={isLocked} className={iconButtonBase} title="Clear">
+                  <X size={TYPOGRAPHY.toggleIconSize} />
                 </button>
               </div>
             </div>
+            <input
+              type="text"
+              value={fields.targetAudience}
+              onChange={(e) => updateField("targetAudience", e.target.value)}
+              placeholder="Describe your target audience"
+              className={`${inputBase} ${getFieldBorder("targetAudience")} ${isGenerated("targetAudience") ? "text-bb-ai-active-ring" : ""}`}
+              disabled={isLocked}
+            />
             {fieldSuggestions?.targetAudience && fieldSuggestions.targetAudience.length > 0 && (
               <div className="mt-1.5 rounded-md border border-border/50 bg-white shadow-sm max-h-32 overflow-y-auto">
                 {fieldSuggestions.targetAudience.map((s, idx) => (
-                  <button
-                    key={idx}
-                    type="button"
-                    onClick={() => updateField("targetAudience", s)}
-                    className="w-full text-left px-2.5 py-1.5 text-[12px] hover:bg-muted/40 text-foreground/80"
-                  >
-                    {s}
-                  </button>
+                  <button key={idx} type="button" onClick={() => updateField("targetAudience", s)}
+                    className="w-full text-left px-2.5 py-1.5 text-[12px] hover:bg-muted/40 text-foreground/80">{s}</button>
                 ))}
               </div>
             )}
           </div>
 
           {/* Keywords */}
-          <div>
-            <label className="block text-[11px] font-medium text-muted-foreground/60 uppercase tracking-wider mb-1.5">
-              Keywords
-            </label>
-            <div className={fieldShell}>
-              <CapsuleTagInput
-                tags={fields.keywords ? fields.keywords.split(",").map((k) => k.trim()).filter(Boolean) : []}
-                onTagsChange={(tags) => updateField("keywords", tags.join(", "))}
-                placeholder="Artisan, cozy, community, sustainable"
-                disabled={isGenerating || isAutoCompleting}
-                generated={isGenerated("keywords")}
-                className={`border rounded-lg pr-8 ${isGenerated("keywords") ? "border-blue-200" : fieldBorderClass}`}
-              />
-              <div className={fieldControlsBase}>
-                <button
-                  type="button"
-                  onClick={() => handleClearField("keywords")}
-                  disabled={isGenerating || isAutoCompleting}
-                  className={iconButtonBase}
-                  title="Clear all"
-                >
-                  <X size={11} />
+          <div className={fieldShell}>
+            <div className={labelRowClass}>
+              <label className={labelClass} style={{ fontSize: TYPOGRAPHY.queueLabel.fontSize }}>Keywords</label>
+              <div className={labelActionsClass}>
+                {onFieldAutoFill && (
+                  <button type="button" onClick={() => onFieldAutoFill("keywords", fields)} disabled={isGenerating || isAutoCompleting || anyFieldAutoFilling}
+                    className={`${iconButtonBase} ${autoFillingFieldKey === "keywords" ? "text-bb-ai-active-ring" : ""}`} title="Auto-fill this field">
+                    {autoFillingFieldKey === "keywords" ? <div className="w-3 h-3 border-[1.5px] border-bb-ai-affordance-border border-t-bb-ai-active-ring rounded-full animate-spin" /> : <Sparkles size={TYPOGRAPHY.toggleIconSize} />}
+                  </button>
+                )}
+                <button type="button" onClick={() => handleClearField("keywords")} disabled={isLocked} className={iconButtonBase} title="Clear all">
+                  <X size={TYPOGRAPHY.toggleIconSize} />
                 </button>
               </div>
             </div>
+            <CapsuleTagInput
+              tags={fields.keywords ? fields.keywords.split(",").map((k) => k.trim()).filter(Boolean) : []}
+              onTagsChange={(tags) => updateField("keywords", tags.join(", "))}
+              placeholder="Artisan, cozy, community, sustainable"
+              disabled={isLocked}
+              generated={isGenerated("keywords")}
+              className={`border rounded-lg ${isGenerated("keywords") ? "border-bb-ai-affordance-border bg-bb-ai-affordance-bg" : getFieldBorder("keywords")}`}
+            />
             {fieldSuggestions?.keywords && fieldSuggestions.keywords.length > 0 && (
               <div className="mt-1.5 rounded-md border border-border/50 bg-white shadow-sm max-h-32 overflow-y-auto">
                 {fieldSuggestions.keywords.map((s, idx) => (
-                  <button
-                    key={idx}
-                    type="button"
-                    onClick={() => updateField("keywords", s)}
-                    className="w-full text-left px-2.5 py-1.5 text-[12px] hover:bg-muted/40 text-foreground/80"
-                  >
-                    {s}
-                  </button>
+                  <button key={idx} type="button" onClick={() => updateField("keywords", s)}
+                    className="w-full text-left px-2.5 py-1.5 text-[12px] hover:bg-muted/40 text-foreground/80">{s}</button>
                 ))}
               </div>
             )}
           </div>
 
           {/* Brand Description */}
-          <div>
-            <label className="block text-[11px] font-medium text-muted-foreground/60 uppercase tracking-wider mb-1.5">
-              Brand Description
-            </label>
-            <div className={fieldShell}>
-              <textarea
-                value={fields.brandDescription}
-                onChange={(e) => updateField("brandDescription", e.target.value)}
-                placeholder="Describe your brand's mission, values, and what makes it unique..."
-                rows={4}
-                className={`${inputBase} ${fieldBorderClass} ${isGenerated("brandDescription") ? "text-blue-600" : ""}`}
-                disabled={isGenerating || isAutoCompleting}
-              />
-              <div className={`${fieldControlsBase} items-start pt-2`}>
-                <button
-                  type="button"
-                  onClick={() => handleClearField("brandDescription")}
-                  disabled={isGenerating || isAutoCompleting}
-                  className={iconButtonBase}
-                  title="Clear"
-                >
-                  <X size={11} />
+          <div className={fieldShell}>
+            <div className={labelRowClass}>
+              <label className={labelClass} style={{ fontSize: TYPOGRAPHY.queueLabel.fontSize }}>Brand Description</label>
+              <div className={labelActionsClass}>
+                {onFieldAutoFill && (
+                  <button type="button" onClick={() => onFieldAutoFill("brandDescription", fields)} disabled={isGenerating || isAutoCompleting || anyFieldAutoFilling}
+                    className={`${iconButtonBase} ${autoFillingFieldKey === "brandDescription" ? "text-bb-ai-active-ring" : ""}`} title="Auto-fill this field">
+                    {autoFillingFieldKey === "brandDescription" ? <div className="w-3 h-3 border-[1.5px] border-bb-ai-affordance-border border-t-bb-ai-active-ring rounded-full animate-spin" /> : <Sparkles size={TYPOGRAPHY.toggleIconSize} />}
+                  </button>
+                )}
+                <button type="button" onClick={() => handleClearField("brandDescription")} disabled={isLocked} className={iconButtonBase} title="Clear">
+                  <X size={TYPOGRAPHY.toggleIconSize} />
                 </button>
               </div>
             </div>
+            <textarea
+              value={fields.brandDescription}
+              onChange={(e) => updateField("brandDescription", e.target.value)}
+              placeholder="Describe your brand's mission, values, and what makes it unique..."
+              rows={4}
+              className={`${inputBase} ${getFieldBorder("brandDescription")} ${isGenerated("brandDescription") ? "text-bb-ai-active-ring" : ""}`}
+              disabled={isLocked}
+            />
             {fieldSuggestions?.brandDescription && fieldSuggestions.brandDescription.length > 0 && (
               <div className="mt-1.5 rounded-md border border-border/50 bg-white shadow-sm max-h-32 overflow-y-auto">
                 {fieldSuggestions.brandDescription.map((s, idx) => (
-                  <button
-                    key={idx}
-                    type="button"
-                    onClick={() => updateField("brandDescription", s)}
-                    className="w-full text-left px-2.5 py-1.5 text-[12px] hover:bg-muted/40 text-foreground/80"
-                  >
-                    {s}
-                  </button>
+                  <button key={idx} type="button" onClick={() => updateField("brandDescription", s)}
+                    className="w-full text-left px-2.5 py-1.5 text-[12px] hover:bg-muted/40 text-foreground/80">{s}</button>
                 ))}
               </div>
             )}
           </div>
 
           {/* Applications */}
-          <div>
-            <label className="block text-[11px] font-medium text-muted-foreground/60 uppercase tracking-wider mb-1.5">
-              Applications
-            </label>
-            <div className={fieldShell}>
-              <CapsuleTagInput
-                tags={applications}
-                onTagsChange={updateApplications}
-                placeholder="Business Card, Packaging, Website, Signage"
-                disabled={isGenerating || isAutoCompleting}
-                generated={isGenerated("applications")}
-                className={`border rounded-lg pr-8 ${isGenerated("applications") ? "border-blue-200" : fieldBorderClass}`}
-              />
-              <div className={fieldControlsBase}>
-                <button
-                  type="button"
-                  onClick={handleClearApplications}
-                  disabled={isGenerating || isAutoCompleting}
-                  className={iconButtonBase}
-                  title="Clear all"
-                >
-                  <X size={11} />
+          <div className={fieldShell}>
+            <div className={labelRowClass}>
+              <label className={labelClass} style={{ fontSize: TYPOGRAPHY.queueLabel.fontSize }}>Applications</label>
+              <div className={labelActionsClass}>
+                {onFieldAutoFill && (
+                  <button type="button" onClick={() => onFieldAutoFill("applications", fields)} disabled={isLocked}
+                    className={`${iconButtonBase} ${autoFillingFieldKey === "applications" ? "text-bb-ai-active-ring" : ""}`} title="Auto-fill this field">
+                    {autoFillingFieldKey === "applications" ? <div className="w-3 h-3 border-[1.5px] border-bb-ai-affordance-border border-t-bb-ai-active-ring rounded-full animate-spin" /> : <Sparkles size={TYPOGRAPHY.toggleIconSize} />}
+                  </button>
+                )}
+                <button type="button" onClick={() => handleClearField("applications")} disabled={isLocked} className={iconButtonBase} title="Clear all">
+                  <X size={TYPOGRAPHY.toggleIconSize} />
                 </button>
               </div>
             </div>
-            <p className="text-[11px] text-muted-foreground/50 mt-1.5 leading-relaxed">
-              Press Enter or comma to add. Any number of mockups allowed.
-            </p>
+            <CapsuleTagInput
+              tags={fields.applications ? fields.applications.split(",").map((a) => a.trim()).filter(Boolean) : []}
+              onTagsChange={(tags) => updateField("applications", tags.join(", "))}
+              placeholder="Business Card, Packaging, Website, Signage"
+              disabled={isLocked}
+              generated={isGenerated("applications")}
+              className={`border rounded-lg ${isGenerated("applications") ? "border-bb-ai-affordance-border bg-bb-ai-affordance-bg" : getFieldBorder("applications")}`}
+            />
           </div>
         </div>
       </div>
@@ -596,6 +484,7 @@ export const BrandContext = forwardRef<BrandContextRef, BrandContextProps>(funct
           onGenerate={handleAutoComplete}
           isGenerating={isGenerating}
           isAutoCompleting={isAutoCompleting}
+          isLocked={anyFieldAutoFilling}
           showAutoComplete={!!onAutoComplete}
         />
       )}
@@ -609,50 +498,54 @@ export const BrandSummaryForm = BrandContext;
 export interface BrandSummaryPanelProps {
   onClose: () => void;
 
-  brandData: BrandData;
-  phase: BrandSummaryPhase;
+  brandSummary: BrandSummaryData;
+  projectPhase: "empty" | "curating";
+  isGenerating: boolean;
   onBrandSummarySubmit: (fields: BrandSummaryFields) => void;
   isBrandGenerating: boolean;
-  onApplicationsChange: (apps: string[]) => void;
   onAutoComplete: (fields: BrandSummaryFields) => void;
   isAutoCompleting: boolean;
   generatedBriefFields: Set<BriefGeneratedKey>;
   onClearGeneratedField: (key: BriefGeneratedKey) => void;
   onFieldChange?: (fields: BrandSummaryFields) => void;
+  onFieldAutoFill?: (key: BriefFieldKey, fields: BrandSummaryFields) => void;
+  autoFillingFieldKey?: BriefFieldKey | null;
 }
 
 export function BrandSummaryPanel({
   onClose,
 
-  brandData,
-  phase,
+  brandSummary,
+  projectPhase,
+  isGenerating,
   onBrandSummarySubmit,
   isBrandGenerating,
-  onApplicationsChange,
   onAutoComplete,
   isAutoCompleting,
   generatedBriefFields,
   onClearGeneratedField,
   onFieldChange,
+  onFieldAutoFill,
+  autoFillingFieldKey,
 }: BrandSummaryPanelProps) {
   const brandSummaryRef = useRef<BrandSummaryRef | null>(null);
 
   return (
     <div
-      className="absolute right-3 top-[60px] bottom-20 z-20 flex flex-col bg-white rounded-2xl shadow-xl border border-border/60 overflow-hidden"
-      style={{ width: LAYOUT.SIDE_PANEL_WIDTH }}
+      className={`absolute right-3 bottom-3 z-30 flex flex-col bg-white rounded-2xl shadow-xl border border-border/60 overflow-hidden`}
+      style={{ width: LAYOUT.SIDE_PANEL_WIDTH, top: LAYOUT.BOARD_PANEL_TOP }}
     >
       {/* Header: fixed Brand Summary title */}
       <div className="flex items-center gap-2 px-4 py-3 border-b border-border/40 shrink-0">
         <div className="flex items-center gap-2 min-w-0 flex-1">
           <h1
-            className="text-[15px] text-foreground cursor-default truncate"
-            style={{ fontWeight: 600 }}
+            className="text-foreground cursor-default truncate"
+            style={{ fontSize: TYPOGRAPHY.panelHeading.fontSize, fontWeight: TYPOGRAPHY.panelHeading.fontWeight }}
           >
             Brand Summary
           </h1>
           {(isBrandGenerating || isAutoCompleting) && (
-            <div className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-muted text-[11px] text-muted-foreground shrink-0">
+            <div className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-muted text-muted-foreground shrink-0" style={{ fontSize: TYPOGRAPHY.queueLabel.fontSize }}>
               <div className="w-3 h-3 border-2 border-muted-foreground/40 border-t-muted-foreground rounded-full animate-spin" />
               <span>
                 {isBrandGenerating ? "Generating…" : "Auto completing…"}
@@ -666,16 +559,17 @@ export function BrandSummaryPanel({
       <div className="flex-1 min-h-0 overflow-y-auto">
         <BrandSummaryForm
           ref={brandSummaryRef}
-          brandData={brandData}
-          phase={phase}
+          brandSummary={brandSummary}
+          projectPhase={projectPhase}
           onSubmit={onBrandSummarySubmit}
-          isGenerating={isBrandGenerating}
-          onApplicationsChange={onApplicationsChange}
+          isGenerating={isGenerating || isBrandGenerating}
           onAutoComplete={onAutoComplete}
           isAutoCompleting={isAutoCompleting}
           generatedBriefFields={generatedBriefFields}
           onClearGeneratedField={onClearGeneratedField}
           onFieldChange={onFieldChange}
+          onFieldAutoFill={onFieldAutoFill}
+          autoFillingFieldKey={autoFillingFieldKey}
           embedded
           contentOnly
         />
@@ -701,6 +595,7 @@ export function BrandSummaryPanel({
         }}
         isGenerating={isBrandGenerating}
         isAutoCompleting={isAutoCompleting}
+        isLocked={autoFillingFieldKey !== null}
       />
     </div>
   );

@@ -1,20 +1,22 @@
-import React, { useState, useCallback } from "react";
-import { Sparkles, GripVertical, Upload } from "lucide-react";
-import { LAYOUT, CARD_LABELS as LABELS } from "../../utils/design-tokens";
+import React, { useState, useCallback, useRef, useEffect } from "react";
+import { GripVertical, Upload } from "lucide-react";
+import { LAYOUT, CANVAS, TYPOGRAPHY, ELEMENT_TYPE_LABELS as LABELS, adaptiveSize } from "../../utils/design-tokens";
+import type { SlotPosition } from "../curation-board";
 import { getMergeHint, isMergeSupported } from "../../utils/merge-logic";
 import { IMAGE_ELEMENT_IDS } from "../../types/project";
 import type { ElementId } from "../../types/project";
-import { CardWrapper } from "../brand-cards";
-import type { CardState } from "../brand-cards";
+import { ElementWrapper } from "../brand-cards";
+import type { VariationState } from "../brand-cards";
 import type { VariationItem } from "../variations-panel";
-import type { BrandData } from "../../types/brand";
 import { QueueAffordanceSlot } from "./QueueAffordanceSlot";
 import type { QueueColors } from "./QueueAffordanceSlot";
+import { QueueBodyDropBlock } from "./QueueBodyDropBlock";
 import { AddVariationSlot } from "./AddVariationSlot";
 import { VariationSlot } from "./VariationSlot";
 
 interface ElementQueueProps {
-  cardId: string;
+  elementType: string;
+  queueIndex: number;
   zoom: number;
   pan: { x: number; y: number };
   containerWidth: number;
@@ -26,56 +28,77 @@ interface ElementQueueProps {
   isQueueReorderDragging: boolean;
   isQueueReorderDropTarget: boolean;
   draggedId: string | null;
-  mergeTarget: { cardId: string; varId: string } | null;
+  mergeTarget: { elementType: string; variationId: string } | null;
   queueMergeTarget: string | null;
   checkedVariationIds: Set<string>;
-  brandBrief?: BrandData["brandBrief"];
-  cardElMapRef: React.RefObject<Map<string, HTMLDivElement>>;
+  brandBrief?: { name?: string; tagline?: string; description?: string };
+  variationElMapRef: React.RefObject<Map<string, HTMLDivElement>>;
+  slotPositionMapRef: React.RefObject<Map<string, SlotPosition>>;
+  filmstripScrollMapRef: React.RefObject<Map<string, number>>;
+  onFilmstripScroll: React.Dispatch<React.SetStateAction<number>>;
   // Drag merge handlers
-  onDragStart: (e: React.DragEvent<HTMLDivElement>, cardId: string, varId: string) => void;
+  onDragStart: (e: React.DragEvent<HTMLDivElement>, elementType: string, variationId: string) => void;
   onDragEnd: () => void;
-  onDragOver: (e: React.DragEvent<HTMLDivElement>, targetCardId: string, targetVarId: string) => void;
-  onDragLeave: (e: React.DragEvent<HTMLDivElement>, targetCardId: string, targetVarId: string) => void;
+  onDragOver: (e: React.DragEvent<HTMLDivElement>, targetElementType: string, targetVariationId: string) => void;
+  onDragLeave: (e: React.DragEvent<HTMLDivElement>, targetElementType: string, targetVariationId: string) => void;
   onDrop: (e: React.DragEvent<HTMLDivElement>) => void;
-  isQueueSlotDropValid: (dragSourceId: string, targetQueueCardId: string) => boolean;
-  onQueueSlotDragOver: (e: React.DragEvent<HTMLDivElement>, targetQueueCardId: string) => void;
-  onQueueSlotDragLeave: (e: React.DragEvent<HTMLDivElement>, targetQueueCardId: string) => void;
-  onQueueSlotDrop: (e: React.DragEvent<HTMLDivElement>, targetQueueCardId: string) => void;
+  isQueueSlotDropValid: (dragSourceElementType: string, targetElementType: string) => boolean;
+  onQueueSlotDragOver: (e: React.DragEvent<HTMLDivElement>, targetElementType: string) => void;
+  onQueueSlotDragLeave: (e: React.DragEvent<HTMLDivElement>, targetElementType: string) => void;
+  onQueueSlotDrop: (e: React.DragEvent<HTMLDivElement>, targetElementType: string) => void;
+  queueBodyDropTarget?: string | null;
+  isQueueBodyDropValid?: (source: string, target: string) => boolean;
+  onQueueBodyDragOver?: (e: React.DragEvent<HTMLDivElement>, targetElementType: string) => void;
+  onQueueBodyDragLeave?: (e: React.DragEvent<HTMLDivElement>, targetElementType: string) => void;
+  onQueueBodyDrop?: (e: React.DragEvent<HTMLDivElement>, targetElementType: string) => void;
   // Queue reorder handlers
-  onQueueReorderDragStart: (e: React.DragEvent<HTMLDivElement>, cardId: string) => void;
+  onQueueReorderDragStart: (e: React.DragEvent<HTMLDivElement>, elementType: string) => void;
   onQueueReorderDragEnd: () => void;
-  onQueueReorderDragOver: (e: React.DragEvent<HTMLDivElement>, cardId: string) => void;
-  onQueueReorderDragLeave: (e: React.DragEvent<HTMLDivElement>, cardId: string) => void;
-  onQueueReorderDrop: (e: React.DragEvent<HTMLDivElement>, targetCardId: string) => void;
-  // Card action handlers
-  onEditSave?: (componentId: string, patch: Partial<BrandData>) => void;
-  onRefresh?: (componentId: string) => void;
+  onQueueReorderDragOver: (e: React.DragEvent<HTMLDivElement>, elementType: string) => void;
+  onQueueReorderDragLeave: (e: React.DragEvent<HTMLDivElement>, elementType: string) => void;
+  onQueueReorderDrop: (e: React.DragEvent<HTMLDivElement>, targetElementType: string) => void;
+  // Variation action handlers
+  onEditSave?: (elementId: string, data: unknown) => void;
+  onAddVariation?: (elementType: string, sourceVariationId?: string | null) => void;
   onToggleVariationChecked?: (variationId: string, peerVariationIds: string[]) => void;
-  onDeleteVariation?: (componentId: string, variationId: string) => void;
-  // Add variation
-  onAddVariation?: () => void;
+  onDeleteVariation?: (elementType: string, variationId: string) => void;
   isAddingVariation?: boolean;
-  // Upload variation (image cards only)
+  /** True when initial brand generation is in progress (empty queues show "Brewing…") */
+  isGeneratingPhase?: boolean;
+  // Upload variation (image element types only)
   onUploadVariation?: (file: File) => void;
+  uploadingVariationIds?: Set<string>;
   // Comment mode
   commentMode?: boolean;
-  commentTarget?: { cardId: string; varId: string } | null;
-  onCommentClick?: (cardId: string, varId: string) => void;
+  commentTarget?: { elementType: string; variationId: string } | null;
+  onCommentClick?: (elementType: string, variationId: string) => void;
+  // Keyboard variation reorder
+  onMoveVariation?: (elementType: string, variationId: string, direction: "left" | "right") => void;
 }
 
-const EQ_ACTIVE_COLOR: QueueColors = {
+const EQ_ACTIVE_COLOR: QueueColors & { bgHover: string } = {
   bg: "var(--bb-user-active-bg)",
+  bgHover: "var(--bb-user-active-bg-hover)",
   border: "var(--bb-user-active-border)",
   accent: "var(--bb-user-active-accent)",
 };
-const EQ_INACTIVE_COLOR: QueueColors = {
+const EQ_INACTIVE_COLOR: QueueColors & { bgHover: string } = {
   bg: "var(--bb-user-inactive-bg)",
+  bgHover: "var(--bb-user-inactive-bg-hover)",
   border: "var(--bb-user-inactive-border)",
   accent: "var(--bb-user-inactive-accent)",
 };
 
+const MERGE_TARGET_OVERLAY_STYLE = {
+  background: "var(--bb-ai-active-bg)",
+  boxShadow: "var(--bb-ai-ring-shadow)",
+  borderRadius: 12,
+  backdropFilter: "blur(1px)",
+} as const;
+
 export const ElementQueue = React.memo(function ElementQueue({
-  cardId,
+  elementType,
+  queueIndex,
   zoom,
   pan,
   containerWidth,
@@ -91,7 +114,10 @@ export const ElementQueue = React.memo(function ElementQueue({
   queueMergeTarget,
   checkedVariationIds,
   brandBrief,
-  cardElMapRef,
+  variationElMapRef,
+  slotPositionMapRef,
+  filmstripScrollMapRef,
+  onFilmstripScroll,
   onDragStart,
   onDragEnd,
   onDragOver,
@@ -101,43 +127,65 @@ export const ElementQueue = React.memo(function ElementQueue({
   onQueueSlotDragOver,
   onQueueSlotDragLeave,
   onQueueSlotDrop,
+  queueBodyDropTarget,
+  isQueueBodyDropValid,
+  onQueueBodyDragOver,
+  onQueueBodyDragLeave,
+  onQueueBodyDrop,
   onQueueReorderDragStart,
   onQueueReorderDragEnd,
   onQueueReorderDragOver,
   onQueueReorderDragLeave,
   onQueueReorderDrop,
   onEditSave,
-  onRefresh,
+  onAddVariation,
   onToggleVariationChecked,
   onDeleteVariation,
-  onAddVariation,
   isAddingVariation,
+  isGeneratingPhase,
   onUploadVariation,
+  uploadingVariationIds,
   commentMode,
   commentTarget,
   onCommentClick,
+  onMoveVariation,
 }: ElementQueueProps) {
   const [isLeftAreaHovered, setIsLeftAreaHovered] = useState(false);
   const [isFileDragOver, setIsFileDragOver] = useState(false);
+  const [isHovered, setIsHovered] = useState(false);
   const [imageAspectRatios, setImageAspectRatios] = useState<Record<string, number>>({});
+  const addSlotFileInputRef = useRef<HTMLInputElement>(null);
+  const filmstripRef = useRef<HTMLDivElement>(null);
 
-  const isImageCard = IMAGE_ELEMENT_IDS.has(cardId as ElementId);
+  const isImageElementType = IMAGE_ELEMENT_IDS.has(elementType as ElementId);
 
-  const sortedVersions = [...variations].sort(
-    (a, b) => b.createdAt.getTime() - a.createdAt.getTime()
+  const handleAddSlotFileChange = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (file) onUploadVariation?.(file);
+      e.target.value = "";
+    },
+    [onUploadVariation],
   );
-  const label = LABELS[cardId] ?? cardId;
-  const cardW = (cardId === "layout" || cardId === "art-style") ? Math.round(LAYOUT.CARD_SIZE * (16 / 9)) : LAYOUT.CARD_SIZE;
-  const cardH = LAYOUT.CARD_SIZE;
+
+  // variations are pre-sorted by the parent via useVariationReorder
+  const sortedVersions = variations;
+  const label = LABELS[elementType] ?? elementType;
+  const slotW = (elementType === "application" || elementType === "art-style") ? Math.round(LAYOUT.VARIATION_SLOT_SIZE * (16 / 9)) : LAYOUT.VARIATION_SLOT_SIZE;
+  const slotH = LAYOUT.VARIATION_SLOT_SIZE;
   const count = sortedVersions.length;
   const colors = isQueueActive ? EQ_ACTIVE_COLOR : EQ_INACTIVE_COLOR;
-  const labelScale = Math.min(Math.max(1 / zoom, 0.5), 3.5);
+  const labelScale = adaptiveSize(1, zoom, CANVAS.ACTION_BAR_SCALE_MIN, CANVAS.ACTION_BAR_SCALE_MAX);
 
   const vpLeftCanvas = -pan.x / zoom;
   const vpWidthCanvas = containerWidth > 0 ? containerWidth / zoom : 4000;
-  const queueStripeLeft = vpLeftCanvas - 200;
-  const queueStripeWidth = vpWidthCanvas + 400;
+  const queueStripeLeft = vpLeftCanvas - LAYOUT.QUEUE_STRIPE_OVERHANG;
+  const queueStripeWidth = vpWidthCanvas + 2 * LAYOUT.QUEUE_STRIPE_OVERHANG;
   const labelPinX = (8 - pan.x) / zoom;
+  // Filmstrip starts at the accent-bar x so overflow-x:auto clips cards there,
+  // preventing them from visually passing through the left queue boundary.
+  const filmstripMarginLeft = labelPinX - queueStripeLeft; // = 8/zoom + QUEUE_STRIPE_OVERHANG
+  const filmstripWidth = vpWidthCanvas - (filmstripMarginLeft - LAYOUT.QUEUE_STRIPE_OVERHANG); // = vpWidthCanvas - 8/zoom
 
   const handleImageAspectRatioChange = useCallback((variationId: string, aspectRatio: number) => {
     if (!Number.isFinite(aspectRatio) || aspectRatio <= 0) return;
@@ -149,13 +197,13 @@ export const ElementQueue = React.memo(function ElementQueue({
 
   const handleFileDragOver = useCallback(
     (e: React.DragEvent<HTMLDivElement>) => {
-      if (!isImageCard || !onUploadVariation) return;
+      if (!isImageElementType || !onUploadVariation) return;
       if (!e.dataTransfer.types.includes("Files")) return;
       e.preventDefault();
       e.stopPropagation();
       setIsFileDragOver(true);
     },
-    [isImageCard, onUploadVariation],
+    [isImageElementType, onUploadVariation],
   );
 
   const handleFileDragLeave = useCallback(
@@ -170,7 +218,7 @@ export const ElementQueue = React.memo(function ElementQueue({
 
   const handleFileDrop = useCallback(
     (e: React.DragEvent<HTMLDivElement>) => {
-      if (!isImageCard || !onUploadVariation) return;
+      if (!isImageElementType || !onUploadVariation) return;
       if (!e.dataTransfer.types.includes("Files")) return;
       e.preventDefault();
       e.stopPropagation();
@@ -181,8 +229,56 @@ export const ElementQueue = React.memo(function ElementQueue({
         onUploadVariation(file);
       }
     },
-    [isImageCard, onUploadVariation],
+    [isImageElementType, onUploadVariation],
   );
+
+  // ── Populate slot position registry (synchronous ref write) ──
+  // Runs every render so the noodle math always has fresh layout data.
+  {
+    const gap = LAYOUT.FILMSTRIP_GAP;
+    let acc = 0;
+    for (const variation of sortedVersions) {
+      const hasImage = Boolean((variation.data as { imageUrl?: string } | null)?.imageUrl);
+      const ar = imageAspectRatios[variation.id] ?? 1;
+      const dynW = Math.max(
+        Math.round(slotH * 0.5),
+        Math.round((slotH - LAYOUT.VARIATION_SLOT_PADDING_X) * ar + LAYOUT.VARIATION_SLOT_PADDING_X),
+      );
+      const w = hasImage ? dynW : slotW;
+      slotPositionMapRef.current.set(variation.id, { queueIndex, offsetInFilmstrip: acc, slotWidth: w });
+      acc += w + gap;
+    }
+  }
+
+  // ── Filmstrip scroll listener ──
+  useEffect(() => {
+    const el = filmstripRef.current;
+    if (!el) return;
+    const handler = () => {
+      filmstripScrollMapRef.current.set(elementType, el.scrollLeft);
+      onFilmstripScroll((t) => t + 1);
+    };
+    el.addEventListener("scroll", handler, { passive: true });
+    return () => el.removeEventListener("scroll", handler);
+  }, [elementType, filmstripScrollMapRef, onFilmstripScroll]);
+
+  // ── Keyboard variation reorder ──
+  useEffect(() => {
+    if (!isHovered || !activeVariationId || !onMoveVariation || draggedId !== null || commentMode) return;
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+      e.preventDefault();
+      onMoveVariation(
+        elementType,
+        activeVariationId,
+        e.key === "ArrowLeft" ? "left" : "right",
+      );
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isHovered, activeVariationId, onMoveVariation, elementType, draggedId, commentMode]);
 
   return (
     <div
@@ -192,25 +288,33 @@ export const ElementQueue = React.memo(function ElementQueue({
         opacity: isQueueReorderDragging ? 0.35 : isDragSource ? 0.55 : 1,
         transition: "opacity 0.15s ease, box-shadow 0.2s ease",
       }}
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
       onDragOver={(e) => {
         if (e.dataTransfer.types.includes("Files")) {
           handleFileDragOver(e);
+        } else if (draggedId && draggedId !== elementType && isImageElementType && isQueueBodyDropValid?.(draggedId, elementType)) {
+          onQueueBodyDragOver?.(e, elementType);
         } else {
-          onQueueReorderDragOver(e, cardId);
+          onQueueReorderDragOver(e, elementType);
         }
       }}
       onDragLeave={(e) => {
         if (isFileDragOver) {
           handleFileDragLeave(e);
+        } else if (queueBodyDropTarget === elementType) {
+          onQueueBodyDragLeave?.(e, elementType);
         } else {
-          onQueueReorderDragLeave(e, cardId);
+          onQueueReorderDragLeave(e, elementType);
         }
       }}
       onDrop={(e) => {
         if (e.dataTransfer.types.includes("Files")) {
           handleFileDrop(e);
+        } else if (queueBodyDropTarget === elementType) {
+          onQueueBodyDrop?.(e, elementType);
         } else {
-          onQueueReorderDrop(e, cardId);
+          onQueueReorderDrop(e, elementType);
         }
       }}
     >
@@ -219,21 +323,21 @@ export const ElementQueue = React.memo(function ElementQueue({
         <div
           className="absolute inset-0 z-40 flex items-center justify-center pointer-events-none"
           style={{
-            background: "rgba(139, 92, 246, 0.08)",
-            border: "2px dashed var(--bb-ai-active-ring)",
+            border: "2px dashed var(--bb-user-active-accent)",
             borderRadius: 8,
           }}
-        >
-          <div className="flex items-center gap-2 px-4 py-2 rounded-lg bg-white/90 shadow-sm">
-            <Upload size={16} style={{ color: "var(--bb-ai-active-ring)" }} />
-            <span
-              className="text-[12px]"
-              style={{ fontWeight: 600, color: "var(--bb-ai-active-ring)" }}
-            >
-              Drop image to add as variation
-            </span>
-          </div>
-        </div>
+        />
+      )}
+
+      {/* Variation move overlay */}
+      {queueBodyDropTarget === elementType && (
+        <div
+          className="absolute inset-0 z-40 flex items-center justify-center pointer-events-none"
+          style={{
+            border: "2px dashed var(--bb-user-active-accent)",
+            borderRadius: 8,
+          }}
+        />
       )}
 
       {isQueueReorderDropTarget && (
@@ -257,9 +361,10 @@ export const ElementQueue = React.memo(function ElementQueue({
         <div
           className="absolute inset-0 pointer-events-none"
           style={{
-            background: colors.bg,
+            background: isHovered ? colors.bgHover : colors.bg,
             borderTop: `1px solid ${colors.border}`,
             borderBottom: `1px solid ${colors.border}`,
+            transition: "background 0.15s ease",
           }}
         />
 
@@ -280,26 +385,27 @@ export const ElementQueue = React.memo(function ElementQueue({
           >
             <div
               draggable
-              onDragStart={(e) => onQueueReorderDragStart(e, cardId)}
+              onDragStart={(e) => onQueueReorderDragStart(e, elementType)}
               onDragEnd={onQueueReorderDragEnd}
               className="flex-shrink-0 flex items-center justify-center w-5 h-5 rounded cursor-grab active:cursor-grabbing hover:bg-black/[0.06] transition-colors group"
               title="Drag to reorder"
-              data-card-slot
+              data-variation-slot
             >
               <GripVertical size={11} className="text-muted-foreground/40 group-hover:text-muted-foreground/70 transition-colors" />
             </div>
 
             <span
-              className="select-none whitespace-nowrap text-[14px]"
-              style={{ fontWeight: 600, color: colors.accent }}
+              className="select-none whitespace-nowrap"
+              style={{ fontSize: TYPOGRAPHY.cardTagline.fontSize, fontWeight: 600, color: colors.accent }}
             >
               {label}
             </span>
 
             {count > 1 && (
               <span
-                className="text-[9px] px-1.5 py-0.5 rounded-full select-none whitespace-nowrap"
+                className="px-1.5 py-0.5 rounded-full select-none whitespace-nowrap"
                 style={{
+                  fontSize: TYPOGRAPHY.badge.fontSize,
                   fontWeight: 600,
                   color: colors.accent,
                   background: `${colors.accent}14`,
@@ -314,18 +420,17 @@ export const ElementQueue = React.memo(function ElementQueue({
 
         {/* Filmstrip cards */}
         <div
+          ref={filmstripRef}
           data-filmstrip
-          className="relative flex gap-4 overflow-x-auto"
+          className="relative flex gap-4 overflow-x-auto bb-scrollbar-hide-x"
           style={{
-            marginLeft: 200,
-            width: vpWidthCanvas,
+            marginLeft: filmstripMarginLeft,
+            width: filmstripWidth,
             boxSizing: "border-box",
-            paddingLeft: 156,
-            paddingRight: 40,
-            paddingTop: 24,
-            paddingBottom: 8,
-            scrollbarWidth: "thin",
-            scrollbarColor: "var(--bb-scrollbar-thumb) var(--bb-scrollbar-track)",
+            paddingLeft: LAYOUT.FILMSTRIP_PADDING_LEFT,
+            paddingRight: LAYOUT.VARIATION_SLOT_PADDING_X,
+            paddingTop: LAYOUT.FILMSTRIP_PADDING_TOP,
+            paddingBottom: LAYOUT.FILMSTRIP_PADDING_BOTTOM,
           }}
         >
           {/* Add variation hover zone — sized exactly to the card footprint to prevent premature trigger */}
@@ -333,111 +438,131 @@ export const ElementQueue = React.memo(function ElementQueue({
             <div
               style={{
                 position: "absolute",
-                left: 16,
-                top: 24,
-                width: 124,
-                height: LAYOUT.CARD_SIZE,
+                left: LAYOUT.ADD_SLOT_LEFT_OFFSET,
+                top: LAYOUT.FILMSTRIP_PADDING_TOP,
+                width: LAYOUT.ADD_SLOT_WIDTH,
+                height: LAYOUT.VARIATION_SLOT_SIZE,
                 zIndex: 14,
               }}
               onMouseEnter={() => setIsLeftAreaHovered(true)}
               onMouseLeave={() => setIsLeftAreaHovered(false)}
             >
+              {isImageElementType && onUploadVariation && (
+                <input
+                  ref={addSlotFileInputRef}
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={handleAddSlotFileChange}
+                  aria-hidden
+                />
+              )}
               {(isLeftAreaHovered || isAddingVariation) && (
                 <AddVariationSlot
                   label={label}
                   colors={colors}
                   isLoading={isAddingVariation ?? false}
-                  isAvailable={isQueueActive}
-                  onClick={onAddVariation}
-                  isImageCard={isImageCard}
+                  onClick={() => onAddVariation?.(elementType)}
+                  isImageElementType={isImageElementType}
                   onUploadImage={onUploadVariation}
+                  onTriggerUpload={
+                    isImageElementType && onUploadVariation
+                      ? () => addSlotFileInputRef.current?.click()
+                      : undefined
+                  }
                 />
               )}
             </div>
           )}
 
           {/* Queue-level affordance slot */}
-          {draggedId !== null && isQueueSlotDropValid(draggedId, cardId) && (
+          {draggedId !== null && isQueueSlotDropValid(draggedId, elementType) && !(isImageElementType && draggedId === elementType) && (
             <QueueAffordanceSlot
-              isHovered={queueMergeTarget === cardId}
+              isHovered={queueMergeTarget === elementType}
+              isMerge={draggedId !== elementType}
               hintText={
-                draggedId === cardId
-                  ? "Regenerate"
-                  : getMergeHint(draggedId, cardId)
+                draggedId === elementType
+                  ? "Add variation"
+                  : getMergeHint(draggedId, elementType)
               }
               colors={colors}
-              onDragOver={(e) => onQueueSlotDragOver(e, cardId)}
-              onDragLeave={(e) => onQueueSlotDragLeave(e, cardId)}
-              onDrop={(e) => onQueueSlotDrop(e, cardId)}
+              zoom={zoom}
+              onDragOver={(e) => onQueueSlotDragOver(e, elementType)}
+              onDragLeave={(e) => onQueueSlotDragLeave(e, elementType)}
+              onDrop={(e) => onQueueSlotDrop(e, elementType)}
             />
           )}
 
-          {sortedVersions.length === 0 && (
-            <div className="flex-shrink-0 relative" style={{ width: cardW, height: cardH }} data-card-slot>
-              <CardWrapper label={label} state="waiting"><div /></CardWrapper>
+          {sortedVersions.length === 0 && (isAddingVariation || isGeneratingPhase) && (
+            <div className="flex-shrink-0 relative" style={{ width: slotW, height: slotH }} data-variation-slot>
+              <ElementWrapper label={label} state="waiting"><div /></ElementWrapper>
             </div>
           )}
 
           {sortedVersions.map((variation) => {
             const isActive = variation.id === activeVariationId;
             const isThisMergeTarget =
-              mergeTarget?.cardId === cardId && mergeTarget?.varId === variation.id;
+              mergeTarget?.elementType === elementType && mergeTarget?.variationId === variation.id;
             const isThisCommentTarget =
-              commentTarget?.cardId === cardId && commentTarget?.varId === variation.id;
+              commentTarget?.elementType === elementType && commentTarget?.variationId === variation.id;
             const showSlotAffordance =
               draggedId !== null &&
-              draggedId !== cardId &&
-              isMergeSupported(draggedId, cardId) &&
+              draggedId !== elementType &&
+              isMergeSupported(draggedId, elementType) &&
               !isThisMergeTarget;
 
-            const cardState: CardState =
+            const variationState: VariationState =
+              uploadingVariationIds?.has(variation.id) ? "uploading" :
               (isActive && isMerging) ? "merging" :
               showSlotAffordance ? "available" :
               checkedVariationIds.has(variation.id) ? "active" :
               "inactive";
             const hasImageData = Boolean((variation.data as { imageUrl?: string } | null)?.imageUrl);
             const imageAspectRatio = imageAspectRatios[variation.id] ?? 1;
-            const dynamicCardW = Math.max(Math.round(cardH * 0.5), Math.round(cardH * imageAspectRatio));
-            const slotWidth = hasImageData ? dynamicCardW : cardW;
+            const dynamicCardW = Math.max(
+              Math.round(slotH * 0.5),
+              Math.round((slotH - LAYOUT.VARIATION_SLOT_PADDING_X) * imageAspectRatio + LAYOUT.VARIATION_SLOT_PADDING_X)
+            );
+            const slotWidth = hasImageData ? dynamicCardW : slotW;
 
             return (
               <div
                 ref={(el) => {
-                  if (el) cardElMapRef.current.set(variation.id, el);
-                  else cardElMapRef.current.delete(variation.id);
+                  if (el) variationElMapRef.current.set(variation.id, el);
+                  else variationElMapRef.current.delete(variation.id);
                 }}
                 key={variation.id}
-                data-card-slot
-                className={`flex-shrink-0 relative group/card${commentMode && !isThisCommentTarget ? " comment-mode-card" : ""}`}
+                data-variation-slot
+                className={`flex-shrink-0 relative group/variation${commentMode && !isThisCommentTarget ? " comment-mode-variation" : ""}`}
                 style={{
                   width: slotWidth,
-                  height: cardH,
+                  height: slotH,
                   ...(isThisCommentTarget ? {
-                    boxShadow: "0 0 0 2.5px #3b82f6, 0 0 0 5px rgba(59,130,246,0.18)",
+                    boxShadow: `0 0 0 2.5px var(--bb-user-active-accent), 0 0 0 5px var(--bb-user-active-border)`,
                     borderRadius: 12,
                   } : {}),
                 }}
-                draggable={!commentMode}
+                draggable={!commentMode && !uploadingVariationIds?.has(variation.id)}
                 onClick={commentMode ? (e) => {
                   e.stopPropagation();
-                  onCommentClick?.(cardId, variation.id);
+                  onCommentClick?.(elementType, variation.id);
                 } : undefined}
-                onDragStart={commentMode ? undefined : (e) => onDragStart(e, cardId, variation.id)}
+                onDragStart={commentMode ? undefined : (e) => onDragStart(e, elementType, variation.id)}
                 onDragEnd={commentMode ? undefined : onDragEnd}
-                onDragOver={(e) => onDragOver(e, cardId, variation.id)}
-                onDragLeave={(e) => onDragLeave(e, cardId, variation.id)}
+                onDragOver={(e) => onDragOver(e, elementType, variation.id)}
+                onDragLeave={(e) => onDragLeave(e, elementType, variation.id)}
                 onDrop={onDrop}
               >
                 <VariationSlot
-                  cardId={cardId}
+                  elementType={elementType}
                   variation={variation}
                   isActive={isActive}
                   canDelete={sortedVersions.length > 1}
-                  cardState={cardState}
+                  variationState={variationState}
                   peerVariationIds={sortedVersions.map((v) => v.id).filter((id) => id !== variation.id)}
                   brandBrief={brandBrief}
                   onEditSave={onEditSave}
-                  onRefresh={onRefresh}
+                  onAddVariation={onAddVariation}
                   onToggleVariationChecked={onToggleVariationChecked}
                   onDeleteVariation={onDeleteVariation}
                   onImageAspectRatioChange={handleImageAspectRatioChange}
@@ -445,29 +570,22 @@ export const ElementQueue = React.memo(function ElementQueue({
 
                 {isThisMergeTarget && (
                   <div
-                    className="absolute inset-0 z-30 rounded-xl flex flex-col items-center justify-center gap-2 pointer-events-none"
-                    style={{
-                      background: "var(--bb-ai-active-bg)",
-                      boxShadow:
-                        "0 0 0 2px var(--bb-ai-active-ring), 0 0 0 5px var(--bb-ai-active-ring-outer)",
-                      borderRadius: 12,
-                      backdropFilter: "blur(1px)",
-                    }}
-                  >
-                    <div className="w-10 h-10 rounded-full bg-violet-500 flex items-center justify-center shadow-lg">
-                      <Sparkles size={18} className="text-white" />
-                    </div>
-                    <span
-                      className="text-[11px] text-violet-700 px-2 py-0.5 rounded-full bg-white/80 shadow-sm"
-                      style={{ fontWeight: 700, letterSpacing: "0.04em" }}
-                    >
-                      {getMergeHint(draggedId ?? "", cardId)}
-                    </span>
-                  </div>
+                    className="absolute inset-0 z-30 rounded-xl pointer-events-none"
+                    style={MERGE_TARGET_OVERLAY_STYLE}
+                  />
                 )}
               </div>
             );
           })}
+
+          {/* Queue body drop block: file upload affordance */}
+          {isImageElementType && onUploadVariation && (
+            <QueueBodyDropBlock
+              colors={colors}
+              isImageElementType={true}
+              onUploadFile={onUploadVariation}
+            />
+          )}
         </div>
       </div>
     </div>

@@ -1,17 +1,20 @@
 import { callApi } from "./apiClient";
-import type { CardMeta } from "../types/project";
+import type { VariationMeta } from "../types/project";
+
+const IMAGE_GEN_TIMEOUT_MS = 120_000;
+const ART_DIRECTOR_LOGO_STYLE_TIMEOUT_MS = 150_000;
+const ART_DIRECTOR_LAYOUT_TIMEOUT_MS = 180_000;
 
 export type ImageCardType =
   | "logo"
-  | "layout"
+  | "application"
   | "art-style"
   | "visual-snapshot";
 
 export interface ImageGenContext {
   brandName?: string;
   brandDescription?: string;
-  conceptName?: string;
-  conceptPoints?: string[];
+  conceptPhrases?: string[];
   keywords?: string[];
   colorPalette?: string[];
   /** Optional merge action hint to steer the prompt, e.g. "Apply palette to logo" */
@@ -26,7 +29,7 @@ export interface ImageGenContext {
 
 export interface ImageGenResult {
   imageUrl: string;
-  _meta?: CardMeta;
+  _meta?: VariationMeta;
 }
 
 export interface VisualSnapshotFromElementsParams {
@@ -57,7 +60,7 @@ export async function generateBrandImage(
 ): Promise<ImageGenResult> {
   const data = await callApi<{ imageUrl?: string; _meta?: ImageGenResult["_meta"] }>(
     "generate-image",
-    { body: { cardType, ...ctx }, timeoutMs: 90_000 },
+    { body: { cardType, ...ctx }, timeoutMs: IMAGE_GEN_TIMEOUT_MS },
   );
   if (!data.imageUrl) throw new Error("No imageUrl in server response");
   return { imageUrl: data.imageUrl, _meta: data._meta };
@@ -77,7 +80,7 @@ export async function generateMergeImage(
 ): Promise<ImageGenResult> {
   const data = await callApi<{ imageUrl?: string; _meta?: ImageGenResult["_meta"] }>(
     "visual-designer/merge-generate",
-    { body: { cardType, ...ctx }, timeoutMs: 90_000 },
+    { body: { cardType, ...ctx }, timeoutMs: IMAGE_GEN_TIMEOUT_MS },
   );
   if (!data.imageUrl) throw new Error("No imageUrl in server response");
   return { imageUrl: data.imageUrl, _meta: data._meta };
@@ -91,32 +94,34 @@ export interface DesignBriefContext {
   description?: string;
   targetAudience?: string;
   keywords?: string[];
-  visualConcept?: { conceptName: string; points: string[] };
+  visualConcept?: string[];
   colorPalette?: string[];
   font?: { titleFont: string; bodyFont: string };
   artStyleImageUrl?: string;
   logoImageUrl?: string;
+  /** Touchpoint name for application mockup generation (e.g. "Business Card", "Packaging") */
+  application?: string;
 }
 
 export interface PaletteFontsResult {
   colorPalette: string[];
   font: { titleFont: string; bodyFont: string };
-  _meta?: CardMeta;
+  _meta?: VariationMeta;
 }
 
 export interface LogoStyleResult {
   artStyleImageUrl: string;
   logoImageUrl: string;
-  _meta?: CardMeta;
+  _meta?: VariationMeta;
 }
 
-export interface LayoutResult {
-  layoutImageUrl: string;
-  _meta?: CardMeta;
+export interface ApplicationResult {
+  applicationImageUrl: string;
+  _meta?: VariationMeta;
 }
 
 export async function designPaletteAndFonts(ctx: DesignBriefContext): Promise<PaletteFontsResult> {
-  const raw = await callApi<PaletteFontsResult & { _meta?: CardMeta }>(
+  const raw = await callApi<PaletteFontsResult & { _meta?: VariationMeta }>(
     "art-director/design-palette-fonts",
     { body: ctx, timeoutMs: 60_000 },
   );
@@ -124,19 +129,19 @@ export async function designPaletteAndFonts(ctx: DesignBriefContext): Promise<Pa
 }
 
 export async function designLogoAndStyle(ctx: DesignBriefContext): Promise<LogoStyleResult> {
-  const raw = await callApi<LogoStyleResult & { _meta?: CardMeta }>(
+  const raw = await callApi<LogoStyleResult & { _meta?: VariationMeta }>(
     "art-director/design-logo-style",
-    { body: ctx, timeoutMs: 90_000 },
+    { body: ctx, timeoutMs: ART_DIRECTOR_LOGO_STYLE_TIMEOUT_MS },
   );
   return { artStyleImageUrl: raw.artStyleImageUrl, logoImageUrl: raw.logoImageUrl, _meta: raw._meta };
 }
 
-export async function designLayout(ctx: DesignBriefContext): Promise<LayoutResult> {
-  const raw = await callApi<LayoutResult & { _meta?: CardMeta }>(
-    "art-director/design-layout",
-    { body: ctx, timeoutMs: 90_000 },
+export async function designApplication(ctx: DesignBriefContext): Promise<ApplicationResult> {
+  const raw = await callApi<ApplicationResult & { _meta?: VariationMeta }>(
+    "art-director/design-application",
+    { body: ctx, timeoutMs: ART_DIRECTOR_LAYOUT_TIMEOUT_MS },
   );
-  return { layoutImageUrl: raw.layoutImageUrl, _meta: raw._meta };
+  return { applicationImageUrl: raw.applicationImageUrl, _meta: raw._meta };
 }
 
 /**
@@ -155,7 +160,7 @@ export async function generateVisualSnapshotFromElements(
 
   const data = await callApi<{ imageUrl?: string; _meta?: ImageGenResult["_meta"] }>(
     "generate-image",
-    { body, timeoutMs: 90_000 },
+    { body, timeoutMs: IMAGE_GEN_TIMEOUT_MS },
   );
   if (!data.imageUrl) throw new Error("No imageUrl in server response");
   return { imageUrl: data.imageUrl, _meta: data._meta };
@@ -164,7 +169,7 @@ export async function generateVisualSnapshotFromElements(
 /**
  * Generates a single Brand in Context mockup image for a given application.
  * Uses the brand's visual snapshot (if available) as a reference image plus
- * the fixed prompt required by the guideline spec.
+ * the fixed prompt required by the direction spec.
  */
 export async function generateBrandContextMockup(
   params: BrandContextMockupParams,
@@ -185,7 +190,7 @@ export async function generateBrandContextMockup(
 
   const data = await callApi<{ imageUrl?: string; _meta?: ImageGenResult["_meta"] }>(
     "visual-designer/context",
-    { body, timeoutMs: 90_000 },
+    { body, timeoutMs: IMAGE_GEN_TIMEOUT_MS },
   );
   if (!data.imageUrl) throw new Error("No imageUrl in server response");
   return { imageUrl: data.imageUrl, _meta: data._meta };

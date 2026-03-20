@@ -1,5 +1,5 @@
-export type { GeneratedCardType, GeneratedCardItem, CardState, EditVariant, CardMeta } from "./types";
-export { CardWrapper } from "./CardWrapper";
+export type { GeneratedCardType, GeneratedCardItem, VariationState, EditVariant, VariationMeta } from "./types";
+export { ElementWrapper } from "./ElementWrapper";
 export { BrandBriefCard } from "./BrandBriefCard";
 export { ColorPaletteCard } from "./ColorPaletteCard";
 export { VisualConceptCard } from "./VisualConceptCard";

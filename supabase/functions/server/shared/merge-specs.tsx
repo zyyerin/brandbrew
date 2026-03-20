@@ -20,15 +20,15 @@ export const MERGE_SPECS: Record<string, Record<string, MergeSpec>> = {
     // image targets (hint only)
     "logo":             { mergeContext: "Apply palette to logo" },
     "texture":          { mergeContext: "Tint texture with brand colors" },
-    "layout":           { mergeContext: "Color-theme the layout" },
+    "application":      { mergeContext: "Apply palette to application mockup" },
     "visual-snapshot":  { mergeContext: "Infuse colors into snapshot" },
     "art-style":        { mergeContext: "Art style from palette mood" },
     // text targets
     "visual-concept": {
       mergeContext: "Embed palette into concept",
-      allowedFields: ["visualConcept.points"],
+      allowedFields: ["visualConcept"],
       instruction:
-        "Append ONE new point to visualConcept.points describing the color palette's emotional direction and how it anchors the visual identity. Do NOT change conceptName. Do NOT rewrite existing points. Just append.",
+        "You are given the current visualConcept (a single concept phrase) and a color palette. Generate 1 new concept phrase that blends the emotional direction of the color palette into the existing visual concept. Return ONLY valid JSON: {\"visualConcept\": \"new phrase here\"}.",
     },
     "font": {
       mergeContext: "Match typeface to palette mood",
@@ -49,7 +49,7 @@ export const MERGE_SPECS: Record<string, Record<string, MergeSpec>> = {
     // image targets (hint only)
     "logo":             { mergeContext: "Render concept as logo" },
     "texture":          { mergeContext: "Concept-driven texture" },
-    "layout":           { mergeContext: "Concept-inspired layout" },
+    "application":      { mergeContext: "Concept-inspired application mockup" },
     "visual-snapshot":  { mergeContext: "Snapshot of concept style" },
     "art-style":        { mergeContext: "Art style from concept" },
     // text targets
@@ -57,19 +57,19 @@ export const MERGE_SPECS: Record<string, Record<string, MergeSpec>> = {
       mergeContext: "Derive palette from concept",
       allowedFields: ["colorPalette"],
       instruction:
-        "Derive a cohesive 5-color hex palette that reflects the mood and aesthetic of the visual concept. Return only the colorPalette array. Do not change anything else.",
+        "Derive a cohesive palette of 3 to 5 hex colors that reflects the mood and aesthetic of the visual concept. Return only the colorPalette array. Do not change anything else.",
     },
     "font": {
       mergeContext: "Font from concept aesthetic",
       allowedFields: ["font.titleFont", "font.bodyFont"],
       instruction:
-        "Recommend a Google Fonts pairing whose aesthetic matches the visual concept. Change only titleFont and bodyFont.",
+        "Recommend a Google Fonts pairing whose aesthetic matches the visual concept phrases. Change only titleFont and bodyFont.",
     },
     "brand-brief": {
       mergeContext: "Concept-driven brand voice",
       allowedFields: ["brandBrief.description"],
       instruction:
-        "Append one sentence to brandBrief.description referencing the visual concept name and its first point. Do NOT change name or tagline.",
+        "Append one sentence to brandBrief.description referencing the visual concept phrases and their visual direction. Do NOT change name or tagline.",
     },
   },
 
@@ -81,9 +81,9 @@ export const MERGE_SPECS: Record<string, Record<string, MergeSpec>> = {
     // text targets
     "visual-concept": {
       mergeContext: "Typographic concept direction",
-      allowedFields: ["visualConcept.points"],
+      allowedFields: ["visualConcept"],
       instruction:
-        "Append ONE new point to visualConcept.points describing how the font pairing expresses the brand's typographic personality. Do NOT change conceptName or existing points.",
+        "You are given the current visualConcept (a single concept phrase) and a font pairing. Generate 1 new concept phrase that weaves in the typographic personality of the font pairing. Return ONLY valid JSON: {\"visualConcept\": \"new phrase here\"}.",
     },
     "brand-brief": {
       mergeContext: "Voice matched to typeface",
@@ -101,15 +101,15 @@ export const MERGE_SPECS: Record<string, Record<string, MergeSpec>> = {
     // text targets
     "visual-concept": {
       mergeContext: "Concept distilled from brief",
-      allowedFields: ["visualConcept.points"],
+      allowedFields: ["visualConcept"],
       instruction:
-        "Replace the second point in visualConcept.points with one that references the brand tagline and its essence. Do NOT change conceptName, the first point, or any other point.",
+        "You are given the current visualConcept (a single concept phrase) and a brand brief. Generate 1 new concept phrase that more directly reflects the brand's tagline and core positioning. Return ONLY valid JSON: {\"visualConcept\": \"new phrase here\"}.",
     },
     "color-palette": {
       mergeContext: "Brief-inspired palette",
       allowedFields: ["colorPalette"],
       instruction:
-        "Derive a cohesive 5-color hex palette inspired by the brand name, tagline, and description. Return only the colorPalette array.",
+        "Derive a cohesive palette of 3 to 5 hex colors inspired by the brand name, tagline, and description. Return only the colorPalette array.",
     },
     "font": {
       mergeContext: "Voice-matched typeface",
@@ -123,20 +123,20 @@ export const MERGE_SPECS: Record<string, Record<string, MergeSpec>> = {
   "logo": {
     // image targets (hint only)
     "texture":          { mergeContext: "Texture from logo material" },
-    "layout":           { mergeContext: "Layout echoing logo form" },
+    "application":      { mergeContext: "Application mockup echoing logo form" },
     "art-style":        { mergeContext: "Art style from logo aesthetic" },
     // text targets
     "visual-concept": {
       mergeContext: "Concept from logo style",
-      allowedFields: ["visualConcept.points"],
+      allowedFields: ["visualConcept"],
       instruction:
-        "Analyze the provided source image of the logo. Append ONE new point to visualConcept.points describing the logo's visual mood, style, and personality as seen in the image. Do NOT change conceptName or existing points.",
+        "You are given the current visualConcept (a single concept phrase) and an image of the logo. Analyze the logo's visual mood, style, and personality. Generate 1 new concept phrase that blends those observed qualities with the existing visual concept. Return ONLY valid JSON: {\"visualConcept\": \"new phrase here\"}.",
     },
     "color-palette": {
       mergeContext: "Extract logo palette",
       allowedFields: ["colorPalette"],
       instruction:
-        "Analyze the colors in this logo image. Extract exactly 5 hex colors that best represent its color palette — include the primary brand color, key accent colors, and any neutral tones. Return ONLY valid JSON: { \"colorPalette\": [\"#RRGGBB\", ...] }",
+        "Analyze the colors in this logo image. Extract 3 to 5 hex colors that best represent its color palette — include the primary brand color, key accent colors, and any neutral tones. Return ONLY valid JSON: { \"colorPalette\": [\"#RRGGBB\", ...] }",
       requiresSourceImage: true,
     },
     "brand-brief": {
@@ -157,20 +157,20 @@ export const MERGE_SPECS: Record<string, Record<string, MergeSpec>> = {
   "art-style": {
     // image targets (hint only)
     "logo":             { mergeContext: "Design a logo refering to this style" },
-    "layout":           { mergeContext: "Layout reflecting art style" },
+    "application":      { mergeContext: "Application mockup reflecting art style" },
     "visual-snapshot":  { mergeContext: "Snapshot in art style" },
     // text targets
     "visual-concept": {
       mergeContext: "Concept from art style",
-      allowedFields: ["visualConcept.points"],
+      allowedFields: ["visualConcept"],
       instruction:
-        "Analyze the provided source image of the art style. Append ONE new point to visualConcept.points describing the visual language, mood, and aesthetic qualities observed in the image. Do NOT change conceptName or existing points.",
+        "You are given the current visualConcept (a single concept phrase) and an art style image. Analyze the visual language, mood, and aesthetic qualities of the image. Generate 1 new concept phrase that blends those observed qualities with the existing visual concept. Return ONLY valid JSON: {\"visualConcept\": \"new phrase here\"}.",
     },
     "color-palette": {
       mergeContext: "Palette inspired by art style",
       allowedFields: ["colorPalette"],
       instruction:
-        "Analyze the colors in this art style image. Extract exactly 5 hex colors that capture its overall color mood and atmosphere — dominant tones, characteristic accents, and any recurring neutrals. Return ONLY valid JSON: { \"colorPalette\": [\"#RRGGBB\", ...] }",
+        "Analyze the colors in this art style image. Extract 3 to 5 hex colors that capture its overall color mood and atmosphere — dominant tones, characteristic accents, and any recurring neutrals. Return ONLY valid JSON: { \"colorPalette\": [\"#RRGGBB\", ...] }",
       requiresSourceImage: true,
     },
     "brand-brief": {
@@ -191,46 +191,46 @@ export const MERGE_SPECS: Record<string, Record<string, MergeSpec>> = {
   "texture": {
     // image targets (hint only)
     "logo":             { mergeContext: "Logo with texture material" },
-    "layout":           { mergeContext: "Layout with texture motif" },
+    "application":      { mergeContext: "Application mockup with texture motif" },
     // text targets
     "color-palette": {
       mergeContext: "Colors extracted from texture",
       allowedFields: ["colorPalette"],
       instruction:
-        "Analyze the provided source image of the texture. Extract a 5-color hex palette that captures its color mood and material tones. Return only the colorPalette array.",
+        "Analyze the provided source image of the texture. Extract a palette of 3 to 5 hex colors that captures its color mood and material tones. Return only the colorPalette array.",
     },
     "visual-concept": {
       mergeContext: "Concept from texture style",
-      allowedFields: ["visualConcept.points"],
+      allowedFields: ["visualConcept"],
       instruction:
-        "Append ONE new point to visualConcept.points about how the texture's tactile quality informs the visual language. Do NOT change conceptName or existing points.",
+        "You are given the current visualConcept (a single concept phrase) and a texture image. Analyze the texture's tactile quality and material character. Generate 1 new concept phrase that weaves those material qualities into the existing visual concept. Return ONLY valid JSON: {\"visualConcept\": \"new phrase here\"}.",
     },
   },
 
-  // ── layout ────────────────────────────────────────────────────────────────
-  "layout": {
+  // ── application ──────────────────────────────────────────────────────────
+  "application": {
     // image targets (hint only)
-    "logo":             { mergeContext: "Logo aligned to layout" },
-    "visual-snapshot":  { mergeContext: "Snapshot with layout grid" },
+    "logo":             { mergeContext: "Logo aligned to application style" },
+    "visual-snapshot":  { mergeContext: "Snapshot with application context" },
     // text targets
     "visual-concept": {
-      mergeContext: "Concept from layout structure",
-      allowedFields: ["visualConcept.points"],
+      mergeContext: "Concept from application mockup",
+      allowedFields: ["visualConcept"],
       instruction:
-        "Append ONE new point to visualConcept.points about how the layout's structural grid informs the visual system. Do NOT change conceptName or existing points.",
+        "You are given the current visualConcept (a single concept phrase) and an application mockup image. Analyze the mockup's visual language, tone, and context. Generate 1 new concept phrase that incorporates those observed qualities. Return ONLY valid JSON: {\"visualConcept\": \"new phrase here\"}.",
     },
     "color-palette": {
-      mergeContext: "Extract layout palette",
+      mergeContext: "Extract application palette",
       allowedFields: ["colorPalette"],
       instruction:
-        "Analyze the colors in this layout image. Extract exactly 5 hex colors that reflect its design palette — background tones, typographic colors, accent or highlight colors, and structural neutrals. Return ONLY valid JSON: { \"colorPalette\": [\"#RRGGBB\", ...] }",
+        "Analyze the colors in this application mockup image. Extract 3 to 5 hex colors that reflect its design palette — background tones, typographic colors, accent or highlight colors, and structural neutrals. Return ONLY valid JSON: { \"colorPalette\": [\"#RRGGBB\", ...] }",
       requiresSourceImage: true,
     },
     "font": {
-      mergeContext: "Font matched to layout grid",
+      mergeContext: "Font matched to application style",
       allowedFields: ["font.titleFont", "font.bodyFont"],
       instruction:
-        "Analyze the provided source image of the layout. Recommend a Google Fonts pairing whose structure and rhythm matches the grid system and visual style observed in the image. Change only titleFont and bodyFont.",
+        "Analyze the provided source image of the application mockup. Recommend a Google Fonts pairing whose structure and visual style matches the typography observed in the image. Change only titleFont and bodyFont.",
     },
   },
 
@@ -242,15 +242,15 @@ export const MERGE_SPECS: Record<string, Record<string, MergeSpec>> = {
     // text targets
     "visual-concept": {
       mergeContext: "Concept from snapshot mood",
-      allowedFields: ["visualConcept.points"],
+      allowedFields: ["visualConcept"],
       instruction:
-        "Append ONE new point to visualConcept.points about the mood and atmosphere captured in the snapshot. Do NOT change conceptName or existing points.",
+        "You are given the current visualConcept (a single concept phrase) and a visual snapshot image. Analyze the mood and atmosphere of the snapshot. Generate 1 new concept phrase that captures those visual qualities. Return ONLY valid JSON: {\"visualConcept\": \"new phrase here\"}.",
     },
     "color-palette": {
       mergeContext: "Extract snapshot palette",
       allowedFields: ["colorPalette"],
       instruction:
-        "Analyze the provided source image of the visual snapshot. Extract a 5-color hex palette that captures its overall color mood and atmosphere. Return only the colorPalette array.",
+        "Analyze the provided source image of the visual snapshot. Extract a palette of 3 to 5 hex colors that captures its overall color mood and atmosphere. Return only the colorPalette array.",
     },
   },
 };
@@ -265,7 +265,7 @@ export function mergeCardIdToField(cardId: string): string | null {
     "visual-concept":   "visualConcept",
     "logo":             "logoInspiration",
     "art-style":        "artStyle",
-    "layout":           "layout",
+    "application":      "application",
     "visual-snapshot":  "styleReferences",
   };
   return map[cardId] ?? null;

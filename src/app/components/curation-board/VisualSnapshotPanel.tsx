@@ -1,12 +1,12 @@
 import React, { useRef, useState, useEffect, useMemo } from "react";
 import { createPortal } from "react-dom";
 import { Plus, ImageIcon, FileText, X, Info } from "lucide-react";
-import { LAYOUT } from "../../utils/design-tokens";
+import { LAYOUT, TYPOGRAPHY } from "../../utils/design-tokens";
 import { GenerationDetailsPanel } from "../GenerationDetailsPanel";
 import { NoodleConnections } from "./NoodleConnections";
-import type { SnapshotHistoryItem } from "../../types/app";
+import type { SnapshotItem } from "../../types/project";
+import type { SlotPosition } from "../curation-board";
 
-const CARD_CHECK_CENTER_OFFSET = 20; // In canvas px at zoom=1; matches CardWrapper toggle center.
 const SNAPSHOT_DOT_CENTER_OFFSET = 14; // Matches snapshot dot's top-2/left-2 + w-3/h-3 center.
 
 interface VisualSnapshotPanelProps {
@@ -14,16 +14,22 @@ interface VisualSnapshotPanelProps {
   containerRef: React.RefObject<HTMLDivElement | null>;
   zoom: number;
   pan: { x: number; y: number };
-  cardElMapRef: React.RefObject<Map<string, HTMLDivElement>>;
+  slotPositionMapRef: React.RefObject<Map<string, SlotPosition>>;
+  filmstripScrollMapRef: React.RefObject<Map<string, number>>;
+  visibleQueueTypes: string[];
   checkedVariationIds: Set<string>;
-  snapshotHistory: SnapshotHistoryItem[];
+  snapshotHistory: SnapshotItem[];
   selectedSnapshotId: string | null;
   snapshotGenerating: boolean;
   scrollTick: number;
+  filmstripScrollTick: number;
+  layoutTick?: number;
   onSelectSnapshot?: (id: string | null) => void;
   onDeleteSnapshot?: (id: string) => void;
   onGenerateSnapshot?: () => void;
-  onGenerateBrandGuideline?: () => void;
+  onGenerateBrandDirection?: () => void;
+  onViewBrandDirection?: () => void;
+  selectedSnapshotHasDirection?: boolean;
 }
 
 export function VisualSnapshotPanel({
@@ -31,16 +37,22 @@ export function VisualSnapshotPanel({
   containerRef,
   zoom,
   pan,
-  cardElMapRef,
+  slotPositionMapRef,
+  filmstripScrollMapRef,
+  visibleQueueTypes,
   checkedVariationIds,
   snapshotHistory,
   selectedSnapshotId,
   snapshotGenerating,
   scrollTick,
+  filmstripScrollTick,
+  layoutTick = 0,
   onSelectSnapshot,
   onDeleteSnapshot,
   onGenerateSnapshot,
-  onGenerateBrandGuideline,
+  onGenerateBrandDirection,
+  onViewBrandDirection,
+  selectedSnapshotHasDirection = false,
 }: VisualSnapshotPanelProps) {
   const selectedSnapshotElRef = useRef<HTMLButtonElement | null>(null);
   const vsScrollContainerRef = useRef<HTMLDivElement | null>(null);
@@ -83,68 +95,77 @@ export function VisualSnapshotPanel({
     return () => document.removeEventListener("mousedown", handler);
   }, [openSnapshotInfoId]);
 
-  // Force re-render dependency for noodle measurements
-  void scrollTick;
-  void vsScrollTick;
-
   const vsNodeW = Math.floor(containerSize.w * LAYOUT.VS_NODE_WIDTH_FRACTION);
   const vsRightMargin = LAYOUT.VS_NODE_RIGHT_MARGIN;
   const vsTopMargin = LAYOUT.VS_NODE_TOP_MARGIN;
   const vsBottomMargin = LAYOUT.VS_NODE_BOTTOM_MARGIN;
   const vsLeft = containerSize.w - vsNodeW - vsRightMargin;
 
-  const containerEl = containerRef.current;
-  const containerRect = containerEl?.getBoundingClientRect();
+  const dpr = typeof window !== "undefined" ? Math.max(1, window.devicePixelRatio || 1) : 1;
+  const snap = (v: number) => Math.round(v * dpr) / dpr;
+
   const checkedIdsKey = useMemo(
     () => Array.from(checkedVariationIds).sort().join("|"),
     [checkedVariationIds],
   );
-  const dpr = typeof window !== "undefined" ? Math.max(1, window.devicePixelRatio || 1) : 1;
-  const snap = (v: number) => Math.round(v * dpr) / dpr;
 
-  // Measure noodle endpoints from checked cards
+  // Pure-math noodle card endpoints — no getBoundingClientRect, no timing lag.
   const cardEndpoints = useMemo<Array<{ x: number; y: number }>>(() => {
-    if (!containerRect || checkedVariationIds.size === 0) return [];
+    if (checkedVariationIds.size === 0) return [];
+
+    const padLeft = LAYOUT.FILMSTRIP_PADDING_LEFT;
+    const padTop = LAYOUT.FILMSTRIP_PADDING_TOP;
+    const toggleInset = LAYOUT.TOGGLE_INSET;
+    const rowH = LAYOUT.QUEUE_ROW_HEIGHT;
+    const rowGap = LAYOUT.QUEUE_GAP;
+
     const points: Array<{ x: number; y: number }> = [];
-    cardElMapRef.current.forEach((el, varId) => {
-      if (!checkedVariationIds.has(varId)) return;
-      const rect = el.getBoundingClientRect();
-      if (rect.right < containerRect.left || rect.left > containerRect.right) return;
-      if (rect.bottom < containerRect.top || rect.top > containerRect.bottom) return;
-      const toggleBtn = el.querySelector("[data-card-toggle]") as HTMLElement | null;
-      if (toggleBtn) {
-        const toggleRect = toggleBtn.getBoundingClientRect();
-        points.push({
-          x: snap(toggleRect.left + toggleRect.width / 2 - containerRect.left),
-          y: snap(toggleRect.top + toggleRect.height / 2 - containerRect.top),
-        });
-        return;
-      }
-      const zoomScale = rect.height / LAYOUT.CARD_SIZE;
-      const inset = CARD_CHECK_CENTER_OFFSET * zoomScale;
-      points.push({
-        x: snap(rect.right - inset - containerRect.left),
-        y: snap(rect.top + inset - containerRect.top),
-      });
+
+    checkedVariationIds.forEach((varId) => {
+      const slot = slotPositionMapRef.current.get(varId);
+      if (!slot) return;
+
+      const queueType = visibleQueueTypes[slot.queueIndex];
+      if (!queueType) return;
+
+      const scrollLeft = filmstripScrollMapRef.current.get(queueType) ?? 0;
+
+      // X: pan.x cancels out due to viewport-pinned queue stripes;
+      // +8 accounts for the fixed left margin of the filmstrip (labelPinX base).
+      const contentX = padLeft + slot.offsetInFilmstrip + slot.slotWidth - toggleInset;
+      const cx = 8 + (contentX - scrollLeft) * zoom;
+
+      // Y: standard canvas-to-container transform
+      const queueTop = slot.queueIndex * (rowH + rowGap);
+      const cy = pan.y + (queueTop + padTop + toggleInset) * zoom;
+
+      if (cx < 0 || cx > containerSize.w || cy < 0 || cy > containerSize.h) return;
+
+      points.push({ x: snap(cx), y: snap(cy) });
     });
+
     return points;
   }, [
-    cardElMapRef,
     checkedVariationIds,
     checkedIdsKey,
-    containerRect,
+    slotPositionMapRef,
+    filmstripScrollMapRef,
+    visibleQueueTypes,
     dpr,
-    pan.x,
     pan.y,
-    scrollTick,
-    vsScrollTick,
     zoom,
+    containerSize,
+    filmstripScrollTick,
+    layoutTick,
+    scrollTick,
   ]);
 
-  const headerH = 36;
+  const headerH = LAYOUT.VS_HEADER_HEIGHT;
   const defaultPortX = vsLeft;
   const defaultPortY = vsTopMargin + headerH / 2;
 
+  // portX/portY: VS panel is outside the canvas transform, so DOM measurement is stable here.
+  const containerRect = containerRef.current?.getBoundingClientRect();
   const { portX, portY } = useMemo(() => {
     let x = defaultPortX;
     let y = defaultPortY;
@@ -184,7 +205,7 @@ export function VisualSnapshotPanel({
             border: `2px solid ${
               hasChecked ? "var(--bb-user-active-accent)" : "var(--bb-user-inactive-border)"
             }`,
-            boxShadow: `0 4px 20px rgba(96,165,250,0.12), 0 0 0 1px rgba(96,165,250,0.06)`,
+            boxShadow: `var(--bb-vs-panel-shadow)`,
           }}
         >
           {/* Header */}
@@ -198,9 +219,10 @@ export function VisualSnapshotPanel({
             }}
           >
             <span
-              className="text-[14px] tracking-wide"
+              className="tracking-wide"
               style={{
-                fontWeight: 600,
+                fontSize: TYPOGRAPHY.cardTagline.fontSize,
+                fontWeight: TYPOGRAPHY.queueLabel.fontWeight,
                 color: hasChecked ? "var(--bb-user-active-accent)" : "var(--bb-user-inactive-accent)",
               }}
             >
@@ -232,7 +254,7 @@ export function VisualSnapshotPanel({
                 }}
               >
                 <div className="w-6 h-6 border-2 border-muted-foreground/30 border-t-muted-foreground/70 rounded-full animate-spin" />
-                <span className="text-[10px] text-muted-foreground/50 select-none">
+                <span className="text-muted-foreground/50 select-none" style={{ fontSize: TYPOGRAPHY.microLabel.fontSize }}>
                   Generating…
                 </span>
               </div>
@@ -252,9 +274,9 @@ export function VisualSnapshotPanel({
                       style={{ color: "var(--bb-user-inactive-accent)", opacity: 0.5 }}
                     />
                   </div>
-                  <p className="text-[11px] text-muted-foreground/40 leading-relaxed select-none max-w-[180px]">
+                  <span className="text-muted-foreground/40 leading-relaxed select-none max-w-[180px]" style={{ fontSize: TYPOGRAPHY.queueLabel.fontSize }}>
                     Select visual elements to generate visual snapshot
-                  </p>
+                  </span>
                 </div>
               </div>
             ) : snapshotHistory.length > 0 ? (
@@ -278,9 +300,9 @@ export function VisualSnapshotPanel({
                           aspectRatio: `${LAYOUT.VS_SNAPSHOT_ASPECT_RATIO}`,
                           outline: isSelected
                             ? "2.5px solid var(--bb-user-active-accent)"
-                            : "1px solid rgba(0,0,0,0.06)",
+                            : `1px solid var(--bb-vs-snapshot-outline)`,
                           outlineOffset: isSelected ? -1 : 0,
-                          boxShadow: isSelected ? `0 0 0 4px rgba(96,165,250,0.15)` : "none",
+                          boxShadow: isSelected ? `0 0 0 4px var(--bb-vs-snapshot-selected-ring)` : "none",
                         }}
                       >
                         <img
@@ -294,7 +316,7 @@ export function VisualSnapshotPanel({
                           style={{
                             background: isSelected
                               ? "var(--bb-user-active-accent)"
-                              : "rgba(0,0,0,0.2)",
+                              : "var(--bb-vs-snapshot-radio-inactive)",
                           }}
                         />
                       </button>
@@ -329,15 +351,16 @@ export function VisualSnapshotPanel({
             ) : null}
           </div>
 
-          {/* Generate Brand Guideline button */}
+          {/* Generate / View Brand Direction button */}
           {selectedSnapshotId && (
             <div className="shrink-0 border-t border-border/40 bg-white px-3 py-3">
               <button
-                onClick={onGenerateBrandGuideline}
-                className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg text-[12px] font-semibold bg-foreground text-white hover:bg-foreground/85 active:scale-[0.98] transition-all shadow-sm select-none"
+                onClick={selectedSnapshotHasDirection ? onViewBrandDirection : onGenerateBrandDirection}
+                className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg font-semibold bg-foreground text-white hover:bg-foreground/85 active:scale-[0.98] transition-all shadow-sm select-none"
+              style={{ fontSize: TYPOGRAPHY.cardBodySm.fontSize }}
               >
-                <FileText size={13} />
-                Generate Brand Guideline
+                <FileText size={TYPOGRAPHY.actionIconSize} />
+                {selectedSnapshotHasDirection ? "View Brand Direction" : "Generate Brand Direction"}
               </button>
             </div>
           )}
@@ -346,9 +369,7 @@ export function VisualSnapshotPanel({
 
       {/* Generation details floating panel */}
       {openSnapshotInfoId && containerRect && (() => {
-        const VS_DETAILS_POPUP_WIDTH = 254;
-        const VS_DETAILS_POPUP_GAP = 12;
-        const popupLeft = containerRect.left + vsLeft - VS_DETAILS_POPUP_WIDTH - VS_DETAILS_POPUP_GAP;
+        const popupLeft = containerRect.left + vsLeft - LAYOUT.VS_DETAILS_POPUP_WIDTH - LAYOUT.VS_DETAILS_POPUP_GAP;
         const popupTop = containerRect.top + vsTopMargin;
         const currentMeta = snapshotHistory.find((s) => s.id === openSnapshotInfoId)?.generationMeta;
         return createPortal(
@@ -358,15 +379,14 @@ export function VisualSnapshotPanel({
             style={{
               left: popupLeft,
               top: popupTop,
-              width: VS_DETAILS_POPUP_WIDTH,
-              maxHeight: 360,
+              width: LAYOUT.VS_DETAILS_POPUP_WIDTH,
+              maxHeight: window.innerHeight - popupTop - LAYOUT.POPUP_OFFSET,
             }}
             onClick={(e) => e.stopPropagation()}
           >
             <GenerationDetailsPanel
               meta={currentMeta}
               onClose={() => setOpenSnapshotInfoId(null)}
-              maxBodyHeight={280}
             />
           </div>,
           document.body

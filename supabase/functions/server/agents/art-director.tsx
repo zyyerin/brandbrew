@@ -36,14 +36,14 @@ You always return ONLY valid JSON — no markdown, no explanation, no code fence
 const PALETTE_FONTS_PROMPT = `Given the brand brief and visual concept, design a color palette and typography system.
 Return ONLY valid JSON with this exact structure:
 {
-  "colorPalette": ["#RRGGBB", "#RRGGBB", "#RRGGBB", "#RRGGBB", "#RRGGBB"],
+  "colorPalette": ["#RRGGBB", ...],
   "font": {
     "titleFont": "Google Fonts display/heading font name",
     "bodyFont": "Google Fonts body font name"
   }
 }
 Rules:
-- Color palette: 5 harmonious hex colors that reflect the brand mood and visual concept direction.
+- Color palette: 3 to 5 harmonious hex colors that reflect the brand mood and visual concept direction.
 - Colors should form a usable system: 1 primary, 1-2 secondary, 1-2 neutral/accent.
 - Font names must be real Google Fonts. Choose fonts that embody the brand personality.
 - The title font should have strong character; the body font should be highly readable.
@@ -57,42 +57,46 @@ export function buildCreativeBrief(
 ): string {
   const name    = ctx.brandName ?? "the brand";
   const desc    = (ctx.brandDescription ?? "").slice(0, 180);
-  const concept = ctx.conceptName ?? "";
+  const phrases = ctx.conceptPhrases ?? [];
+  const conceptStr = phrases.join(". ");
   const kwds    = (ctx.keywords ?? []).join(", ");
-  const point0  = ctx.conceptPoints?.[0] ?? "";
   const focus   = ctx.mergeContext ? `Creative direction: ${ctx.mergeContext}. ` : "";
 
   switch (cardType) {
     case "logo":
       return (
         `${focus}Brand logo design concept for "${name}". ` +
-        `Visual concept: ${concept}. ${point0}. ` +
+        `${conceptStr ? `Visual concept: ${conceptStr}. ` : ""}` +
         `Minimal clean graphic, white background, professional brand mark, ` +
         `no photorealism, no text labels, vector illustration style.`
       );
     case "art-style":
       return (
         `${focus}Art style reference image for "${name}" brand. ` +
-        `Visual concept: ${concept}. ${point0}. ` +
+        `${conceptStr ? `Visual concept: ${conceptStr}. ` : ""}` +
         `${kwds ? `Keywords: ${kwds}. ` : ""}` +
         `Create a visual art direction reference board showing the brand's aesthetic style, ` +
         `mood, texture, and visual language.`
       );
-    case "layout":
+    case "application": {
+      const touchpoint = ctx.application ?? "brand packaging";
       return (
-        `${focus}Modern editorial layout design for "${name}" brand. ` +
-        `${concept}. Clean typographic grid, minimalist UI layout mockup, ` +
-        `design system composition, professional print or digital layout.`
+        `${focus}Brand application mockup: ${touchpoint} for "${name}". ` +
+        `${conceptStr ? `Visual concept: ${conceptStr}. ` : ""}` +
+        `Show the brand identity applied to a realistic ${touchpoint}. ` +
+        `Use the brand's colors, typography, and visual style. ` +
+        `Clean studio photography, white background, professional product mockup.`
       );
+    }
     case "visual-snapshot":
       return (
         `${focus}Brand moodboard image for "${name}". ` +
-        `${kwds ? `Keywords: ${kwds}. ` : ""}${concept}. ` +
+        `${kwds ? `Keywords: ${kwds}. ` : ""}${conceptStr ? `${conceptStr}. ` : ""}` +
         `${desc.slice(0, 100)}. ` +
         `Lifestyle editorial photography, aspirational brand imagery, creative direction.`
       );
     default:
-      return `Professional brand design image for "${name}". ${concept}. Minimal, modern.`;
+      return `Professional brand design image for "${name}". ${conceptStr}. Minimal, modern.`;
   }
 }
 
@@ -107,8 +111,7 @@ artDirector.post("/generate", async (c) => {
       cardType,
       brandName,
       brandDescription,
-      conceptName,
-      conceptPoints,
+      conceptPhrases,
       keywords,
       colorPalette,
       mergeContext,
@@ -121,8 +124,8 @@ artDirector.post("/generate", async (c) => {
     const effectiveAR = resolveAspectRatio(cardType, aspectRatio);
 
     const ctx: ImagePromptContext = {
-      brandName, brandDescription, conceptName,
-      conceptPoints, keywords, colorPalette, mergeContext,
+      brandName, brandDescription, conceptPhrases,
+      keywords, colorPalette, mergeContext,
       aspectRatio: effectiveAR,
     };
 
@@ -140,7 +143,7 @@ artDirector.post("/generate", async (c) => {
 
     const selectedElementLabels = [
       brandName && "Brand Brief",
-      conceptName && "Visual Concept",
+      (conceptPhrases?.length ?? 0) > 0 && "Visual Concept",
       (colorPalette?.length ?? 0) > 0 && "Color Palette",
     ].filter(Boolean) as string[];
 
@@ -151,7 +154,7 @@ artDirector.post("/generate", async (c) => {
         prompt,
         model: usedModel,
         generationTime,
-        ingredients: [brandName, conceptName, ...(keywords ?? [])].filter(Boolean),
+        ingredients: [brandName, ...(conceptPhrases ?? []).slice(0, 1), ...(keywords ?? [])].filter(Boolean),
         selectedElementLabels: selectedElementLabels.length > 0 ? selectedElementLabels : undefined,
       },
     });
@@ -179,8 +182,8 @@ artDirector.post("/design-palette-fonts", async (c) => {
       keywords?.length && `Keywords: ${(Array.isArray(keywords) ? keywords : [keywords]).join(", ")}`,
     ].filter(Boolean).join("\n");
 
-    const conceptBlock = visualConcept
-      ? `\n\nVisual concept: "${visualConcept.conceptName}"\n- ${(visualConcept.points ?? []).join("\n- ")}`
+    const conceptBlock = Array.isArray(visualConcept) && visualConcept.length > 0
+      ? `\n\nVisual concept phrases:\n- ${visualConcept.join("\n- ")}`
       : "";
 
     const fullPrompt =
@@ -199,7 +202,7 @@ artDirector.post("/design-palette-fonts", async (c) => {
         prompt: fullPrompt,
         model: TEXT_MODEL,
         generationTime,
-        ingredients: [brandName, visualConcept?.conceptName, ...(Array.isArray(keywords) ? keywords : [])].filter(Boolean),
+        ingredients: [brandName, ...(Array.isArray(visualConcept) ? visualConcept.slice(0, 1) : []), ...(Array.isArray(keywords) ? keywords : [])].filter(Boolean),
         selectedElementLabels: ["Brand Brief", "Visual Concept"],
       },
     });
@@ -229,8 +232,7 @@ artDirector.post("/design-logo-style", async (c) => {
     const baseCtx = {
       brandName,
       brandDescription: description,
-      conceptName: visualConcept?.conceptName,
-      conceptPoints: visualConcept?.points,
+      conceptPhrases: Array.isArray(visualConcept) ? visualConcept : undefined,
       keywords: Array.isArray(keywords) ? keywords : undefined,
       colorPalette,
     };
@@ -268,7 +270,7 @@ artDirector.post("/design-logo-style", async (c) => {
         prompt: `[art-style] ${artStylePrompt.slice(0, 100)}… | [logo] ${logoPrompt.slice(0, 100)}…`,
         model: usedModel,
         generationTime,
-        ingredients: [brandName, visualConcept?.conceptName, ...(Array.isArray(keywords) ? keywords : [])].filter(Boolean),
+        ingredients: [brandName, ...(Array.isArray(visualConcept) ? visualConcept.slice(0, 1) : []), ...(Array.isArray(keywords) ? keywords : [])].filter(Boolean),
         selectedElementLabels: ["Visual Concept", "Color Palette", "Font"],
       },
     });
@@ -278,10 +280,10 @@ artDirector.post("/design-logo-style", async (c) => {
   }
 });
 
-// ── Route: POST /design-layout ────────────────────────────────────────────────
-// Step 3: Generate layout image using full visual context from prior steps.
+// ── Route: POST /design-application ──────────────────────────────────────────
+// Step 3: Generate application mockup using full visual context from prior steps.
 
-artDirector.post("/design-layout", async (c) => {
+artDirector.post("/design-application", async (c) => {
   try {
     const startTime = Date.now();
     const {
@@ -289,57 +291,58 @@ artDirector.post("/design-layout", async (c) => {
       visualConcept, colorPalette, font,
       artStyleImageUrl, logoImageUrl,
       aspectRatio,
+      application,
     } = await c.req.json();
     const apiKey = Deno.env.get("GEMINI_API_KEY");
     if (!apiKey) return c.json({ error: "GEMINI_API_KEY not configured" }, 500);
 
-    const effectiveAR = resolveAspectRatio("layout", aspectRatio);
+    const effectiveAR = resolveAspectRatio("application", aspectRatio);
 
     const ctx: ImagePromptContext = {
       brandName,
       brandDescription: description,
-      conceptName: visualConcept?.conceptName,
-      conceptPoints: visualConcept?.points,
+      conceptPhrases: Array.isArray(visualConcept) ? visualConcept : undefined,
       keywords: Array.isArray(keywords) ? keywords : undefined,
       colorPalette,
       aspectRatio: effectiveAR,
+      application,
     };
 
-    let layoutPrompt = buildCreativeBrief("layout", ctx);
+    let applicationPrompt = buildCreativeBrief("application", ctx);
     if (font) {
-      layoutPrompt += ` Typography: "${font.titleFont}" for headings, "${font.bodyFont}" for body.`;
+      applicationPrompt += ` Typography: "${font.titleFont}" for headings, "${font.bodyFont}" for body.`;
     }
 
-    console.log(`[art-director] Generating layout — ar=${effectiveAR} prompt="${layoutPrompt.slice(0, 80)}…"`);
+    console.log(`[art-director] Generating application — touchpoint="${application}" ar=${effectiveAR} prompt="${applicationPrompt.slice(0, 80)}…"`);
 
-    const genResult = await generateImage(apiKey, layoutPrompt, undefined, undefined, effectiveAR);
+    const genResult = await generateImage(apiKey, applicationPrompt, undefined, undefined, effectiveAR);
     if (genResult.errors.length > 0) {
-      console.log(`[art-director] Layout generation warnings: ${genResult.errors.join(" | ")}`);
+      console.log(`[art-director] Application generation warnings: ${genResult.errors.join(" | ")}`);
     }
 
-    const layoutImageUrl = await uploadAndSignImage(genResult.b64, genResult.mimeType, "layout");
+    const applicationImageUrl = await uploadAndSignImage(genResult.b64, genResult.mimeType, "application");
     const generationTime = Date.now() - startTime;
     const usedModel = getLastUsedImageModel()?.shortName ?? "unknown";
 
-    console.log(`[art-director] Layout designed (${generationTime}ms)`);
+    console.log(`[art-director] Application designed (${generationTime}ms)`);
 
     const referenceImageUrls = [artStyleImageUrl, logoImageUrl].filter(Boolean);
 
     return c.json({
-      layoutImageUrl,
+      applicationImageUrl,
       _meta: {
         agent: "art-director",
-        prompt: layoutPrompt,
+        prompt: applicationPrompt,
         model: usedModel,
         generationTime,
-        ingredients: [brandName, visualConcept?.conceptName, ...(Array.isArray(keywords) ? keywords : [])].filter(Boolean),
+        ingredients: [brandName, application, ...(Array.isArray(visualConcept) ? visualConcept.slice(0, 1) : []), ...(Array.isArray(keywords) ? keywords : [])].filter(Boolean),
         selectedElementLabels: ["Visual Concept", "Color Palette", "Font", "Art Style", "Logo"],
         referenceImageUrls: referenceImageUrls.length > 0 ? referenceImageUrls : undefined,
       },
     });
   } catch (err) {
-    console.log("[art-director] design-layout error:", err);
-    return c.json({ error: `Layout generation failed: ${String(err)}` }, 500);
+    console.log("[art-director] design-application error:", err);
+    return c.json({ error: `Application generation failed: ${String(err)}` }, 500);
   }
 });
 

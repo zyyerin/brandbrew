@@ -1,6 +1,6 @@
 # BrandBrew
 
-Brand curation and guideline tooling: React (Vite) frontend + Supabase Edge Functions (Gemini).
+Brand curation and direction tooling: React (Vite) frontend + Supabase Edge Functions (Gemini).
 
 ## Prerequisites
 

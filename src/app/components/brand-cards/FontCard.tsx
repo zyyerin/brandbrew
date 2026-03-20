@@ -1,24 +1,26 @@
 import React from "react";
-import type { CardMeta, CardState } from "./types";
-import { CardWrapper } from "./CardWrapper";
+import type { VariationMeta, VariationState } from "./types";
+import { ElementWrapper } from "./ElementWrapper";
 import { useCardEditing } from "./useCardEditing";
 import { useGoogleFont } from "../../utils/useGoogleFont";
 import { FontPicker } from "../font-picker";
+import { TYPOGRAPHY, adaptiveSize } from "../../utils/design-tokens";
+import { useCanvasZoom } from "../../contexts/CanvasZoomContext";
 
 interface FontCardProps {
   titleFont: string;
   bodyFont: string;
   brandName?: string;
   brandSummary?: string;
-  state?: CardState;
+  state?: VariationState;
   onToggleActive?: () => void;
   onChange?: (data: { titleFont: string; bodyFont: string }) => void;
-  onRefresh?: () => void;
+  onAddVariation?: () => void;
   onDelete?: () => void;
-  meta?: CardMeta;
+  meta?: VariationMeta;
 }
 
-export function FontCard({ titleFont, bodyFont, brandName, brandSummary, state, onToggleActive, onChange, onRefresh, onDelete, meta }: FontCardProps) {
+export function FontCard({ titleFont, bodyFont, brandName, brandSummary, state, onToggleActive, onChange, onAddVariation, onDelete, meta }: FontCardProps) {
   const { isEditing, local, updateField, editingProps } = useCardEditing(
     { titleFont, bodyFont },
     { onChange },
@@ -27,13 +29,18 @@ export function FontCard({ titleFont, bodyFont, brandName, brandSummary, state, 
   const headingFamily = useGoogleFont(local.titleFont);
   const bodyFamily = useGoogleFont(local.bodyFont);
 
+  const zoom = useCanvasZoom();
+  const adaptiveHeadingSize = Math.round(adaptiveSize(TYPOGRAPHY.fontPreviewHeading.fontSize, zoom, TYPOGRAPHY.cardBodySm.fontSize));
+  const adaptiveBodySize = Math.round(adaptiveSize(15, zoom, TYPOGRAPHY.cardBodySm.fontSize));
+  const adaptiveMicroSize = Math.round(adaptiveSize(TYPOGRAPHY.microLabel.fontSize, zoom, 8));
+
   return (
-    <CardWrapper
+    <ElementWrapper
       label="Typography"
       state={state}
       editVariant="font"
       {...editingProps}
-      onRegenerate={onRefresh}
+      onAddVariation={onAddVariation}
       onDelete={onDelete}
       onToggleActive={isEditing ? undefined : onToggleActive}
       meta={meta}
@@ -48,8 +55,8 @@ export function FontCard({ titleFont, bodyFont, brandName, brandSummary, state, 
               variant="heading"
             />
             <p
-              className="text-[28px] text-foreground my-4"
-              style={{ fontFamily: headingFamily, fontWeight: 400, lineHeight: 1.15 }}
+              className="text-foreground my-4"
+              style={{ fontFamily: headingFamily, fontSize: adaptiveHeadingSize, fontWeight: TYPOGRAPHY.fontPreviewHeading.fontWeight, lineHeight: TYPOGRAPHY.fontPreviewHeading.lineHeight }}
             >
               {brandName || "Brand Name"}
             </p>
@@ -60,35 +67,35 @@ export function FontCard({ titleFont, bodyFont, brandName, brandSummary, state, 
               variant="body"
             />
             <p
-              className="text-[15px] text-foreground/60 leading-relaxed line-clamp-3 mt-4"
-              style={{ fontFamily: bodyFamily }}
+              className="text-foreground/60 leading-relaxed mt-4"
+              style={{ fontFamily: bodyFamily, fontSize: adaptiveBodySize }}
             >
               {brandSummary || "brand summary"}
             </p>
           </div>
         ) : (
           <div>
-            <span className="text-[10px] tracking-[0.12em] uppercase text-muted-foreground/60 block mb-0.5">
+            <span className="uppercase text-muted-foreground/60 block mb-0.5" style={{ fontSize: adaptiveMicroSize, letterSpacing: TYPOGRAPHY.microLabel.letterSpacing }}>
               Heading: <span className="normal-case tracking-normal font-medium text-foreground/70">{local.titleFont}</span>
             </span>
             <p
-              className="text-[28px] text-foreground mb-5"
-              style={{ fontFamily: headingFamily, fontWeight: 400, lineHeight: 1.15 }}
+              className="text-foreground mb-5"
+              style={{ fontFamily: headingFamily, fontSize: adaptiveHeadingSize, fontWeight: TYPOGRAPHY.fontPreviewHeading.fontWeight, lineHeight: TYPOGRAPHY.fontPreviewHeading.lineHeight }}
             >
               {brandName || "Brand Name"}
             </p>
-            <span className="text-[10px] tracking-[0.12em] uppercase text-muted-foreground/60 block mb-0.5">
+            <span className="uppercase text-muted-foreground/60 block mb-0.5" style={{ fontSize: adaptiveMicroSize, letterSpacing: TYPOGRAPHY.microLabel.letterSpacing }}>
               Body: <span className="normal-case tracking-normal font-medium text-foreground/70">{local.bodyFont}</span>
             </span>
             <p
-              className="text-[15px] text-foreground/60 leading-relaxed line-clamp-3"
-              style={{ fontFamily: bodyFamily }}
+              className="text-foreground/60 leading-relaxed"
+              style={{ fontFamily: bodyFamily, fontSize: adaptiveBodySize }}
             >
               {brandSummary || "brand summary"}
             </p>
           </div>
         )}
       </div>
-    </CardWrapper>
+    </ElementWrapper>
   );
 }

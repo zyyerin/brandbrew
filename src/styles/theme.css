@@ -42,11 +42,14 @@
   --bb-canvas-bg: #f7f8fa;
   --bb-canvas-dot: #c8cdd6;
   --bb-user-active-bg: rgba(96, 165, 250, 0.04);
+  --bb-user-active-bg-hover: rgba(96, 165, 250, 0.08);
   --bb-user-active-border: rgba(96, 165, 250, 0.12);
   --bb-user-active-accent: #60a5fa;
   --bb-user-inactive-bg: rgba(0, 0, 0, 0.01);
+  --bb-user-inactive-bg-hover: rgba(0, 0, 0, 0.03);
   --bb-user-inactive-border: rgba(0, 0, 0, 0.04);
   --bb-user-inactive-accent: #9ca3af;
+  --bb-user-ring-shadow: 0 0 0 2px var(--bb-user-active-accent), 0 0 0 5px rgba(96, 165, 250, 0.18);
   --bb-frosted-panel: rgba(247, 248, 250, 0.92);
   --bb-ai-affordance-bg: rgba(167, 139, 250, 0.04);
   --bb-ai-affordance-border: #a78bfa;
@@ -54,6 +57,7 @@
   --bb-ai-active-ring: #8b5cf6;
   --bb-ai-active-ring-outer: rgba(139, 92, 246, 0.18);
   --bb-ai-overlay-bg: rgba(255, 255, 255, 0.78);
+  --bb-ai-ring-shadow: 0 0 0 2px var(--bb-ai-active-ring), 0 0 0 5px var(--bb-ai-active-ring-outer);
   --bb-hud-shadow: 0 2px 10px rgba(0, 0, 0, 0.08);
   --bb-scrollbar-thumb: rgba(0, 0, 0, 0.15);
   --bb-scrollbar-track: transparent;
@@ -61,6 +65,21 @@
   --bb-side-panel-width: 400px;
   --bb-variations-panel-width: 340px;
   --bb-queue-label-width: 140px;
+  /* Comment input floating overlay (dark) */
+  --bb-comment-overlay-bg: rgba(30, 30, 30, 0.92);
+  --bb-comment-overlay-border: rgba(255, 255, 255, 0.08);
+  --bb-comment-btn-active-bg: rgba(255, 255, 255, 0.9);
+  --bb-comment-btn-active-color: #1e1e1e;
+  --bb-comment-btn-inactive-bg: rgba(255, 255, 255, 0.15);
+  --bb-comment-btn-inactive-color: rgba(255, 255, 255, 0.3);
+  /* Visual Snapshot panel chrome */
+  --bb-vs-panel-shadow: 0 4px 20px rgba(96, 165, 250, 0.12), 0 0 0 1px rgba(96, 165, 250, 0.06);
+  --bb-vs-snapshot-selected-ring: rgba(96, 165, 250, 0.15);
+  --bb-vs-snapshot-outline: rgba(0, 0, 0, 0.06);
+  --bb-vs-snapshot-radio-inactive: rgba(0, 0, 0, 0.2);
+  /* Drag & drop overlays */
+  --bb-drag-overlay-bg: rgba(139, 92, 246, 0.08);
+  --bb-drag-ghost-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
 }
 
 @theme inline {
@@ -121,6 +140,15 @@
   --color-bb-scrollbar-track: var(--bb-scrollbar-track);
 }
 
+/* ── Hide scrollbar (e.g. ElementQueue filmstrip) ──────────────────────────── */
+.scrollbar-hide {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+
 /* ── Comment mode card hover ring ──────────────────────────────────────────── */
 
 @property --bb-ring-angle {
@@ -134,7 +162,7 @@
   to   { --bb-ring-angle: 360deg; }
 }
 
-.comment-mode-card::after {
+.comment-mode-variation::after {
   content: "";
   position: absolute;
   inset: -2px;
@@ -160,14 +188,23 @@
   z-index: 40;
 }
 
-.comment-mode-card:hover::after {
+.comment-mode-variation:hover::after {
   opacity: 1;
   animation-play-state: running;
 }
 
-.comment-mode-card,
-.comment-mode-card * {
+.comment-mode-variation,
+.comment-mode-variation * {
   cursor: inherit !important;
+}
+
+/* Hide horizontal scrollbar (ElementQueue filmstrip) */
+.bb-scrollbar-hide-x {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.bb-scrollbar-hide-x::-webkit-scrollbar {
+  display: none;
 }
 
 @layer base {

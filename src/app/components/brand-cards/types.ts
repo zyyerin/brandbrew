@@ -1,5 +1,5 @@
-import type { CardMeta } from "../../types/project";
-export type { CardMeta } from "../../types/project";
+import type { VariationMeta } from "../../types/project";
+export type { VariationMeta } from "../../types/project";
 
 export type GeneratedCardType =
   | "visual-concept"
@@ -18,9 +18,9 @@ export interface GeneratedCardItem {
   data: any;
   createdAt: Date;
   componentId?: string;
-  meta?: CardMeta;
+  meta?: VariationMeta;
 }
 
-export type CardState = "inactive" | "active" | "waiting" | "merging" | "available";
+export type VariationState = "inactive" | "active" | "waiting" | "merging" | "available" | "uploading";
 
 export type EditVariant = "text" | "image" | "color" | "font";

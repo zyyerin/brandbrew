@@ -1,6 +1,6 @@
 import React from "react";
 import { ZoomIn, ZoomOut, Maximize2 } from "lucide-react";
-import { CANVAS } from "../../utils/design-tokens";
+import { CANVAS, TYPOGRAPHY } from "../../utils/design-tokens";
 
 interface CanvasHUDProps {
   zoom: number;
@@ -23,13 +23,14 @@ export function CanvasHUD({ zoom, onZoomIn, onZoomOut, onResetView, onFit }: Can
           disabled={zoom <= CANVAS.ZOOM_MIN}
           className="w-6 h-6 flex items-center justify-center rounded-full text-muted-foreground hover:text-foreground hover:bg-muted/60 disabled:opacity-30 disabled:cursor-not-allowed transition-all"
         >
-          <ZoomOut size={12} />
+          <ZoomOut size={TYPOGRAPHY.actionIconSize - 1} />
         </button>
 
         <button
           onClick={onResetView}
           title="Reset to 100%"
-          className="px-2 h-6 flex items-center justify-center text-[11px] font-medium tabular-nums text-muted-foreground hover:text-foreground hover:bg-muted/60 rounded-full transition-all min-w-[42px]"
+          className="px-2 h-6 flex items-center justify-center font-medium tabular-nums text-muted-foreground hover:text-foreground hover:bg-muted/60 rounded-full transition-all min-w-[42px]"
+          style={{ fontSize: TYPOGRAPHY.hudText.fontSize }}
         >
           {Math.round(zoom * 100)}%
         </button>
@@ -40,7 +41,7 @@ export function CanvasHUD({ zoom, onZoomIn, onZoomOut, onResetView, onFit }: Can
           disabled={zoom >= CANVAS.ZOOM_MAX}
           className="w-6 h-6 flex items-center justify-center rounded-full text-muted-foreground hover:text-foreground hover:bg-muted/60 disabled:opacity-30 disabled:cursor-not-allowed transition-all"
         >
-          <ZoomIn size={12} />
+          <ZoomIn size={TYPOGRAPHY.actionIconSize - 1} />
         </button>
       </div>
 
@@ -50,7 +51,7 @@ export function CanvasHUD({ zoom, onZoomIn, onZoomOut, onResetView, onFit }: Can
         className="w-8 h-8 flex items-center justify-center bg-white/92 backdrop-blur-sm border border-border/40 rounded-full text-muted-foreground hover:text-foreground shadow-sm transition-all hover:bg-white"
         style={{ boxShadow: "var(--bb-hud-shadow)" }}
       >
-        <Maximize2 size={13} />
+        <Maximize2 size={TYPOGRAPHY.actionIconSize} />
       </button>
     </div>
   );

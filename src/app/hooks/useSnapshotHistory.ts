@@ -1,5 +1,5 @@
 import { useCallback, useRef, useEffect } from "react";
-import type { ProjectData, ElementId, SnapshotItem, CardMeta } from "../types/project";
+import type { ProjectData, ElementId, SnapshotItem, VariationMeta } from "../types/project";
 import {
   ALL_ELEMENT_IDS,
   ELEMENT_LABELS,
@@ -152,7 +152,7 @@ export function useSnapshotHistory({
             nextElements[eid] = {
               ...nextElements[eid],
               checkedVariationId: varId,
-              // Also activate the variation so the guideline page reflects the selection.
+              // Also activate the variation so the direction page reflects the selection.
               activeVariationId: varId,
             };
           }

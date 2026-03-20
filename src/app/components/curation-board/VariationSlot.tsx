@@ -8,36 +8,35 @@ import {
   ImageCard,
   VisualSnapshotCard,
 } from "../brand-cards";
-import type { CardState } from "../brand-cards";
-import { CARD_LABELS as LABELS } from "../../utils/design-tokens";
+import type { VariationState } from "../brand-cards";
+import { ELEMENT_TYPE_LABELS as LABELS } from "../../utils/design-tokens";
 import type { VariationItem } from "../variations-panel";
-import type { BrandData } from "../../types/brand";
 
 interface VariationSlotProps {
-  cardId: string;
+  elementType: string;
   variation: VariationItem;
   isActive: boolean;
   canDelete: boolean;
-  cardState: CardState;
+  variationState: VariationState;
   peerVariationIds: string[];
-  brandBrief?: BrandData["brandBrief"];
-  onEditSave?: (componentId: string, patch: Partial<BrandData>) => void;
-  onRefresh?: (componentId: string) => void;
+  brandBrief?: { name?: string; tagline?: string; description?: string };
+  onEditSave?: (elementId: string, data: unknown) => void;
+  onAddVariation?: (componentId: string, sourceVariationId?: string | null) => void;
   onToggleVariationChecked?: (variationId: string, peerVariationIds: string[]) => void;
   onDeleteVariation?: (componentId: string, variationId: string) => void;
   onImageAspectRatioChange?: (variationId: string, aspectRatio: number) => void;
 }
 
 export function VariationSlot({
-  cardId,
+  elementType,
   variation,
   isActive,
   canDelete,
-  cardState,
+  variationState,
   peerVariationIds,
   brandBrief,
   onEditSave,
-  onRefresh,
+  onAddVariation,
   onToggleVariationChecked,
   onDeleteVariation,
   onImageAspectRatioChange,
@@ -45,11 +44,11 @@ export function VariationSlot({
   const { type, data } = variation;
 
   const stateHandlers = {
-    state: cardState,
+    state: variationState,
     onToggleActive: () => onToggleVariationChecked?.(variation.id, peerVariationIds),
   };
 
-  const deleteHandler = canDelete ? () => onDeleteVariation?.(cardId, variation.id) : undefined;
+  const deleteHandler = canDelete ? () => onDeleteVariation?.(elementType, variation.id) : undefined;
 
   switch (type) {
     case "brand-brief":
@@ -59,8 +58,8 @@ export function VariationSlot({
           tagline={data.tagline ?? ""}
           description={data.description ?? ""}
           {...stateHandlers}
-          onChange={(d) => onEditSave?.(cardId, { brandBrief: d })}
-          onRefresh={isActive ? () => onRefresh?.(cardId) : undefined}
+          onChange={(d) => onEditSave?.(elementType, d)}
+          onAddVariation={onAddVariation ? () => onAddVariation(elementType, variation.id) : undefined}
           onDelete={deleteHandler}
           meta={variation.meta}
         />
@@ -71,8 +70,8 @@ export function VariationSlot({
         <ColorPaletteCard
           colors={data.colors ?? []}
           {...stateHandlers}
-          onChange={(colors) => onEditSave?.(cardId, { colorPalette: colors })}
-          onRefresh={isActive ? () => onRefresh?.(cardId) : undefined}
+          onChange={(colors) => onEditSave?.(elementType, colors)}
+          onAddVariation={onAddVariation ? () => onAddVariation(elementType, variation.id) : undefined}
           onDelete={deleteHandler}
           meta={variation.meta}
         />
@@ -81,11 +80,10 @@ export function VariationSlot({
     case "visual-concept":
       return (
         <VisualConceptCard
-          conceptName={data.conceptName ?? ""}
-          points={data.points ?? []}
+          phrase={typeof data === "string" ? data : ""}
           {...stateHandlers}
-          onChange={(d) => onEditSave?.(cardId, { visualConcept: d })}
-          onRefresh={isActive ? () => onRefresh?.(cardId) : undefined}
+          onChange={(phrase) => onEditSave?.(elementType, phrase)}
+          onAddVariation={onAddVariation ? () => onAddVariation(elementType, variation.id) : undefined}
           onDelete={deleteHandler}
           meta={variation.meta}
         />
@@ -97,7 +95,7 @@ export function VariationSlot({
           imageUrl={data.imageUrl ?? ""}
           onAspectRatioChange={(aspectRatio) => onImageAspectRatioChange?.(variation.id, aspectRatio)}
           {...stateHandlers}
-          onRefresh={isActive ? () => onRefresh?.(cardId) : undefined}
+          onAddVariation={onAddVariation ? () => onAddVariation(elementType, variation.id) : undefined}
           onDelete={deleteHandler}
           meta={variation.meta}
         />
@@ -111,8 +109,8 @@ export function VariationSlot({
           brandName={brandBrief?.name}
           brandSummary={brandBrief?.description}
           {...stateHandlers}
-          onChange={(d) => onEditSave?.(cardId, { font: d })}
-          onRefresh={isActive ? () => onRefresh?.(cardId) : undefined}
+          onChange={(d) => onEditSave?.(elementType, d)}
+          onAddVariation={onAddVariation ? () => onAddVariation(elementType, variation.id) : undefined}
           onDelete={deleteHandler}
           meta={variation.meta}
         />
@@ -120,13 +118,13 @@ export function VariationSlot({
 
     default:
       if (data?.imageUrl) {
-        if (type === "visual-snapshot" || (type === "style-reference" && cardId === "visual-snapshot")) {
+        if (type === "visual-snapshot" || (type === "style-reference" && elementType === "visual-snapshot")) {
           return (
             <VisualSnapshotCard
               images={[{ id: variation.id, imageUrl: data.imageUrl, label: variation.label }]}
               onAspectRatioChange={(aspectRatio) => onImageAspectRatioChange?.(variation.id, aspectRatio)}
               {...stateHandlers}
-              onRefresh={isActive ? () => onRefresh?.(cardId) : undefined}
+              onAddVariation={onAddVariation ? () => onAddVariation(elementType, variation.id) : undefined}
               onDelete={deleteHandler}
               meta={variation.meta}
             />
@@ -134,11 +132,11 @@ export function VariationSlot({
         }
         return (
           <ImageCard
-            label={variation.label || LABELS[cardId] || cardId}
+            label={variation.label || LABELS[elementType] || elementType}
             imageUrl={data.imageUrl}
             onAspectRatioChange={(aspectRatio) => onImageAspectRatioChange?.(variation.id, aspectRatio)}
             {...stateHandlers}
-            onRefresh={isActive ? () => onRefresh?.(cardId) : undefined}
+            onAddVariation={onAddVariation ? () => onAddVariation(elementType, variation.id) : undefined}
             onDelete={deleteHandler}
             meta={variation.meta}
           />

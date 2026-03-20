@@ -4,75 +4,75 @@ import { DEFAULT_QUEUE_ORDER } from "../utils/design-tokens";
 const DEFAULT_ORDER = [...DEFAULT_QUEUE_ORDER];
 
 export interface QueueReorderState {
-  cardOrder: string[];
-  reorderDragId: string | null;
-  reorderOverId: string | null;
-  handleQueueReorderDragStart: (e: React.DragEvent<HTMLDivElement>, cardId: string) => void;
-  handleQueueReorderDragOver: (e: React.DragEvent<HTMLDivElement>, cardId: string) => void;
-  handleQueueReorderDragLeave: (e: React.DragEvent<HTMLDivElement>, cardId: string) => void;
-  handleQueueReorderDrop: (e: React.DragEvent<HTMLDivElement>, targetCardId: string) => void;
+  elementQueueOrder: string[];
+  reorderDragElementType: string | null;
+  reorderOverElementType: string | null;
+  handleQueueReorderDragStart: (e: React.DragEvent<HTMLDivElement>, elementType: string) => void;
+  handleQueueReorderDragOver: (e: React.DragEvent<HTMLDivElement>, elementType: string) => void;
+  handleQueueReorderDragLeave: (e: React.DragEvent<HTMLDivElement>, elementType: string) => void;
+  handleQueueReorderDrop: (e: React.DragEvent<HTMLDivElement>, targetElementType: string) => void;
   handleQueueReorderDragEnd: () => void;
 }
 
 export function useQueueReorder(): QueueReorderState {
-  const [cardOrder, setCardOrder] = useState<string[]>(DEFAULT_ORDER);
-  const [reorderDragId, setReorderDragId] = useState<string | null>(null);
-  const [reorderOverId, setReorderOverId] = useState<string | null>(null);
+  const [elementQueueOrder, setElementQueueOrder] = useState<string[]>(DEFAULT_ORDER);
+  const [reorderDragElementType, setReorderDragElementType] = useState<string | null>(null);
+  const [reorderOverElementType, setReorderOverElementType] = useState<string | null>(null);
 
-  const handleQueueReorderDragStart = (e: React.DragEvent<HTMLDivElement>, cardId: string) => {
+  const handleQueueReorderDragStart = (e: React.DragEvent<HTMLDivElement>, elementType: string) => {
     e.stopPropagation();
-    setReorderDragId(cardId);
+    setReorderDragElementType(elementType);
     e.dataTransfer.effectAllowed = "move";
-    e.dataTransfer.setData("application/x-queue-reorder", cardId);
+    e.dataTransfer.setData("application/x-queue-reorder", elementType);
     const el = e.currentTarget.closest("[data-elementqueue]") as HTMLElement | null;
     if (el) {
       e.dataTransfer.setDragImage(el, 20, 20);
     }
   };
 
-  const handleQueueReorderDragOver = (e: React.DragEvent<HTMLDivElement>, cardId: string) => {
-    if (!reorderDragId || reorderDragId === cardId) return;
+  const handleQueueReorderDragOver = (e: React.DragEvent<HTMLDivElement>, elementType: string) => {
+    if (!reorderDragElementType || reorderDragElementType === elementType) return;
     e.preventDefault();
     e.stopPropagation();
     e.dataTransfer.dropEffect = "move";
-    setReorderOverId(cardId);
+    setReorderOverElementType(elementType);
   };
 
-  const handleQueueReorderDragLeave = (e: React.DragEvent<HTMLDivElement>, cardId: string) => {
+  const handleQueueReorderDragLeave = (e: React.DragEvent<HTMLDivElement>, elementType: string) => {
     if (e.currentTarget.contains(e.relatedTarget as Node)) return;
-    if (reorderOverId === cardId) setReorderOverId(null);
+    if (reorderOverElementType === elementType) setReorderOverElementType(null);
   };
 
-  const handleQueueReorderDrop = (e: React.DragEvent<HTMLDivElement>, targetCardId: string) => {
+  const handleQueueReorderDrop = (e: React.DragEvent<HTMLDivElement>, targetElementType: string) => {
     e.preventDefault();
     e.stopPropagation();
-    if (!reorderDragId || reorderDragId === targetCardId) {
-      setReorderDragId(null);
-      setReorderOverId(null);
+    if (!reorderDragElementType || reorderDragElementType === targetElementType) {
+      setReorderDragElementType(null);
+      setReorderOverElementType(null);
       return;
     }
-    setCardOrder((prev) => {
-      const fromIdx = prev.indexOf(reorderDragId);
-      const toIdx = prev.indexOf(targetCardId);
+    setElementQueueOrder((prev) => {
+      const fromIdx = prev.indexOf(reorderDragElementType);
+      const toIdx = prev.indexOf(targetElementType);
       if (fromIdx === -1 || toIdx === -1) return prev;
       const next = [...prev];
       next.splice(fromIdx, 1);
-      next.splice(toIdx, 0, reorderDragId);
+      next.splice(toIdx, 0, reorderDragElementType);
       return next;
     });
-    setReorderDragId(null);
-    setReorderOverId(null);
+    setReorderDragElementType(null);
+    setReorderOverElementType(null);
   };
 
   const handleQueueReorderDragEnd = () => {
-    setReorderDragId(null);
-    setReorderOverId(null);
+    setReorderDragElementType(null);
+    setReorderOverElementType(null);
   };
 
   return {
-    cardOrder,
-    reorderDragId,
-    reorderOverId,
+    elementQueueOrder,
+    reorderDragElementType,
+    reorderOverElementType,
     handleQueueReorderDragStart,
     handleQueueReorderDragOver,
     handleQueueReorderDragLeave,

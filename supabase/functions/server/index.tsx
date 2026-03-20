@@ -228,7 +228,17 @@ app.post(`${PREFIX}/generate-brand-data`, async (c) => {
 
 app.post(`${PREFIX}/enhance-brief`, async (c) => {
   const body = await c.req.json();
-  const res = await app.request(`${PREFIX}/strategist/enhance-brief`, {
+  const res = await app.request(`${PREFIX}/strategist/auto-complete`, {
+    method: "POST",
+    headers: c.req.raw.headers,
+    body: JSON.stringify(body),
+  });
+  return res;
+});
+
+app.post(`${PREFIX}/auto-complete`, async (c) => {
+  const body = await c.req.json();
+  const res = await app.request(`${PREFIX}/strategist/auto-complete`, {
     method: "POST",
     headers: c.req.raw.headers,
     body: JSON.stringify(body),
@@ -269,10 +279,22 @@ app.post(`${PREFIX}/comment-modify`, async (c) => {
   return res;
 });
 
-app.post(`${PREFIX}/generate-guideline`, async (c) => {
-  console.log("[compat] /generate-guideline → /strategist/guideline");
+app.post(`${PREFIX}/generate-direction`, async (c) => {
+  console.log("[compat] /generate-direction → /strategist/direction");
   const body = await c.req.json();
-  const res = await app.request(`${PREFIX}/strategist/guideline`, {
+  const res = await app.request(`${PREFIX}/strategist/direction`, {
+    method: "POST",
+    headers: c.req.raw.headers,
+    body: JSON.stringify(body),
+  });
+  return res;
+});
+
+// Backward compat: old clients may still call generate-guideline
+app.post(`${PREFIX}/generate-guideline`, async (c) => {
+  console.log("[compat] /generate-guideline → /strategist/direction");
+  const body = await c.req.json();
+  const res = await app.request(`${PREFIX}/strategist/direction`, {
     method: "POST",
     headers: c.req.raw.headers,
     body: JSON.stringify(body),

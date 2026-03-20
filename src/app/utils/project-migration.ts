@@ -1,7 +1,6 @@
 /**
  * Adapter functions for migrating between legacy project data shape and the
- * new ProjectData model. Used during the transition period and for loading
- * old persisted projects.
+ * new ProjectData model. Used for loading old persisted projects.
  */
 import type {
   ProjectData,
@@ -10,11 +9,10 @@ import type {
   Variation,
   BrandSummaryData,
   VisualConceptData,
-  ArtStyleData, // legacy
   FontData,
   ImageElementData,
   ColorPaletteData,
-  CardMeta,
+  VariationMeta,
   SnapshotItem,
   SnapshotGenerationMeta,
 } from "../types/project";
@@ -43,7 +41,10 @@ interface LegacyBrandData {
   layout?: { imageUrl: string };
   styleReferences?: { id: string; imageUrl: string; label: string }[];
   generatedCards?: LegacyGeneratedCard[];
+  /** @deprecated Use brandSummary.current.applications. Kept for reading old persisted data. */
   guidelineApplications?: string[];
+  /** @deprecated Use brandSummary.current.applications. Kept for reading old persisted data. */
+  directionApplications?: string[];
 }
 
 interface LegacyGeneratedCard {
@@ -53,7 +54,7 @@ interface LegacyGeneratedCard {
   data: any;
   createdAt: Date | string;
   componentId?: string;
-  meta?: CardMeta;
+  meta?: VariationMeta;
 }
 
 interface LegacySnapshotHistoryItem {
@@ -72,24 +73,30 @@ type LegacyPhase =
   | "checkpoint"
   | "visual-complete"
   | "guideline"
-  | "guideline-all";
+  | "guideline-all"
+  | "direction"
+  | "direction-all"
+  | "generating";
 
 // ── Phase mapping ───────────────────────────────────────────────────────────
 
-function mapLegacyPhase(
-  phase: string,
-): { phase: ProjectData["phase"]; route: "board" | "guideline" | "guideline-all" } {
+type RouteType = "board" | "direction";
+
+function mapLegacyPhase(phase: string): { phase: ProjectData["phase"]; route: RouteType } {
   switch (phase) {
     case "empty":
       return { phase: "empty", route: "board" };
     case "strategic":
     case "visual-loading":
     case "checkpoint":
-      return { phase: "generating", route: "board" };
+    case "generating":
+      return { phase: "curating", route: "board" };
     case "guideline":
-      return { phase: "curating", route: "guideline" };
+    case "direction":
+      return { phase: "curating", route: "direction" };
     case "guideline-all":
-      return { phase: "curating", route: "guideline-all" };
+    case "direction-all":
+      return { phase: "curating", route: "direction" };
     default:
       return { phase: "curating", route: "board" };
   }
@@ -116,8 +123,9 @@ function extractOriginalData(
       return originalCardData.font ?? brandData.font ?? null;
     case "logo":
       return originalCardData.logoInspiration ?? brandData.logoInspiration ?? null;
-    case "layout":
-      return originalCardData.layout ?? brandData.layout ?? null;
+    case "application":
+      // Read from legacy "layout" field for backward compat
+      return (originalCardData as any).layout ?? brandData.layout ?? null;
     default:
       return null;
   }
@@ -129,19 +137,65 @@ function normalizeVariationData(elementId: ElementId, data: any): unknown {
     if (data?.colors && Array.isArray(data.colors)) return data.colors;
     return [];
   }
+  if (elementId === "visual-concept") {
+    // Current format: single string
+    if (typeof data === "string") return data;
+    // Previous format: string[] — take first phrase
+    if (Array.isArray(data)) return (data[0] ?? "") as string;
+    // Legacy format: { conceptName: string; points: string[] } — use conceptName
+    if (data && typeof data === "object" && "conceptName" in data) {
+      return (data.conceptName?.trim() ?? "") as string;
+    }
+    return "";
+  }
   return data;
+}
+
+/**
+ * For visual-concept: expand a variation whose data was string[] (previous format)
+ * into multiple string variations, one per phrase. Returns the expanded variations list
+ * and an updated activeVariationId. For all other element types returns the input unchanged.
+ */
+function expandVisualConceptVariations(
+  variations: any[],
+  activeVariationId: string | null,
+): { variations: any[]; activeVariationId: string | null } {
+  const expanded: any[] = [];
+  let newActiveId = activeVariationId;
+
+  for (const v of variations) {
+    if (Array.isArray(v.data)) {
+      // Split string[] into individual string variations
+      const phrases: string[] = (v.data as string[]).filter((p) => typeof p === "string" && p.trim());
+      if (phrases.length === 0) continue;
+
+      phrases.forEach((phrase, i) => {
+        const newId = i === 0 ? v.id : `${v.id}--kw-${i}`;
+        expanded.push({ ...v, id: newId, data: phrase });
+        // Remap active pointer: if original was active, keep it pointing at first phrase
+        if (v.id === activeVariationId && i === 0) {
+          newActiveId = newId;
+        }
+      });
+    } else {
+      // Already string or other normalised value
+      expanded.push({ ...v, data: normalizeVariationData("visual-concept", v.data) });
+    }
+  }
+
+  return { variations: expanded, activeVariationId: newActiveId };
 }
 
 // ── Legacy → ProjectData ────────────────────────────────────────────────────
 
 export function projectDataFromLegacy(raw: Record<string, unknown>): {
   project: ProjectData;
-  route: "board" | "guideline" | "guideline-all";
+  route: RouteType;
 } {
   const d = raw as any;
   const brandData: LegacyBrandData = d.brandData ?? {};
   const originalCardData: Record<string, unknown> = d.originalCardData ?? {};
-  const originalCardMeta: Record<string, CardMeta> = d.originalCardMeta ?? {};
+  const originalVariationMeta: Record<string, VariationMeta> = d.originalVariationMeta ?? {};
   const cardTimestamps: Record<string, string | Date> = d.cardTimestamps ?? {};
   const activeVariationByCard: Record<string, string> =
     d.activeVariationByCard ?? {};
@@ -160,6 +214,7 @@ export function projectDataFromLegacy(raw: Record<string, unknown>): {
     description: brandData.brandBrief?.description ?? "",
     targetAudience: brandData.targetAudience ?? "",
     keywords: brandData.keywords ?? [],
+    applications: brandData.directionApplications ?? brandData.guidelineApplications ?? [],
   };
 
   const elements: ElementsState = {
@@ -168,7 +223,7 @@ export function projectDataFromLegacy(raw: Record<string, unknown>): {
     "color-palette": createEmptySlot<ColorPaletteData>(),
     "font": createEmptySlot<FontData>(),
     "logo": createEmptySlot<ImageElementData>(),
-    "layout": createEmptySlot<ImageElementData>(),
+    "application": createEmptySlot<ImageElementData>(),
   };
 
   for (const elementId of ALL_ELEMENT_IDS) {
@@ -177,18 +232,52 @@ export function projectDataFromLegacy(raw: Record<string, unknown>): {
 
     if (origData != null) {
       const ts = cardTimestamps[elementId];
-      const variation: Variation<any> = {
-        id: elementId,
-        data: normalizeVariationData(elementId, origData),
-        source: "initial",
-        createdAt: ts ? new Date(ts as string) : new Date(0),
-        meta: originalCardMeta[elementId],
-      };
-      slot.variations.push(variation);
-      slot.activeVariationId = elementId;
 
-      if (checkedSet.has(elementId)) {
-        slot.checkedVariationId = elementId;
+      if (elementId === "visual-concept") {
+        // Expand array/object into individual string variations
+        let phrases: string[] = [];
+        if (typeof origData === "string" && origData.trim()) {
+          phrases = [origData.trim()];
+        } else if (Array.isArray(origData)) {
+          phrases = (origData as string[]).filter((p) => typeof p === "string" && p.trim()).map((p) => p.trim());
+        } else if (origData && typeof origData === "object" && "conceptName" in (origData as any)) {
+          const d2 = origData as any;
+          if (d2.conceptName?.trim()) phrases.push(d2.conceptName.trim());
+          if (Array.isArray(d2.points)) {
+            for (const p of d2.points) {
+              if (p?.trim()) phrases.push(p.trim());
+            }
+          }
+        }
+        if (phrases.length === 0) continue;
+        phrases.forEach((phrase, i) => {
+          const varId = i === 0 ? elementId : `${elementId}--kw-${i}`;
+          const variation: Variation<any> = {
+            id: varId,
+            data: phrase,
+            source: "initial",
+            createdAt: ts ? new Date(ts as string) : new Date(0),
+            meta: i === 0 ? originalVariationMeta[elementId] : undefined,
+          };
+          slot.variations.push(variation);
+          if (i === 0) {
+            slot.activeVariationId = varId;
+            if (checkedSet.has(elementId)) slot.checkedVariationId = varId;
+          }
+        });
+      } else {
+        const variation: Variation<any> = {
+          id: elementId,
+          data: normalizeVariationData(elementId, origData),
+          source: "initial",
+          createdAt: ts ? new Date(ts as string) : new Date(0),
+          meta: originalVariationMeta[elementId],
+        };
+        slot.variations.push(variation);
+        slot.activeVariationId = elementId;
+        if (checkedSet.has(elementId)) {
+          slot.checkedVariationId = elementId;
+        }
       }
     }
 
@@ -197,17 +286,44 @@ export function projectDataFromLegacy(raw: Record<string, unknown>): {
     );
     for (const card of relatedCards) {
       const genVarId = `gen-${card.id}`;
-      const variation: Variation<any> = {
-        id: genVarId,
-        data: normalizeVariationData(elementId, card.data),
-        source: card.id.startsWith("merge-") ? "merge" : card.id.startsWith("edit-") ? "edit" : "regenerate",
-        createdAt: new Date(card.createdAt),
-        meta: card.meta,
-      };
-      slot.variations.push(variation);
-
-      if (checkedSet.has(genVarId)) {
-        slot.checkedVariationId = genVarId;
+      if (elementId === "visual-concept") {
+        // Expand multi-phrase cards into individual string variations
+        let phrases: string[] = [];
+        if (typeof card.data === "string" && card.data.trim()) {
+          phrases = [card.data.trim()];
+        } else if (Array.isArray(card.data)) {
+          phrases = (card.data as string[]).filter((p) => typeof p === "string" && p.trim()).map((p) => p.trim());
+        } else if (card.data && typeof card.data === "object" && "conceptName" in card.data) {
+          const d2 = card.data as any;
+          if (d2.conceptName?.trim()) phrases.push(d2.conceptName.trim());
+          if (Array.isArray(d2.points)) {
+            for (const p of d2.points) if (p?.trim()) phrases.push(p.trim());
+          }
+        }
+        phrases.forEach((phrase, i) => {
+          const varId = i === 0 ? genVarId : `${genVarId}--kw-${i}`;
+          const variation: Variation<any> = {
+            id: varId,
+            data: phrase,
+            source: card.id.startsWith("merge-") ? "merge" : card.id.startsWith("edit-") ? "edit" : "add-variation",
+            createdAt: new Date(card.createdAt),
+            meta: i === 0 ? card.meta : undefined,
+          };
+          slot.variations.push(variation);
+          if (i === 0 && checkedSet.has(genVarId)) slot.checkedVariationId = varId;
+        });
+      } else {
+        const variation: Variation<any> = {
+          id: genVarId,
+          data: normalizeVariationData(elementId, card.data),
+          source: card.id.startsWith("merge-") ? "merge" : card.id.startsWith("edit-") ? "edit" : "add-variation",
+          createdAt: new Date(card.createdAt),
+          meta: card.meta,
+        };
+        slot.variations.push(variation);
+        if (checkedSet.has(genVarId)) {
+          slot.checkedVariationId = genVarId;
+        }
       }
     }
 
@@ -251,166 +367,10 @@ export function projectDataFromLegacy(raw: Record<string, unknown>): {
     elements,
     snapshots,
     selectedSnapshotId: d.selectedSnapshotId ?? null,
-    guideline: { versions: [], activeVersionId: null },
-    guidelineApplications: brandData.guidelineApplications ?? [],
+    direction: { versions: [], activeVersionId: null },
   };
 
   return { project, route };
-}
-
-// ── ProjectData → Legacy (for components not yet migrated) ──────────────────
-
-export function projectDataToLegacy(project: ProjectData): {
-  brandData: LegacyBrandData;
-  phase: LegacyPhase;
-  originalCardData: Record<string, unknown>;
-  originalCardMeta: Record<string, CardMeta>;
-  cardTimestamps: Record<string, Date>;
-  activeVariationByCard: Record<string, string>;
-  checkedVariationIds: Set<string>;
-} {
-  const bs = project.brandSummary.current;
-
-  const latestSnapshotUrl = project.snapshots[0]?.imageUrl;
-
-  const brandData: LegacyBrandData = {
-    brandBrief: { name: bs.name, tagline: bs.tagline, description: bs.description },
-    targetAudience: bs.targetAudience,
-    keywords: bs.keywords,
-    guidelineApplications: project.guidelineApplications,
-    generatedCards: [],
-    styleReferences: latestSnapshotUrl
-      ? [{ id: "sr1", imageUrl: latestSnapshotUrl, label: "Visual Snapshot" }]
-      : undefined,
-  };
-
-  const originalCardData: Record<string, unknown> = {};
-  const originalCardMeta: Record<string, CardMeta> = {};
-  const cardTimestamps: Record<string, Date> = {};
-  const activeVariationByCard: Record<string, string> = {};
-  const checkedVariationIds = new Set<string>();
-
-  for (const elementId of ALL_ELEMENT_IDS) {
-    const slot = project.elements[elementId];
-    if (!slot.variations.length) continue;
-
-    const initial = slot.variations.find((v) => v.source === "initial");
-    const active = slot.variations.find((v) => v.id === slot.activeVariationId);
-
-    if (initial) {
-      const fieldKey = elementIdToLegacyField(elementId);
-      if (fieldKey) {
-        const legacyData = elementDataToLegacyField(elementId, initial.data);
-        originalCardData[fieldKey] = legacyData;
-        if (initial.meta) originalCardMeta[elementId] = initial.meta;
-        cardTimestamps[elementId] = initial.createdAt;
-      }
-    }
-
-    if (active) {
-      const legacyFieldData = elementDataToLegacyBrandData(elementId, active.data);
-      Object.assign(brandData, legacyFieldData);
-      if (slot.activeVariationId) {
-        activeVariationByCard[elementId] = slot.activeVariationId;
-      }
-    }
-
-    if (slot.checkedVariationId) {
-      checkedVariationIds.add(slot.checkedVariationId);
-    }
-
-    for (const v of slot.variations) {
-      if (v.source === "initial") continue;
-      const cardId = v.id.startsWith("gen-") ? v.id.slice(4) : v.id;
-      brandData.generatedCards!.push({
-        id: cardId,
-        type: elementIdToLegacyCardType(elementId),
-        label: v.id,
-        data: elementId === "color-palette"
-          ? { colors: v.data }
-          : v.data,
-        createdAt: v.createdAt,
-        componentId: elementId,
-        meta: v.meta,
-      });
-    }
-  }
-
-  let legacyPhase: LegacyPhase;
-  switch (project.phase) {
-    case "empty":
-      legacyPhase = "empty";
-      break;
-    case "generating":
-      legacyPhase = "strategic";
-      break;
-    case "curating":
-      legacyPhase = "visual-complete";
-      break;
-    default:
-      legacyPhase = "empty";
-  }
-
-  return {
-    brandData,
-    phase: legacyPhase,
-    originalCardData,
-    originalCardMeta,
-    cardTimestamps,
-    activeVariationByCard,
-    checkedVariationIds,
-  };
-}
-
-function elementIdToLegacyField(id: ElementId): string | null {
-  const map: Record<ElementId, string> = {
-    "visual-concept": "visualConcept",
-    "art-style": "artStyle",
-    "color-palette": "colorPalette",
-    "font": "font",
-    "logo": "logoInspiration",
-    "layout": "layout",
-  };
-  return map[id] ?? null;
-}
-
-function elementDataToLegacyField(elementId: ElementId, data: unknown): unknown {
-  if (elementId === "color-palette") return data;
-  return data;
-}
-
-function elementDataToLegacyBrandData(
-  elementId: ElementId,
-  data: unknown,
-): Partial<LegacyBrandData> {
-  switch (elementId) {
-    case "visual-concept":
-      return { visualConcept: data as LegacyBrandData["visualConcept"] };
-    case "art-style":
-      return { artStyle: data as { imageUrl: string } };
-    case "color-palette":
-      return { colorPalette: data as string[] };
-    case "font":
-      return { font: data as LegacyBrandData["font"] };
-    case "logo":
-      return { logoInspiration: data as LegacyBrandData["logoInspiration"] };
-    case "layout":
-      return { layout: data as LegacyBrandData["layout"] };
-    default:
-      return {};
-  }
-}
-
-function elementIdToLegacyCardType(id: ElementId): string {
-  const map: Record<ElementId, string> = {
-    "visual-concept": "visual-concept",
-    "art-style": "art-style",
-    "color-palette": "color",
-    "font": "font",
-    "logo": "logo",
-    "layout": "layout",
-  };
-  return map[id] ?? id;
 }
 
 // ── Serialization helpers for the new ProjectData ───────────────────────────
@@ -419,17 +379,32 @@ function toISO(date: Date | string): string {
   return date instanceof Date ? date.toISOString() : date;
 }
 
+function hasBlobImageUrl(data: unknown): boolean {
+  const img = (data as { imageUrl?: string } | null)?.imageUrl;
+  return typeof img === "string" && img.startsWith("blob:");
+}
+
 export function serializeProjectData(project: ProjectData): Record<string, unknown> {
   const elements: Record<string, unknown> = {};
   for (const id of ALL_ELEMENT_IDS) {
     const slot = project.elements[id];
+    const filteredVariations = slot.variations.filter((v) => !hasBlobImageUrl(v.data));
+    const validIds = new Set(filteredVariations.map((v) => v.id));
+    const activeVariationId =
+      slot.activeVariationId && validIds.has(slot.activeVariationId)
+        ? slot.activeVariationId
+        : filteredVariations[0]?.id ?? null;
+    const checkedVariationId =
+      slot.checkedVariationId && validIds.has(slot.checkedVariationId)
+        ? slot.checkedVariationId
+        : null;
     elements[id] = {
-      variations: slot.variations.map((v) => ({
+      variations: filteredVariations.map((v) => ({
         ...v,
         createdAt: toISO(v.createdAt),
       })),
-      activeVariationId: slot.activeVariationId,
-      checkedVariationId: slot.checkedVariationId,
+      activeVariationId,
+      checkedVariationId,
     };
   }
 
@@ -450,14 +425,13 @@ export function serializeProjectData(project: ProjectData): Record<string, unkno
       createdAt: toISO(s.createdAt),
     })),
     selectedSnapshotId: project.selectedSnapshotId,
-    guideline: {
-      versions: project.guideline.versions.map((v) => ({
+    direction: {
+      versions: project.direction.versions.map((v) => ({
         ...v,
         createdAt: toISO(v.createdAt),
       })),
-      activeVersionId: project.guideline.activeVersionId,
+      activeVersionId: project.direction.activeVersionId,
     },
-    guidelineApplications: project.guidelineApplications,
   };
 }
 
@@ -470,31 +444,51 @@ export function deserializeProjectData(raw: Record<string, unknown>): ProjectDat
 
   const elements: any = {};
   for (const id of ALL_ELEMENT_IDS) {
-    const slotRaw = d.elements?.[id];
+    // Migrate v2 data that was saved with "layout" key before renaming to "application"
+    const slotRaw = d.elements?.[id] ?? (id === "application" ? d.elements?.["layout"] : undefined);
     if (!slotRaw) {
       elements[id] = createEmptySlot();
       continue;
     }
-    elements[id] = {
-      variations: (slotRaw.variations ?? []).map((v: any) => ({
+
+    if (id === "visual-concept") {
+      const rawVariations = (slotRaw.variations ?? []).map((v: any) => ({
         ...v,
         createdAt: new Date(v.createdAt),
-      })),
-      activeVariationId: slotRaw.activeVariationId ?? null,
-      checkedVariationId: slotRaw.checkedVariationId ?? null,
-    };
+      }));
+      const { variations: expandedVariations, activeVariationId } = expandVisualConceptVariations(
+        rawVariations,
+        slotRaw.activeVariationId ?? null,
+      );
+      elements[id] = {
+        variations: expandedVariations,
+        activeVariationId,
+        checkedVariationId: slotRaw.checkedVariationId ?? null,
+      };
+    } else {
+      elements[id] = {
+        variations: (slotRaw.variations ?? []).map((v: any) => ({
+          ...v,
+          createdAt: new Date(v.createdAt),
+        })),
+        activeVariationId: slotRaw.activeVariationId ?? null,
+        checkedVariationId: slotRaw.checkedVariationId ?? null,
+      };
+    }
   }
 
   return {
     projectName: d.projectName ?? "Brand Brew Project",
-    phase: d.phase ?? "empty",
+    phase: d.phase === "generating" ? "curating" : (d.phase ?? "empty"),
     brandSummary: {
-      current: d.brandSummary?.current ?? {
-        name: "",
-        tagline: "",
-        description: "",
-        targetAudience: "",
-        keywords: [],
+      current: {
+        name: d.brandSummary?.current?.name ?? "",
+        tagline: d.brandSummary?.current?.tagline ?? "",
+        description: d.brandSummary?.current?.description ?? "",
+        targetAudience: d.brandSummary?.current?.targetAudience ?? "",
+        keywords: d.brandSummary?.current?.keywords ?? [],
+        // Backward-compat: old data stored applications at top-level as directionApplications.
+        applications: d.brandSummary?.current?.applications ?? d.directionApplications ?? d.guidelineApplications ?? [],
       },
       versions: (d.brandSummary?.versions ?? []).map((v: any) => ({
         ...v,
@@ -507,13 +501,12 @@ export function deserializeProjectData(raw: Record<string, unknown>): ProjectDat
       createdAt: new Date(s.createdAt),
     })),
     selectedSnapshotId: d.selectedSnapshotId ?? null,
-    guideline: {
-      versions: (d.guideline?.versions ?? []).map((v: any) => ({
+    direction: {
+      versions: (d.direction?.versions ?? d.guideline?.versions ?? []).map((v: any) => ({
         ...v,
         createdAt: new Date(v.createdAt),
       })),
-      activeVersionId: d.guideline?.activeVersionId ?? null,
+      activeVersionId: d.direction?.activeVersionId ?? d.guideline?.activeVersionId ?? null,
     },
-    guidelineApplications: d.guidelineApplications ?? [],
   };
 }

@@ -77,8 +77,7 @@ visualDesigner.post("/edit", async (c) => {
       cardType,
       brandName,
       brandDescription,
-      conceptName,
-      conceptPoints,
+      conceptPhrases,
       keywords,
       colorPalette,
       mergeContext,
@@ -108,8 +107,8 @@ visualDesigner.post("/edit", async (c) => {
     const effectiveAR = resolveAspectRatio(cardType, aspectRatio);
 
     const ctx: ImagePromptContext = {
-      brandName, brandDescription, conceptName,
-      conceptPoints, keywords, colorPalette, mergeContext,
+      brandName, brandDescription, conceptPhrases,
+      keywords, colorPalette, mergeContext,
       aspectRatio: effectiveAR,
     };
 
@@ -140,7 +139,7 @@ visualDesigner.post("/edit", async (c) => {
         prompt,
         model: usedModel,
         generationTime,
-        ingredients: [brandName, conceptName, ...(keywords ?? [])].filter(Boolean),
+        ingredients: [brandName, ...(conceptPhrases ?? []).slice(0, 1), ...(keywords ?? [])].filter(Boolean),
         referenceImageUrls: [sourceImageUrl],
         paletteImageDataUrl: paletteImageBase64
           ? `data:image/png;base64,${paletteImageBase64}`
@@ -272,7 +271,7 @@ visualDesigner.post("/moodboard", async (c) => {
         prompt,
         model: usedModel,
         generationTime,
-        ingredients: [brandName, fallbackMode !== "none" ? `fallback:${fallbackMode}` : null].filter(Boolean),
+        ingredients: [brandName, fallbackMode !== "none" ? null : null].filter(Boolean),
       },
     });
   } catch (err) {
@@ -350,9 +349,7 @@ visualDesigner.post("/context", async (c) => {
         prompt: effectivePrompt,
         model: usedModel,
         generationTime,
-        ingredients: [brandName, application, hasAnyImages ? "with-ref" : "no-ref"].filter(
-          Boolean,
-        ),
+        ingredients: [brandName, application].filter(Boolean),
       },
     });
   } catch (err) {
@@ -414,7 +411,7 @@ visualDesigner.post("/merge-generate", async (c) => {
         prompt,
         model: usedModel,
         generationTime,
-        ingredients: [brandName, mergeContext].filter(Boolean),
+        ingredients: [brandName].filter(Boolean),
       },
     });
   } catch (err) {
@@ -428,7 +425,7 @@ visualDesigner.post("/merge-generate", async (c) => {
 function buildWordmarkBrief(ctx: ImagePromptContext): string {
   const name = ctx.brandName ?? "the brand";
   const font = ctx.titleFont ?? "a display";
-  const concept = ctx.conceptName ?? "";
+  const concept = ctx.conceptPhrases?.join(", ") ?? "";
   const hint = ctx.mergeContext ?? "";
   const focus = hint ? `Creative direction: ${hint}. ` : "";
 
@@ -453,8 +450,7 @@ visualDesigner.post("/wordmark", async (c) => {
       cardType,
       brandName,
       brandDescription,
-      conceptName,
-      conceptPoints,
+      conceptPhrases,
       keywords,
       colorPalette,
       mergeContext,
@@ -468,8 +464,8 @@ visualDesigner.post("/wordmark", async (c) => {
     const effectiveAR = resolveAspectRatio("wordmark", aspectRatio);
 
     const ctx: ImagePromptContext = {
-      brandName, brandDescription, conceptName,
-      conceptPoints, keywords, colorPalette, mergeContext, titleFont,
+      brandName, brandDescription, conceptPhrases,
+      keywords, colorPalette, mergeContext, titleFont,
       aspectRatio: effectiveAR,
     };
 
@@ -488,7 +484,7 @@ visualDesigner.post("/wordmark", async (c) => {
     const selectedElementLabels = [
       brandName && "Brand Brief",
       titleFont && "Typography",
-      conceptName && "Visual Concept",
+      (conceptPhrases?.length ?? 0) > 0 && "Visual Concept",
     ].filter(Boolean) as string[];
 
     return c.json({
@@ -498,7 +494,7 @@ visualDesigner.post("/wordmark", async (c) => {
         prompt,
         model: usedModel,
         generationTime,
-        ingredients: [brandName, titleFont, conceptName].filter(Boolean),
+        ingredients: [brandName, titleFont, ...(conceptPhrases ?? []).slice(0, 1)].filter(Boolean),
         selectedElementLabels: selectedElementLabels.length > 0 ? selectedElementLabels : undefined,
       },
     });
@@ -548,7 +544,7 @@ visualDesigner.post("/extract-palette", async (c) => {
     const SOURCE_LABELS: Record<string, string> = {
       "art-style": "Art Style",
       "logo": "Logo",
-      "layout": "Layout",
+      "application": "Application",
       "visual-snapshot": "Visual Snapshot",
     };
     const sourceLabel = SOURCE_LABELS[sourceId] ?? sourceId;
@@ -560,7 +556,7 @@ visualDesigner.post("/extract-palette", async (c) => {
         prompt: spec.instruction,
         model: TEXT_MODEL,
         generationTime,
-        ingredients: [sourceId, sourceImageUrl],
+        ingredients: [],
         referenceImageUrls: [sourceImageUrl],
         selectedElementLabels: [sourceLabel],
       },
@@ -608,7 +604,7 @@ visualDesigner.post("/vision-merge", async (c) => {
     const readonlyContext = JSON.stringify(
       {
         brandBrief: brandData?.brandBrief ?? {},
-        visualConcept: brandData?.visualConcept ?? {},
+        visualConcept: brandData?.visualConcept ?? [],
         keywords: brandData?.keywords ?? [],
         sourceId,
         targetId,
@@ -653,7 +649,7 @@ Important:
         prompt,
         model: TEXT_MODEL,
         generationTime,
-        ingredients: [sourceId, targetId, sourceImageUrl],
+        ingredients: [],
         referenceImageUrls: [sourceImageUrl],
       },
     });

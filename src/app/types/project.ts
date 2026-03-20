@@ -9,7 +9,7 @@
  *   ├── brandSummary   (strategic layer — versioned text)
  *   ├── elements        (visual layer — per-element variation slots)
  *   ├── snapshots       (composition layer — frozen element selections → image)
- *   └── guideline       (output layer — bound to a snapshot)
+ *   └── direction       (output layer — bound to a snapshot)
  */
 
 // ── Element identifiers ─────────────────────────────────────────────────────
@@ -20,7 +20,7 @@ export type ElementId =
   | "color-palette"
   | "font"
   | "logo"
-  | "layout";
+  | "application";
 
 export const ALL_ELEMENT_IDS: readonly ElementId[] = [
   "visual-concept",
@@ -28,12 +28,12 @@ export const ALL_ELEMENT_IDS: readonly ElementId[] = [
   "color-palette",
   "font",
   "logo",
-  "layout",
+  "application",
 ] as const;
 
 export const IMAGE_ELEMENT_IDS: ReadonlySet<ElementId> = new Set([
   "logo",
-  "layout",
+  "application",
   "art-style",
 ]);
 
@@ -49,7 +49,7 @@ export const ELEMENT_LABELS: Record<ElementId, string> = {
   "color-palette": "Color Palette",
   "font": "Typography",
   "logo": "Logo",
-  "layout": "Layout",
+  "application": "Application",
 };
 
 // ── Brand Summary ───────────────────────────────────────────────────────────
@@ -60,6 +60,8 @@ export interface BrandSummaryData {
   description: string;
   targetAudience: string;
   keywords: string[];
+  /** Brand touchpoint mockup ideas (e.g. "Coffee Sleeve", "Loyalty Card"). */
+  applications: string[];
 }
 
 export interface BrandSummaryVersion {
@@ -79,22 +81,13 @@ export const EMPTY_BRAND_SUMMARY: BrandSummaryData = {
   description: "",
   targetAudience: "",
   keywords: [],
+  applications: [],
 };
 
 // ── Per-element data shapes ─────────────────────────────────────────────────
 
-export interface VisualConceptData {
-  conceptName: string;
-  points: string[];
-}
-
-/** @deprecated Art style is now image-based (ImageElementData). Kept for legacy migration. */
-export interface ArtStyleData {
-  styleName: string;
-  medium: string;
-  moodWords: string[];
-  artDirection: string;
-}
+export type VisualConceptData = string;
+// e.g. "crystalline geometry" — a single evocative concept phrase per variation.
 
 export interface FontData {
   titleFont: string;
@@ -113,16 +106,24 @@ export type ElementDataMap = {
   "color-palette": ColorPaletteData;
   "font": FontData;
   "logo": ImageElementData;
-  "layout": ImageElementData;
+  "application": ImageElementData;
 };
 
-// ── Generation metadata (kept from old CardMeta) ────────────────────────────
+// ── Variation ID (semantic alias) ───────────────────────────────────────────
 
-export interface CardMeta {
+export type VariationId = string;
+
+// ── Generation metadata (per variation) ─────────────────────────────────────
+
+export interface VariationMeta {
   prompt?: string;
   ingredients?: string[];
   generationTime?: number;
   model?: string;
+  /** Which AI agent role handled the generation (e.g. "art-director", "brand-strategist"). */
+  agent?: string;
+  /** Direct user input that triggered this generation (brand description or comment). */
+  userInput?: string;
   /** Set when this variation was created by the user editing another variation. */
   editedFromLabel?: string;
   /** Distinguishes user-uploaded variations from AI-generated ones. */
@@ -133,18 +134,22 @@ export interface CardMeta {
   paletteImageDataUrl?: string;
   /** Human-readable labels for selected element inputs (e.g. "Color Palette", "Art Style"). */
   selectedElementLabels?: string[];
+  /** Add variation 来源类型 */
+  addVariationSource?: "from-variation" | "original-brand";
+  /** 当 addVariationSource 为 from-variation 时，来源 variation 的 id */
+  sourceVariationId?: string;
 }
 
 // ── Variation ───────────────────────────────────────────────────────────────
 
-export type VariationSource = "initial" | "regenerate" | "edit" | "merge" | "comment" | "user-upload";
+export type VariationSource = "initial" | "add-variation" | "edit" | "merge" | "comment" | "user-upload";
 
 export interface Variation<T = unknown> {
   id: string;
   data: T;
   source: VariationSource;
   createdAt: Date;
-  meta?: CardMeta;
+  meta?: VariationMeta;
 }
 
 // ── Element slot ────────────────────────────────────────────────────────────
@@ -153,6 +158,8 @@ export interface ElementSlot<T = unknown> {
   variations: Variation<T>[];
   activeVariationId: string | null;
   checkedVariationId: string | null;
+  /** Custom display order (array of variation IDs). If absent, falls back to createdAt DESC. */
+  variationOrder?: string[];
 }
 
 export type ElementsState = {
@@ -170,7 +177,7 @@ export function createEmptyElements(): ElementsState {
     "color-palette": createEmptySlot<ColorPaletteData>(),
     "font": createEmptySlot<FontData>(),
     "logo": createEmptySlot<ImageElementData>(),
-    "layout": createEmptySlot<ImageElementData>(),
+    "application": createEmptySlot<ImageElementData>(),
   };
 }
 
@@ -194,9 +201,9 @@ export interface SnapshotItem {
   generationMeta?: SnapshotGenerationMeta;
 }
 
-// ── Guideline ───────────────────────────────────────────────────────────────
+// ── Direction ───────────────────────────────────────────────────────────────
 
-export interface GuidelineCache {
+export interface DirectionCache {
   rationales: {
     logo: string;
     color: string;
@@ -206,28 +213,39 @@ export interface GuidelineCache {
   colorNames: { hex: string; name: string }[];
   brandInContextDescription: string;
   contextImageUrls?: string[];
-  /** Synthesized from visual snapshot when guideline is generated without a visual concept. */
-  synthesizedVisualConcept?: { conceptName: string; points: string[] };
+  /** AI-generated paragraph expanding on the visual concept. Always present after direction generation. */
+  visualConceptContent?: string;
+  /** Synthesized concept name when direction is generated without an active visual concept. */
+  synthesizedVisualConcept?: string;
 }
 
-export interface GuidelineVersion {
+export interface DirectionVersion {
   id: string;
   label: string;
   createdAt: Date;
   boundSnapshotId: string | null;
-  cache?: GuidelineCache;
+  snapshotImageUrl?: string;
+  cache?: DirectionCache;
 }
 
-export interface GuidelineState {
-  versions: GuidelineVersion[];
+export interface DirectionState {
+  versions: DirectionVersion[];
   activeVersionId: string | null;
 }
 
 // ── Phase & Route ───────────────────────────────────────────────────────────
 
-export type ProjectPhase = "empty" | "generating" | "curating";
+export type ProjectPhase = "empty" | "curating";
 
-export type AppRoute = "board" | "guideline" | "guideline-all";
+export type AppRoute = "board" | "direction";
+
+export type PipelineStage =
+  | "conceptualizing"
+  | "styling"
+  | "drawing"
+  | "visualizing"
+  | "synthesizing"
+  | null;
 
 // ── ProjectData (top-level) ─────────────────────────────────────────────────
 
@@ -238,8 +256,7 @@ export interface ProjectData {
   elements: ElementsState;
   snapshots: SnapshotItem[];
   selectedSnapshotId: string | null;
-  guideline: GuidelineState;
-  guidelineApplications: string[];
+  direction: DirectionState;
 }
 
 export function createEmptyProject(name = "Brand Brew Project"): ProjectData {
@@ -253,8 +270,7 @@ export function createEmptyProject(name = "Brand Brew Project"): ProjectData {
     elements: createEmptyElements(),
     snapshots: [],
     selectedSnapshotId: null,
-    guideline: { versions: [], activeVersionId: null },
-    guidelineApplications: [],
+    direction: { versions: [], activeVersionId: null },
   };
 }
 
@@ -274,6 +290,16 @@ export function getActiveElementData<K extends ElementId>(
   elementId: K,
 ): ElementDataMap[K] | null {
   return getActiveVariation(elements, elementId)?.data ?? null;
+}
+
+export function getVariationDataById<K extends ElementId>(
+  elements: ElementsState,
+  elementId: K,
+  variationId: string,
+): ElementDataMap[K] | null {
+  const slot = elements[elementId] as ElementSlot<ElementDataMap[K]>;
+  const v = slot.variations.find((x) => x.id === variationId);
+  return v?.data ?? null;
 }
 
 export function getCheckedVariation<K extends ElementId>(

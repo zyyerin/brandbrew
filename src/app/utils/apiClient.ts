@@ -11,6 +11,19 @@ export interface CallApiOptions {
 }
 
 /**
+ * Force a fresh token on 401. Clears any stale or wrong-project session, then
+ * signs in anonymously for the current project. Use when refreshSession still
+ * yields a token rejected by the server (e.g. session from different project).
+ */
+async function forceRefreshToken(): Promise<string> {
+  await supabase.auth.signOut({ scope: "local" });
+  const { data, error } = await supabase.auth.signInAnonymously();
+  if (error) throw new Error(error.message);
+  if (!data.session?.access_token) throw new Error("No session after sign-in");
+  return data.session.access_token;
+}
+
+/**
  * Ensure we have a user session and return the access token for Edge Function auth.
  */
 async function ensureUserSession(): Promise<string> {
@@ -64,7 +77,7 @@ export async function callApi<T>(
   try {
     let res = await doFetch();
     if (res.status === 401) {
-      token = await ensureUserSession();
+      token = await forceRefreshToken();
       res = await doFetch();
     }
     if (!res.ok) await handleApiError(res);

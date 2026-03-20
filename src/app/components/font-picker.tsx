@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { ChevronDown, Search, Check } from "lucide-react";
+import { TIMING, TYPOGRAPHY } from "../utils/design-tokens";
 
 // ─── Curated list of popular Google Fonts ────────────────────────────────────
 export const GOOGLE_FONTS: { name: string; category: string }[] = [
@@ -174,13 +175,13 @@ export function FontPicker({
       const el = listRef.current?.querySelector("[data-selected]") as HTMLElement | null;
       el?.scrollIntoView({ block: "center" });
       inputRef.current?.focus();
-    }, 40);
+    }, TIMING.SCROLL_INTO_VIEW_DELAY);
   }, [isOpen]);
 
   // Load font on hover (debounced 150 ms so we don't spam while scrolling)
   const handleMouseEnter = useCallback((name: string) => {
     if (hoverTimer.current) clearTimeout(hoverTimer.current);
-    hoverTimer.current = setTimeout(() => loadFontPreview(name), 150);
+    hoverTimer.current = setTimeout(() => loadFontPreview(name), TIMING.FONT_HOVER_DELAY);
   }, []);
 
   function close() {
@@ -194,13 +195,13 @@ export function FontPicker({
     close();
   }
 
-  const previewSize = variant === "heading" ? "text-[18px]" : "text-[14px]";
+  const previewFontSize = variant === "heading" ? TYPOGRAPHY.cardHeadingSm.fontSize : TYPOGRAPHY.cardTagline.fontSize;
   const triggerFontFamily = value ? `"${value}", sans-serif` : undefined;
 
   return (
     <div ref={containerRef} className="relative w-full">
       {label && (
-        <span className="text-[10px] tracking-[0.12em] uppercase text-muted-foreground/60 block mb-1.5">
+        <span className="uppercase text-muted-foreground/60 block mb-1.5" style={{ fontSize: TYPOGRAPHY.microLabel.fontSize, letterSpacing: TYPOGRAPHY.microLabel.letterSpacing }}>
           {label}
         </span>
       )}
@@ -216,10 +217,10 @@ export function FontPicker({
           }`}
       >
         <span
-          className={`${previewSize} text-foreground truncate`}
-          style={{ fontFamily: triggerFontFamily }}
+          className="text-foreground truncate"
+          style={{ fontFamily: triggerFontFamily, fontSize: previewFontSize }}
         >
-          {value || <span className="text-muted-foreground/40 text-[13px]">{placeholder}</span>}
+          {value || <span className="text-muted-foreground/40" style={{ fontSize: TYPOGRAPHY.cardBody.fontSize }}>{placeholder}</span>}
         </span>
         <ChevronDown
           size={13}
@@ -278,8 +279,8 @@ export function FontPicker({
                   >
                     {/* Font name rendered in its own typeface */}
                     <span
-                      className={`${previewSize} leading-tight truncate ${isSelected ? "text-blue-600" : "text-foreground"}`}
-                      style={{ fontFamily: `"${font.name}", sans-serif` }}
+                      className={`leading-tight truncate ${isSelected ? "text-blue-600" : "text-foreground"}`}
+                      style={{ fontFamily: `"${font.name}", sans-serif`, fontSize: previewFontSize }}
                     >
                       {font.name}
                     </span>

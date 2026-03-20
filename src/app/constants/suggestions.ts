@@ -10,5 +10,6 @@ export const SUGGESTION_PROMPTS: Record<string, BrandSummaryFields> = {
     keywords: "artisan, cozy, community, sustainable, craft coffee",
     brandDescription:
       "A modern specialty cafe brand that celebrates craft coffee and warm community. Focused on local sourcing, slow brewing methods, and creating an elevated yet inviting atmosphere.",
+    applications: "Coffee Sleeve, Loyalty Card, Tote Bag, Menu Card, Storefront Signage",
   },
 };

@@ -1,16 +1,18 @@
 import React, { useCallback } from "react";
-import type { CardMeta, CardState } from "./types";
-import { CardWrapper } from "./CardWrapper";
-import { ImageWithFallback } from "../figma/ImageWithFallback";
+import { Download } from "lucide-react";
+import type { VariationMeta, VariationState } from "./types";
+import { ElementWrapper } from "./ElementWrapper";
+import { ImageWithFallback } from "./ImageWithFallback";
+import { LAYOUT, TYPOGRAPHY } from "../../utils/design-tokens";
 
 interface ImageCardProps {
   label: string;
   imageUrl: string;
-  state?: CardState;
+  state?: VariationState;
   onToggleActive?: () => void;
-  onRefresh?: () => void;
+  onAddVariation?: () => void;
   onDelete?: () => void;
-  meta?: CardMeta;
+  meta?: VariationMeta;
   minHeight?: string;
   onAspectRatioChange?: (aspectRatio: number) => void;
 }
@@ -20,10 +22,10 @@ export function ImageCard({
   imageUrl,
   state,
   onToggleActive,
-  onRefresh,
+  onAddVariation,
   onDelete,
   meta,
-  minHeight = "160px",
+  minHeight = `${LAYOUT.IMAGE_CARD_MIN_HEIGHT}px`,
   onAspectRatioChange,
 }: ImageCardProps) {
   const handleImageLoad = useCallback(
@@ -35,14 +37,46 @@ export function ImageCard({
     [onAspectRatioChange],
   );
 
+  const handleDownload = useCallback(
+    async (e: React.MouseEvent) => {
+      e.stopPropagation();
+      if (!imageUrl) return;
+      try {
+        const response = await fetch(imageUrl);
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        const ext = blob.type.split("/")[1] || "png";
+        a.download = `${label.toLowerCase().replace(/\s+/g, "-")}.${ext}`;
+        a.click();
+        URL.revokeObjectURL(url);
+      } catch {
+        window.open(imageUrl, "_blank", "noopener,noreferrer");
+      }
+    },
+    [imageUrl, label],
+  );
+
+  const downloadButton = imageUrl ? (
+    <button
+      onClick={handleDownload}
+      className="p-1 rounded-md text-muted-foreground/60 hover:text-foreground hover:bg-black/5 transition-colors"
+      title="Download image"
+    >
+      <Download size={TYPOGRAPHY.actionIconSize} />
+    </button>
+  ) : null;
+
   return (
-    <CardWrapper
+    <ElementWrapper
       label={label}
       state={state}
-      onRegenerate={onRefresh}
+      onAddVariation={onAddVariation}
       onDelete={onDelete}
       onToggleActive={onToggleActive}
       meta={meta}
+      extraActions={downloadButton}
     >
       <div
         className="relative rounded-lg overflow-hidden flex-1 bg-muted/30 cursor-pointer"
@@ -62,17 +96,17 @@ export function ImageCard({
           />
         )}
       </div>
-    </CardWrapper>
+    </ElementWrapper>
   );
 }
 
 interface VisualSnapshotProps {
   images: { id: string; imageUrl: string; label: string }[];
-  state?: CardState;
+  state?: VariationState;
   onToggleActive?: () => void;
-  onRefresh?: () => void;
+  onAddVariation?: () => void;
   onDelete?: () => void;
-  meta?: CardMeta;
+  meta?: VariationMeta;
   onAspectRatioChange?: (aspectRatio: number) => void;
 }
 
@@ -85,7 +119,7 @@ export function VisualSnapshotCard({
     <ImageCard
       label="Visual Snapshot"
       imageUrl={images[0]?.imageUrl ?? ""}
-      minHeight="200px"
+      minHeight={`${LAYOUT.SNAPSHOT_CARD_MIN_HEIGHT}px`}
       onAspectRatioChange={onAspectRatioChange}
       {...rest}
     />

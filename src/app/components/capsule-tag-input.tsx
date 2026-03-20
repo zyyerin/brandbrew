@@ -68,16 +68,16 @@ export function CapsuleTagInput({
     <div
       role="group"
       aria-label="Tag input"
-      className={`flex flex-wrap items-center gap-1.5 px-2.5 py-2 min-h-[38px] cursor-text transition-all ${className}`}
+      className={`flex flex-wrap items-center gap-2 px-2.5 py-2 min-h-[38px] cursor-text transition-all ${className}`}
       onClick={() => inputRef.current?.focus()}
     >
       {tags.map((tag, idx) => (
         <span
           key={idx}
-          className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[12px] font-medium border select-none transition-colors ${
+          className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11.5px] font-medium select-none transition-colors ${
             generated
-              ? "bg-blue-50 text-blue-600 border-blue-200"
-              : "bg-muted/60 text-foreground/80 border-border/40"
+              ? "bg-violet-100/70 text-violet-700"
+              : "bg-foreground/[0.07] text-foreground/75"
           }`}
         >
           {tag}
@@ -89,10 +89,10 @@ export function CapsuleTagInput({
                 e.preventDefault();
                 removeTag(idx);
               }}
-              className="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full hover:bg-black/10 transition-colors shrink-0"
+              className="inline-flex items-center justify-center w-4 h-4 rounded-full ml-0.5 opacity-40 hover:opacity-100 hover:bg-black/10 transition-all shrink-0"
               tabIndex={-1}
             >
-              <X size={9} />
+              <X size={10} />
             </button>
           )}
         </span>

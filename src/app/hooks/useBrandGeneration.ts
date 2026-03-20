@@ -1,11 +1,12 @@
 import { useState, useCallback, useRef, type MutableRefObject } from "react";
-import type { ProjectData, ElementId, Variation, CardMeta } from "../types/project";
-import { IMAGE_ELEMENT_IDS, ELEMENT_LABELS, getActiveElementData } from "../types/project";
+import type { ProjectData, ElementId, Variation, VariationMeta, PipelineStage } from "../types/project";
+import { IMAGE_ELEMENT_IDS, ELEMENT_LABELS, getActiveElementData, getVariationDataById } from "../types/project";
 import type { BrandSummaryFields } from "../components/brand-summary";
 import type { BriefGeneratedKey } from "../components/brand-summary";
-import { generateVisualConcept, enhanceBrief, generateCardVariation, uploadImage } from "../utils/generate-brand";
-import { generateBrandImage, generateMergeImage, designPaletteAndFonts, designLogoAndStyle, designLayout } from "../utils/generate-image";
+import { generateVisualConcept, autoCompleteBrief, generateCardVariation, uploadImage } from "../utils/generate-brand";
+import { generateBrandImage, generateMergeImage, designPaletteAndFonts, designLogoAndStyle, designApplication } from "../utils/generate-image";
 import type { ImageCardType } from "../utils/generate-image";
+import { toast } from "sonner";
 import {
   isMergeSupported,
   getMergeHint,
@@ -13,24 +14,17 @@ import {
   performPaletteExtraction,
   performVisionTextMerge,
   performCommentModify,
+  type MergeBrandContext,
 } from "../utils/merge-logic";
-import { normalizeColorPalette, paletteToBase64 } from "../utils/helpers";
+import { normalizeColorPalette, normalizeAndSortColorPalette, sortColorPaletteForHarmony, paletteToBase64 } from "../utils/helpers";
 import { SUGGESTION_PROMPTS } from "../constants/suggestions";
-
-// ── Display phase (transient animation state for the board) ─────────────────
-export type BoardDisplayPhase =
-  | "empty"
-  | "generating-concept"
-  | "generating-palette-fonts"
-  | "generating-logo-style"
-  | "generating-layout"
-  | "visual-complete";
 
 export interface UseBrandGenerationParams {
   project: ProjectData;
   setProject: React.Dispatch<React.SetStateAction<ProjectData>>;
   projectRef: MutableRefObject<ProjectData>;
   generationCounterRef: MutableRefObject<number>;
+  uploadingVariationIdsRef?: MutableRefObject<Set<string>>;
 }
 
 function addVariationToProject(
@@ -74,6 +68,9 @@ function fieldsToSummary(fields: BrandSummaryFields) {
     keywords: fields.keywords
       ? fields.keywords.split(",").map((k) => k.trim()).filter(Boolean)
       : [],
+    applications: fields.applications
+      ? fields.applications.split(",").map((a) => a.trim()).filter(Boolean)
+      : [],
   };
 }
 
@@ -82,15 +79,16 @@ export function useBrandGeneration({
   setProject,
   projectRef,
   generationCounterRef,
+  uploadingVariationIdsRef,
 }: UseBrandGenerationParams) {
+  const [uploadingVariationIds, setUploadingVariationIds] = useState<Set<string>>(new Set());
   const [isBrandGenerating, setIsBrandGenerating] = useState(false);
-  const [isEnhancing, setIsEnhancing] = useState(false);
   const [isAutoCompleting, setIsAutoCompleting] = useState(false);
   const [generatedBriefFields, setGeneratedBriefFields] = useState<Set<BriefGeneratedKey>>(new Set());
   const [loadingElements, setLoadingElements] = useState<Set<string>>(new Set());
   const [mergingElementIds, setMergingElementIds] = useState<Set<string>>(new Set());
   const mergeInFlightRef = useRef<Set<string>>(new Set());
-  const [displayPhase, setDisplayPhase] = useState<BoardDisplayPhase>("empty");
+  const [displayPhase, setDisplayPhase] = useState<PipelineStage>(null);
   const [autoFillingFieldKey, setAutoFillingFieldKey] = useState<keyof BrandSummaryFields | null>(null);
 
   const runVisualGeneration = useCallback(
@@ -100,8 +98,9 @@ export function useBrandGeneration({
       description: string;
       targetAudience: string;
       keywords: string[];
+      applications?: string[];
     }) => {
-      const makeVar = (id: string, data: unknown, meta?: CardMeta): Variation => ({
+      const makeVar = (id: string, data: unknown, meta?: VariationMeta): Variation => ({
         id,
         data,
         source: "initial",
@@ -111,7 +110,7 @@ export function useBrandGeneration({
 
       try {
         // Step 0: Strategist -> Visual Concept
-        setDisplayPhase("generating-concept");
+        setDisplayPhase("conceptualizing");
         const vcResult = await generateVisualConcept({
           brandName: briefContext.brandName,
           tagline: briefContext.tagline,
@@ -120,11 +119,26 @@ export function useBrandGeneration({
           keywords: briefContext.keywords,
         });
 
-        setProject((prev) => addVariationToProject(
-          prev,
-          "visual-concept",
-          makeVar("visual-concept", vcResult.visualConcept, vcResult._meta),
-        ));
+        setProject((prev) => {
+          // Split the 3-phrase array into individual string variations, one card per keyword.
+          // Only the first is set as active; the others sit in the queue for later selection/merge.
+          const [first, ...rest] = vcResult.visualConcept;
+          let next = addVariationToProject(
+            prev,
+            "visual-concept",
+            makeVar("visual-concept", first, vcResult._meta),
+            true,
+          );
+          for (let i = 0; i < rest.length; i++) {
+            next = addVariationToProject(
+              next,
+              "visual-concept",
+              makeVar(`visual-concept--kw-${i + 1}`, rest[i], vcResult._meta),
+              false,
+            );
+          }
+          return next;
+        });
 
         const designCtx = {
           brandName: briefContext.brandName,
@@ -136,14 +150,14 @@ export function useBrandGeneration({
         };
 
         // Step 1: Art Director -> Palette + Fonts
-        setDisplayPhase("generating-palette-fonts");
+        setDisplayPhase("styling");
         const pfResult = await designPaletteAndFonts(designCtx);
 
         setProject((prev) => {
           let next = addVariationToProject(
             prev,
             "color-palette",
-            makeVar("color-palette", pfResult.colorPalette, pfResult._meta),
+            makeVar("color-palette", sortColorPaletteForHarmony(pfResult.colorPalette), pfResult._meta),
           );
           next = addVariationToProject(
             next,
@@ -154,7 +168,7 @@ export function useBrandGeneration({
         });
 
         // Step 2: Art Director -> Logo + Art Style
-        setDisplayPhase("generating-logo-style");
+        setDisplayPhase("drawing");
         const lsResult = await designLogoAndStyle({
           ...designCtx,
           colorPalette: pfResult.colorPalette,
@@ -175,31 +189,33 @@ export function useBrandGeneration({
           return next;
         });
 
-        // Step 3: Art Director -> Layout
-        setDisplayPhase("generating-layout");
-        const layoutResult = await designLayout({
+        // Step 3: Art Director -> Application Mockup
+        setDisplayPhase("visualizing");
+        const firstApplication = briefContext.applications?.[0] ?? "packaging and label";
+        const applicationResult = await designApplication({
           ...designCtx,
           colorPalette: pfResult.colorPalette,
           font: pfResult.font,
           artStyleImageUrl: lsResult.artStyleImageUrl,
           logoImageUrl: lsResult.logoImageUrl,
+          application: firstApplication,
         });
 
         setProject((prev) => {
           let next = addVariationToProject(
             prev,
-            "layout",
-            makeVar("layout", { imageUrl: layoutResult.layoutImageUrl }, layoutResult._meta),
+            "application",
+            makeVar("application", { imageUrl: applicationResult.applicationImageUrl }, applicationResult._meta),
           );
           next = { ...next, phase: "curating" };
           return next;
         });
 
-        setDisplayPhase("visual-complete");
+        setDisplayPhase(null);
       } catch (err) {
         console.error("Visual generation pipeline failed:", err);
         setProject((prev) => ({ ...prev, phase: "curating" }));
-        setDisplayPhase("visual-complete");
+        setDisplayPhase(null);
       }
     },
     [setProject],
@@ -215,6 +231,7 @@ export function useBrandGeneration({
         description: fields.brandDescription?.trim() || "",
         targetAudience: fields.targetAudience?.trim() || "",
         keywords: fieldsToSummary(fields).keywords,
+        applications: fieldsToSummary(fields).applications,
       };
 
       setProject((prev) => {
@@ -228,7 +245,7 @@ export function useBrandGeneration({
         return {
           ...prev,
           projectName: fields.brandName?.trim() || prev.projectName,
-          phase: "generating" as const,
+          phase: "curating" as const,
           brandSummary: {
             current: summaryData,
             versions: [...prev.brandSummary.versions, bsVersion],
@@ -243,6 +260,7 @@ export function useBrandGeneration({
           description: summaryData.description,
           targetAudience: summaryData.targetAudience,
           keywords: summaryData.keywords,
+          applications: summaryData.applications,
         });
       } catch (err) {
         console.error("Brand generation error:", err);
@@ -261,12 +279,12 @@ export function useBrandGeneration({
     [handleBrandSummarySubmit],
   );
 
-  const handleEnhanceBrief = useCallback(
+  const handleAutoComplete = useCallback(
     async (fields: BrandSummaryFields) => {
-      setIsEnhancing(true);
+      setIsAutoCompleting(true);
       setGeneratedBriefFields(new Set());
       try {
-        const result = await enhanceBrief({
+        const result = await autoCompleteBrief({
           partialBrief: {
             name: fields.brandName?.trim() || undefined,
             tagline: fields.tagline?.trim() || undefined,
@@ -286,6 +304,7 @@ export function useBrandGeneration({
           description: fields.brandDescription?.trim() || result.brandBrief.description || "",
           targetAudience: fields.targetAudience?.trim() || result.targetAudience || "",
           keywords: userKeywords.length ? userKeywords : result.keywords ?? [],
+          applications: result.applications ?? [],
         };
 
         const generated = new Set<BriefGeneratedKey>();
@@ -295,6 +314,11 @@ export function useBrandGeneration({
         if (!fields.targetAudience?.trim() && merged.targetAudience) generated.add("targetAudience");
         if (!fields.keywords?.trim() && merged.keywords.length) generated.add("keywords");
 
+        const userApplications = fields.applications?.trim()
+          ? fields.applications.split(",").map((a) => a.trim()).filter(Boolean)
+          : [];
+        if (!userApplications.length && merged.applications.length) generated.add("applications");
+
         setProject((prev) => ({
           ...prev,
           brandSummary: {
@@ -302,43 +326,46 @@ export function useBrandGeneration({
             current: merged,
           },
         }));
+
         setGeneratedBriefFields(generated);
       } catch (err) {
-        console.error("Enhance brief error:", err);
-      } finally {
-        setIsEnhancing(false);
-      }
-    },
-    [setProject],
-  );
-
-  const handleAutoComplete = useCallback(
-    async (fields: BrandSummaryFields) => {
-      setIsAutoCompleting(true);
-      setGeneratedBriefFields(new Set());
-      try {
-        await handleEnhanceBrief(fields);
-      } catch (err) {
-        console.error("Auto complete error:", err);
+        console.error("Auto-complete error:", err);
       } finally {
         setIsAutoCompleting(false);
       }
     },
-    [handleEnhanceBrief],
+    [setProject],
   );
 
   const handleFieldAutoFill = useCallback(
     async (key: keyof BrandSummaryFields, fields: BrandSummaryFields) => {
       setAutoFillingFieldKey(key);
       try {
-        const result = await enhanceBrief({
+        // Map UI field key to the partialBrief / API field name.
+        const fieldToApiName: Record<keyof BrandSummaryFields, string> = {
+          brandName: "name",
+          tagline: "tagline",
+          brandDescription: "description",
+          targetAudience: "targetAudience",
+          keywords: "keywords",
+          applications: "applications",
+        };
+
+        // Capture the existing value. If non-empty, we send it as enhanceHint
+        // and clear the field from partialBrief so the model generates a new version.
+        const existingValue: string = fields[key]?.trim() ?? "";
+        const isEnhance = existingValue.length > 0;
+
+        const result = await autoCompleteBrief({
           partialBrief: {
-            name: fields.brandName?.trim() || undefined,
-            tagline: fields.tagline?.trim() || undefined,
-            description: fields.brandDescription?.trim() || undefined,
+            name: key === "brandName" && isEnhance ? undefined : (fields.brandName?.trim() || undefined),
+            tagline: key === "tagline" && isEnhance ? undefined : (fields.tagline?.trim() || undefined),
+            description: key === "brandDescription" && isEnhance ? undefined : (fields.brandDescription?.trim() || undefined),
           },
-          targetAudience: fields.targetAudience?.trim() || undefined,
-          keywords: fields.keywords?.trim() || undefined,
+          targetAudience: key === "targetAudience" && isEnhance ? undefined : (fields.targetAudience?.trim() || undefined),
+          keywords: key === "keywords" && isEnhance ? undefined : (fields.keywords?.trim() || undefined),
+          enhanceHint: isEnhance ? existingValue : undefined,
+          targetField: isEnhance ? fieldToApiName[key] : undefined,
         });
 
         setProject((prev) => {
@@ -346,23 +373,40 @@ export function useBrandGeneration({
           const nextGenerated = new Set(generatedBriefFields);
 
           if (key === "brandName") {
-            bs.name = fields.brandName?.trim() || result.brandBrief?.name || bs.name;
-            if (!fields.brandName?.trim() && bs.name) nextGenerated.add("brandName");
+            const newVal = result.brandBrief?.name || bs.name;
+            if (newVal !== bs.name || isEnhance) {
+              bs.name = newVal;
+              nextGenerated.add("brandName");
+            }
           } else if (key === "tagline") {
-            bs.tagline = fields.tagline?.trim() || result.brandBrief?.tagline || bs.tagline;
-            if (!fields.tagline?.trim() && bs.tagline) nextGenerated.add("tagline");
+            const newVal = result.brandBrief?.tagline || bs.tagline;
+            if (newVal !== bs.tagline || isEnhance) {
+              bs.tagline = newVal;
+              nextGenerated.add("tagline");
+            }
           } else if (key === "brandDescription") {
-            bs.description = fields.brandDescription?.trim() || result.brandBrief?.description || bs.description;
-            if (!fields.brandDescription?.trim() && bs.description) nextGenerated.add("brandDescription");
+            const newVal = result.brandBrief?.description || bs.description;
+            if (newVal !== bs.description || isEnhance) {
+              bs.description = newVal;
+              nextGenerated.add("brandDescription");
+            }
           } else if (key === "targetAudience") {
-            bs.targetAudience = fields.targetAudience?.trim() || result.targetAudience || bs.targetAudience;
-            if (!fields.targetAudience?.trim() && bs.targetAudience) nextGenerated.add("targetAudience");
+            const newVal = result.targetAudience || bs.targetAudience;
+            if (newVal !== bs.targetAudience || isEnhance) {
+              bs.targetAudience = newVal;
+              nextGenerated.add("targetAudience");
+            }
           } else if (key === "keywords") {
             const userKw = fields.keywords?.trim()
               ? fields.keywords.split(",").map((k) => k.trim()).filter(Boolean)
               : [];
-            bs.keywords = userKw.length ? userKw : result.keywords ?? bs.keywords;
-            if (!fields.keywords?.trim() && bs.keywords.length) nextGenerated.add("keywords");
+            const newKw = isEnhance ? (result.keywords ?? bs.keywords) : (userKw.length ? userKw : (result.keywords ?? bs.keywords));
+            bs.keywords = newKw;
+            nextGenerated.add("keywords");
+          } else if (key === "applications") {
+            const newApps = result.applications ?? bs.applications;
+            bs.applications = newApps;
+            nextGenerated.add("applications");
           }
 
           setGeneratedBriefFields(nextGenerated);
@@ -372,7 +416,7 @@ export function useBrandGeneration({
           };
         });
       } catch (err) {
-        console.error("Field auto-fill error:", err);
+        console.error("Field auto-complete error:", err);
       } finally {
         setAutoFillingFieldKey((current) => (current === key ? null : current));
       }
@@ -380,8 +424,8 @@ export function useBrandGeneration({
     [generatedBriefFields, setProject],
   );
 
-  const handleGenerateRegenerate = useCallback(
-    async (elementId: string | null) => {
+  const handleAddVariation = useCallback(
+    async (elementId: string | null, sourceVariationId?: string | null) => {
       if (!elementId) return;
       const eid = elementId as ElementId;
 
@@ -393,62 +437,86 @@ export function useBrandGeneration({
         const vc = getActiveElementData(p.elements, "visual-concept");
         const cp = getActiveElementData(p.elements, "color-palette");
 
+        const getSourceData = () => {
+          if (!sourceVariationId) return null;
+          return getVariationDataById(p.elements, eid, sourceVariationId);
+        };
+        const sourceData = getSourceData();
+
         if (IMAGE_ELEMENT_IDS.has(eid)) {
+          const imgSource = sourceData as { imageUrl?: string } | null;
+          const sourceImageUrl = imgSource?.imageUrl;
+
           const result = await generateBrandImage(elementId as ImageCardType, {
             brandName: bs.name,
             brandDescription: bs.description,
-            conceptName: vc?.conceptName,
-            conceptPoints: vc?.points,
+            conceptPhrases: typeof vc === "string" && vc ? [vc] : undefined,
             keywords: bs.keywords,
             colorPalette: cp as string[] | undefined,
+            sourceImageUrl,
           });
 
           const paletteB64 = cp?.length ? paletteToBase64(cp as string[]) : undefined;
-          const meta: CardMeta | undefined = result._meta
+          const addVariationSource = sourceVariationId ? "from-variation" as const : "original-brand" as const;
+          const meta: VariationMeta | undefined = result._meta
             ? {
                 ...result._meta,
                 paletteImageDataUrl:
                   paletteB64 ? `data:image/png;base64,${paletteB64}` : result._meta.paletteImageDataUrl,
+                addVariationSource,
+                sourceVariationId: sourceVariationId ?? undefined,
               }
-            : result._meta;
+            : { addVariationSource, sourceVariationId: sourceVariationId ?? undefined };
 
           const counter = generationCounterRef.current++;
           const variation: Variation = {
-            id: `regenerate-${Date.now()}-${counter}`,
+            id: `add-variation-${Date.now()}-${counter}`,
             data: { imageUrl: result.imageUrl },
-            source: "regenerate",
+            source: "add-variation",
             createdAt: new Date(),
             meta,
           };
 
           setProject((prev) => addVariationToProject(prev, eid, variation));
         } else {
-          const existingContent = getActiveElementData(p.elements, eid);
+          const existingContent = sourceData ?? undefined;
 
           const result = await generateCardVariation(elementId, {
             brandName: bs.name,
             tagline: bs.tagline,
             description: bs.description,
             keywords: bs.keywords,
-            concept: vc?.conceptName,
+            concept: typeof vc === "string" ? vc : undefined,
             existingContent,
           });
 
           const counter = generationCounterRef.current++;
+          const addVariationSource = sourceVariationId ? "from-variation" as const : "original-brand" as const;
+          const meta: VariationMeta | undefined = result._meta
+            ? {
+                ...result._meta,
+                addVariationSource,
+                sourceVariationId: sourceVariationId ?? undefined,
+              }
+            : { addVariationSource, sourceVariationId: sourceVariationId ?? undefined };
           const variation: Variation = {
-            id: `regenerate-${Date.now()}-${counter}`,
+            id: `add-variation-${Date.now()}-${counter}`,
             data: eid === "color-palette"
-              ? normalizeColorPalette(result.data)
-              : result.data,
-            source: "regenerate",
+              ? normalizeAndSortColorPalette(result.data)
+              : eid === "visual-concept"
+                ? (typeof result.data === "string"
+                    ? result.data
+                    : (result.data as any)?.visualConcept ?? "")
+                : result.data,
+            source: "add-variation",
             createdAt: new Date(),
-            meta: result._meta,
+            meta,
           };
 
           setProject((prev) => addVariationToProject(prev, eid, variation));
         }
       } catch (err) {
-        console.error("Regenerate error:", err);
+        console.error("Add variation error:", err);
       } finally {
         setLoadingElements((prev) => {
           const n = new Set(prev);
@@ -497,11 +565,11 @@ export function useBrandGeneration({
           const sourceData = getVariationData(sourceEid, sourceVarId) as { imageUrl: string } | null;
           const sourceImageUrl = sourceData?.imageUrl;
           if (!sourceImageUrl) return;
-          const legacyBrandData = buildLegacyBrandDataForMerge(p);
-          const { patch, _meta: extractMeta } = await performPaletteExtraction(sourceId, sourceImageUrl, legacyBrandData);
+          const mergeContext = buildMergeContext(p);
+          const { patch, _meta: extractMeta } = await performPaletteExtraction(sourceId, sourceImageUrl, mergeContext);
           if (patch) {
             const rawPalette = (patch as Record<string, unknown>).colorPalette;
-            const normalized = normalizeColorPalette(rawPalette);
+            const normalized = normalizeAndSortColorPalette(rawPalette);
             if (normalized != null) {
               const counter = generationCounterRef.current++;
               const variation: Variation = {
@@ -522,19 +590,19 @@ export function useBrandGeneration({
           const sourceData = getVariationData(sourceEid, sourceVarId) as { imageUrl: string } | null;
           const sourceImageUrl = sourceData?.imageUrl;
           if (!sourceImageUrl) return;
-          const legacyBrandData = buildLegacyBrandDataForMerge(p);
+          const mergeContext = buildMergeContext(p);
           const { patch, _meta: visionMergeMeta } = await performVisionTextMerge(
             sourceId,
             targetId,
             sourceImageUrl,
-            legacyBrandData,
+            mergeContext,
           );
           if (patch) {
             const mergeData = extractMergeData(targetEid, patch);
             if (mergeData != null) {
               const variationData =
                 targetEid === "color-palette"
-                  ? normalizeColorPalette(mergeData)
+                  ? normalizeAndSortColorPalette(mergeData)
                   : mergeData;
               const counter = generationCounterRef.current++;
               const variation: Variation = {
@@ -554,7 +622,7 @@ export function useBrandGeneration({
         } else if (IMAGE_ELEMENT_IDS.has(targetEid)) {
           const isWordmarkMerge = sourceId === "font" && targetId === "logo";
 
-          let mergeResult: { imageUrl: string; _meta?: CardMeta };
+          let mergeResult: { imageUrl: string; _meta?: VariationMeta };
 
           if (!targetVarId && !isWordmarkMerge) {
             // Queue-slot drop → simple merge via visual-designer (hint + brand summary + source image)
@@ -584,8 +652,7 @@ export function useBrandGeneration({
             mergeResult = await generateBrandImage(targetId as ImageCardType, {
               brandName: bs.name,
               brandDescription: bs.description,
-              conceptName: vc?.conceptName,
-              conceptPoints: vc?.points,
+              conceptPhrases: typeof vc === "string" && vc ? [vc] : undefined,
               keywords: bs.keywords,
               colorPalette: cp ?? undefined,
               mergeContext: hint,
@@ -610,14 +677,14 @@ export function useBrandGeneration({
               : addVariationToProject(prev, targetEid, variation),
           );
         } else {
-          const legacyBrandData = buildLegacyBrandDataForMerge(p);
-          const { patch, _meta: mergeMeta } = await performMerge(sourceId, targetId, legacyBrandData);
+          const mergeContext = buildMergeContext(p);
+          const { patch, _meta: mergeMeta } = await performMerge(sourceId, targetId, mergeContext);
           if (patch) {
             const mergeData = extractMergeData(targetEid, patch);
             if (mergeData != null) {
               const variationData =
                 targetEid === "color-palette"
-                  ? normalizeColorPalette(mergeData)
+                  ? normalizeAndSortColorPalette(mergeData)
                   : mergeData;
               const counter = generationCounterRef.current++;
               const variation: Variation = {
@@ -675,8 +742,7 @@ export function useBrandGeneration({
           const result = await generateBrandImage(targetId as ImageCardType, {
             brandName: bs.name,
             brandDescription: bs.description,
-            conceptName: vc?.conceptName,
-            conceptPoints: vc?.points,
+            conceptPhrases: typeof vc === "string" && vc ? [vc] : undefined,
             keywords: bs.keywords,
             colorPalette: cp ?? undefined,
             mergeContext: comment,
@@ -693,8 +759,8 @@ export function useBrandGeneration({
           };
           setProject((prev) => addVariationToProject(prev, targetEid, variation));
         } else {
-          const legacyBrandData = buildLegacyBrandDataForMerge(p);
-          const { patch, _meta: commentMeta } = await performCommentModify(targetId, comment, legacyBrandData);
+          const mergeContext = buildMergeContext(p);
+          const { patch, _meta: commentMeta } = await performCommentModify(targetId, comment, mergeContext);
           if (patch) {
             const modifiedData = extractMergeData(targetEid, patch);
             if (modifiedData != null) {
@@ -702,7 +768,7 @@ export function useBrandGeneration({
               const variation: Variation = {
                 id: `comment-${Date.now()}-${counter}`,
                 data: targetEid === "color-palette"
-                  ? normalizeColorPalette(modifiedData)
+                  ? normalizeAndSortColorPalette(modifiedData)
                   : modifiedData,
                 source: "comment",
                 createdAt: new Date(),
@@ -719,6 +785,53 @@ export function useBrandGeneration({
       }
     },
     [projectRef, generationCounterRef, setProject],
+  );
+
+  const handleMoveVariationToQueue = useCallback(
+    (sourceElementType: string, targetElementType: string, variationId: string) => {
+      const sourceEid = sourceElementType as ElementId;
+      const targetEid = targetElementType as ElementId;
+      if (!IMAGE_ELEMENT_IDS.has(sourceEid) || !IMAGE_ELEMENT_IDS.has(targetEid)) {
+        return;
+      }
+      if (sourceEid === targetEid) {
+        return;
+      }
+
+      setProject((prev) => {
+        const sourceSlot = prev.elements[sourceEid];
+        const targetSlot = prev.elements[targetEid];
+        const variation = sourceSlot.variations.find((v) => v.id === variationId);
+        if (!variation) {
+          return prev;
+        }
+
+        const sourceRemaining = sourceSlot.variations.filter((v) => v.id !== variationId);
+        const wasActive = sourceSlot.activeVariationId === variationId;
+        const wasChecked = sourceSlot.checkedVariationId === variationId;
+
+        const nextProject = {
+          ...prev,
+          selectedSnapshotId: null,
+          elements: {
+            ...prev.elements,
+            [sourceEid]: {
+              ...sourceSlot,
+              variations: sourceRemaining,
+              activeVariationId: wasActive ? sourceRemaining[0]?.id ?? null : sourceSlot.activeVariationId,
+              checkedVariationId: wasChecked ? null : sourceSlot.checkedVariationId,
+            },
+            [targetEid]: {
+              ...targetSlot,
+              variations: [...targetSlot.variations, variation],
+              activeVariationId: targetSlot.activeVariationId ?? variation.id,
+            },
+          },
+        };
+        return nextProject;
+      });
+    },
+    [setProject],
   );
 
   const MAX_UPLOAD_SIZE = 5 * 1024 * 1024; // 5 MB
@@ -747,6 +860,9 @@ export function useBrandGeneration({
 
       setProject((prev) => addVariationToProject(prev, eid, variation));
 
+      uploadingVariationIdsRef?.current.add(varId);
+      setUploadingVariationIds((prev) => new Set(prev).add(varId));
+
       const reader = new FileReader();
       reader.onload = async () => {
         try {
@@ -771,21 +887,40 @@ export function useBrandGeneration({
               },
             };
           });
-
-          URL.revokeObjectURL(blobUrl);
         } catch (err) {
           console.error("Image upload failed:", err);
+          toast.error("图片上传失败，请重试");
+          setProject((prev) => {
+            const slot = prev.elements[eid];
+            return {
+              ...prev,
+              elements: {
+                ...prev.elements,
+                [eid]: {
+                  ...slot,
+                  variations: slot.variations.filter((v) => v.id !== varId),
+                },
+              },
+            };
+          });
+        } finally {
+          URL.revokeObjectURL(blobUrl);
+          uploadingVariationIdsRef?.current.delete(varId);
+          setUploadingVariationIds((prev) => {
+            const n = new Set(prev);
+            n.delete(varId);
+            return n;
+          });
         }
       };
       reader.readAsDataURL(file);
     },
-    [generationCounterRef, setProject],
+    [generationCounterRef, setProject, uploadingVariationIdsRef],
   );
 
   return {
     isBrandGenerating,
     setIsBrandGenerating,
-    isEnhancing,
     isAutoCompleting,
     generatedBriefFields,
     setGeneratedBriefFields,
@@ -793,23 +928,24 @@ export function useBrandGeneration({
     setLoadingElements,
     mergingElementIds,
     setMergingElementIds,
-    displayPhase,
-    setDisplayPhase,
+    pipelineStage: displayPhase,
+    setPipelineStage: setDisplayPhase,
     handleBrandSummarySubmit,
     handleSuggestionClick,
-    handleEnhanceBrief,
     handleAutoComplete,
     handleFieldAutoFill,
     autoFillingFieldKey,
-    handleGenerateRegenerate,
+    handleAddVariation,
     handleMerge,
+    handleMoveVariationToQueue,
     handleCommentModify,
     handleUploadVariation,
+    uploadingVariationIds,
   };
 }
 
-// Construct a minimal legacy BrandData shape for the merge API call
-function buildLegacyBrandDataForMerge(p: ProjectData): Record<string, unknown> {
+// Construct a minimal brand context shape for the merge/comment API call
+function buildMergeContext(p: ProjectData): MergeBrandContext {
   const bs = p.brandSummary.current;
   return {
     brandBrief: { name: bs.name, tagline: bs.tagline, description: bs.description },
@@ -820,18 +956,18 @@ function buildLegacyBrandDataForMerge(p: ProjectData): Record<string, unknown> {
     colorPalette: getActiveElementData(p.elements, "color-palette"),
     font: getActiveElementData(p.elements, "font"),
     logoInspiration: getActiveElementData(p.elements, "logo"),
-    layout: getActiveElementData(p.elements, "layout"),
+    application: getActiveElementData(p.elements, "application"),
   };
 }
 
-function extractMergeData(elementId: ElementId, patch: Record<string, unknown>): unknown {
-  const map: Record<ElementId, string> = {
+function extractMergeData(elementId: ElementId, patch: Partial<MergeBrandContext>): unknown {
+  const map: Record<ElementId, keyof MergeBrandContext> = {
     "visual-concept": "visualConcept",
     "art-style": "artStyle",
     "color-palette": "colorPalette",
     "font": "font",
     "logo": "logoInspiration",
-    "layout": "layout",
+    "application": "application",
   };
   return patch[map[elementId]] ?? null;
 }

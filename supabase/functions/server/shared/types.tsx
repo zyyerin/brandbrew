@@ -12,13 +12,14 @@ export type MergeSpec = {
 export type ImagePromptContext = {
   brandName?: string;
   brandDescription?: string;
-  conceptName?: string;
-  conceptPoints?: string[];
+  conceptPhrases?: string[];
   keywords?: string[];
   colorPalette?: string[];
   mergeContext?: string;
   titleFont?: string;
   aspectRatio?: string;
+  /** Touchpoint name for application mockup generation (e.g. "Business Card", "Packaging") */
+  application?: string;
 };
 
 export type GeminiTextConfig = {

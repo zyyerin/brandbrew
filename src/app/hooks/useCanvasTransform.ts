@@ -10,9 +10,15 @@ const BOTTOM_MARGIN = CANVAS.BOTTOM_MARGIN;
 
 function clampPanY(y: number, curZoom: number, containerH: number, contentH: number) {
   const maxY = MAX_PAN_TOP;
-  const minY = contentH > 0 && containerH > 0
-    ? containerH - BOTTOM_MARGIN - contentH * curZoom
-    : -Infinity;
+  if (contentH <= 0 || containerH <= 0) return Math.min(y, maxY);
+
+  const scaledH = contentH * curZoom;
+  const minY = containerH - BOTTOM_MARGIN - scaledH;
+
+  if (minY > maxY) {
+    return (containerH - scaledH) / 2;
+  }
+
   return Math.max(Math.min(y, maxY), minY);
 }
 
@@ -127,14 +133,12 @@ export function useCanvasTransform(isCanvasPhase: boolean): CanvasTransformState
         const rawDelta = -e.deltaY * 0.015;
         const factor = 1 + rawDelta;
         const newZoom = Math.min(Math.max(curZoom * factor, ZOOM_MIN), ZOOM_MAX);
-        const newPanX = mouseX - (mouseX - curPan.x) * (newZoom / curZoom);
         const newPanY = mouseY - (mouseY - curPan.y) * (newZoom / curZoom);
         setZoom(newZoom);
-        setPan({ x: newPanX, y: newPanY });
+        setPan({ x: 0, y: clampPanY(newPanY, newZoom, stateRef.current.containerH, stateRef.current.contentH) });
       } else {
-        const dx = e.shiftKey ? -e.deltaX || -e.deltaY : -e.deltaX;
         const dy = e.shiftKey ? 0 : -e.deltaY;
-        setPan({ x: curPan.x + dx, y: clampPanY(curPan.y + dy, curZoom, stateRef.current.containerH, stateRef.current.contentH) });
+        setPan({ x: 0, y: clampPanY(curPan.y + dy, curZoom, stateRef.current.containerH, stateRef.current.contentH) });
       }
     };
 
@@ -162,7 +166,7 @@ export function useCanvasTransform(isCanvasPhase: boolean): CanvasTransformState
   const handlePointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     if (e.button !== 0 && e.button !== 1) return;
     const target = e.target as Element;
-    const onCardSlot = !!target.closest("[data-card-slot]");
+    const onCardSlot = !!target.closest("[data-variation-slot]");
     const onInteractive = !!target.closest("button, input, textarea, select, a, [contenteditable]");
     if (onInteractive) return;
     if (onCardSlot && e.button === 0) return;
@@ -173,17 +177,16 @@ export function useCanvasTransform(isCanvasPhase: boolean): CanvasTransformState
     panStartRef.current = {
       mouseX: e.clientX,
       mouseY: e.clientY,
-      panX: stateRef.current.pan.x,
+      panX: 0,
       panY: stateRef.current.pan.y,
     };
   }, []);
 
   const handlePointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     if (!isPanningRef.current) return;
-    const dx = e.clientX - panStartRef.current.mouseX;
     const dy = e.clientY - panStartRef.current.mouseY;
     setPan({
-      x: panStartRef.current.panX + dx,
+      x: 0,
       y: clampPanY(panStartRef.current.panY + dy, stateRef.current.zoom, stateRef.current.containerH, stateRef.current.contentH),
     });
   }, []);
@@ -256,17 +259,13 @@ export function useCanvasTransform(isCanvasPhase: boolean): CanvasTransformState
       };
       const factor = dist / touchRef.current.startDist;
       const newZoom = Math.min(Math.max(touchRef.current.startZoom * factor, ZOOM_MIN), ZOOM_MAX);
-      const panDx = curCenter.x - touchRef.current.startCenter.x;
       const panDy = curCenter.y - touchRef.current.startCenter.y;
       const zoomRatio = newZoom / touchRef.current.startZoom;
-      const newPanX = touchRef.current.startCenter.x
-        - (touchRef.current.startCenter.x - touchRef.current.startPan.x) * zoomRatio
-        + panDx;
       const newPanY = touchRef.current.startCenter.y
         - (touchRef.current.startCenter.y - touchRef.current.startPan.y) * zoomRatio
         + panDy;
       setZoom(newZoom);
-      setPan({ x: newPanX, y: newPanY });
+      setPan({ x: 0, y: clampPanY(newPanY, newZoom, stateRef.current.containerH, stateRef.current.contentH) });
       touchRef.current.lastCenter = curCenter;
     } else if (touches.length === 1 && touchRef.current.isFilmstripScroll) {
       e.preventDefault();
@@ -278,10 +277,9 @@ export function useCanvasTransform(isCanvasPhase: boolean): CanvasTransformState
     } else if (touches.length === 1 && touchRef.current.isOneFinger) {
       e.preventDefault();
       const touch = touches[0];
-      const dxClient = touch.clientX - touchRef.current.startOneFingerClient.x;
       const dyClient = touch.clientY - touchRef.current.startOneFingerClient.y;
       setPan({
-        x: touchRef.current.startOneFingerPan.x + dxClient,
+        x: 0,
         y: clampPanY(
           touchRef.current.startOneFingerPan.y + dyClient,
           stateRef.current.zoom,
@@ -303,14 +301,12 @@ export function useCanvasTransform(isCanvasPhase: boolean): CanvasTransformState
   // Zoom controls
   const zoomToward = (factor: number) => {
     if (!containerRef.current) return;
-    const rect = containerRef.current.getBoundingClientRect();
-    const cx = rect.width / 2;
-    const cy = rect.height / 2;
     const { zoom: curZoom, pan: curPan } = stateRef.current;
     const newZoom = Math.min(Math.max(curZoom * factor, ZOOM_MIN), ZOOM_MAX);
+    const newPanY = stateRef.current.containerH / 2 - (stateRef.current.containerH / 2 - curPan.y) * (newZoom / curZoom);
     setPan({
-      x: cx - (cx - curPan.x) * (newZoom / curZoom),
-      y: cy - (cy - curPan.y) * (newZoom / curZoom),
+      x: 0,
+      y: clampPanY(newPanY, newZoom, stateRef.current.containerH, stateRef.current.contentH),
     });
     setZoom(newZoom);
   };
@@ -322,18 +318,14 @@ export function useCanvasTransform(isCanvasPhase: boolean): CanvasTransformState
     if (!containerRef.current || !canvasRef.current) return;
     const containerRect = containerRef.current.getBoundingClientRect();
     const canvasBCR = canvasRef.current.getBoundingClientRect();
-    const naturalW = canvasBCR.width / stateRef.current.zoom;
     const naturalH = canvasBCR.height / stateRef.current.zoom;
     const pad = 48;
     const newZoom = Math.min(
-      (containerRect.width - pad * 2) / naturalW,
       (containerRect.height - pad * 2) / naturalH,
       1.0,
     );
-    const newPanX = (containerRect.width - naturalW * newZoom) / 2;
-    const newPanY = pad;
     setZoom(newZoom);
-    setPan({ x: newPanX, y: newPanY });
+    setPan({ x: 0, y: clampPanY(pad, newZoom, containerRect.height, naturalH) });
   };
 
   const handleResetView = () => {

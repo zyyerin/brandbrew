@@ -1,20 +1,28 @@
-import React, { useCallback, useRef, useMemo } from "react";
-import type { SnapshotHistoryItem } from "../types/app";
+import React, { useCallback, useRef, useMemo, useState, useEffect } from "react";
 import type { VariationItem } from "./variations-panel";
-import { CANVAS, CARD_LABELS as LABELS } from "../utils/design-tokens";
+import { CANVAS, LAYOUT, ELEMENT_TYPE_LABELS as LABELS } from "../utils/design-tokens";
 import { useCanvasTransform } from "../hooks/useCanvasTransform";
 import { useDragMerge } from "../hooks/useDragMerge";
 import { useQueueReorder } from "../hooks/useQueueReorder";
+import { useVariationReorder } from "../hooks/useVariationReorder";
 import { useCommentMerge } from "../hooks/useCommentMerge";
+import { CanvasZoomContext } from "../contexts/CanvasZoomContext";
+import { VSPanelContext } from "../contexts/VSPanelContext";
 import { EmptyState } from "./curation-board/EmptyState";
 import { ElementQueue } from "./curation-board/ElementQueue";
 import { VisualSnapshotPanel } from "./curation-board/VisualSnapshotPanel";
 import { CanvasHUD } from "./curation-board/CanvasHUD";
 import { CommentInput } from "./curation-board/CommentInput";
-import type { BrandData } from "../types/brand";
+import type { BrandSummaryData, ElementsState, ElementId, SnapshotItem, PipelineStage } from "../types/project";
 
 export type { GeneratedCardItem, GeneratedCardType } from "./brand-cards";
-export type { BrandData } from "../types/brand";
+
+/** Canvas-space layout info for a single variation slot, used for noodle math. */
+export type SlotPosition = {
+  queueIndex: number;
+  offsetInFilmstrip: number;
+  slotWidth: number;
+};
 
 const COMMENT_CURSOR = `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%236d28d9' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M7.9 20A9 9 0 1 0 4 16.1L2 22Z'/%3E%3C/svg%3E") 12 12, crosshair`;
 
@@ -23,47 +31,54 @@ const EMPTY_RECORD_VARIATIONS: Record<string, VariationItem[]> = {};
 const EMPTY_RECORD_ACTIVE: Record<string, string> = {};
 
 interface CurationBoardProps {
-  brandData: BrandData;
-  phase: "empty" | "generating-concept" | "generating-palette-fonts" | "generating-logo-style" | "generating-layout" | "visual-complete" | "guideline" | "guideline-all";
+  brandSummary: BrandSummaryData;
+  elements: ElementsState;
+  projectPhase: "empty" | "curating";
+  pipelineStage: PipelineStage;
   suggestions?: string[];
   onSuggestionClick?: (s: string) => void;
   variationCounts?: Record<string, number>;
-  onEditSave?: (componentId: string, patch: Partial<BrandData>) => void;
-  onRefresh?: (componentId: string) => void;
+  onEditSave?: (elementId: string, data: unknown) => void;
   onMerge?: (sourceId: string, targetId: string, sourceVarId?: string, targetVarId?: string) => void;
   onCommentModify?: (targetId: string, comment: string, targetVarId?: string) => void;
-  mergingCardIds?: Set<string>;
-  allVariationsByCard?: Record<string, VariationItem[]>;
-  activeVariationByCard?: Record<string, string>;
+  mergingElementTypes?: Set<string>;
+  allVariationsByElementType?: Record<string, VariationItem[]>;
+  activeVariationByElementType?: Record<string, string>;
   onSelectVariation?: (componentId: string, variationId: string) => void;
   checkedVariationIds?: Set<string>;
   onToggleVariationChecked?: (variationId: string, peerVariationIds: string[]) => void;
   onDeleteVariation?: (componentId: string, variationId: string) => void;
-  snapshotHistory?: SnapshotHistoryItem[];
+  snapshotHistory?: SnapshotItem[];
   selectedSnapshotId?: string | null;
   onSelectSnapshot?: (id: string | null) => void;
   onDeleteSnapshot?: (id: string) => void;
   onGenerateSnapshot?: () => void;
-  onGenerateBrandGuideline?: () => void;
+  onGenerateBrandDirection?: () => void;
+  onViewBrandDirection?: () => void;
+  selectedSnapshotHasDirection?: boolean;
   snapshotGenerating?: boolean;
   vsPanelExpanded?: boolean;
-  onAddVariation?: (cardId: string) => void;
-  onUploadVariation?: (cardId: string, file: File) => void;
+  onAddVariation?: (elementType: string, sourceVariationId?: string | null) => void;
+  onMoveVariationToQueue?: (sourceElementType: string, targetElementType: string, variationId: string) => void;
+  onUploadVariation?: (elementType: string, file: File) => void;
   loadingElementIds?: Set<string>;
+  uploadingVariationIds?: Set<string>;
+  onUpdateVariationOrder?: (elementType: string, newOrder: string[]) => void;
 }
 
 export function CurationBoard({
-  brandData,
-  phase,
+  brandSummary,
+  elements,
+  projectPhase,
+  pipelineStage,
   suggestions,
   onSuggestionClick,
   onEditSave,
-  onRefresh,
   onMerge,
   onCommentModify,
-  mergingCardIds = EMPTY_SET,
-  allVariationsByCard = EMPTY_RECORD_VARIATIONS,
-  activeVariationByCard = EMPTY_RECORD_ACTIVE,
+  mergingElementTypes = EMPTY_SET,
+  allVariationsByElementType = EMPTY_RECORD_VARIATIONS,
+  activeVariationByElementType = EMPTY_RECORD_ACTIVE,
   checkedVariationIds = EMPTY_SET,
   onToggleVariationChecked,
   onDeleteVariation,
@@ -72,69 +87,97 @@ export function CurationBoard({
   onSelectSnapshot,
   onDeleteSnapshot,
   onGenerateSnapshot,
-  onGenerateBrandGuideline,
+  onGenerateBrandDirection,
+  onViewBrandDirection,
+  selectedSnapshotHasDirection = false,
   snapshotGenerating = false,
   vsPanelExpanded = true,
   onAddVariation,
+  onMoveVariationToQueue,
   onUploadVariation,
   loadingElementIds,
+  uploadingVariationIds,
+  onUpdateVariationOrder,
 }: CurationBoardProps) {
-  const isCanvasPhase = phase !== "empty";
+  const isCanvasPhase = projectPhase !== "empty";
 
   const canvas = useCanvasTransform(isCanvasPhase);
-  const drag = useDragMerge(onMerge, onRefresh);
+  const drag = useDragMerge(
+    onMerge,
+    onAddVariation,
+    onMoveVariationToQueue,
+    (varId) => uploadingVariationIds?.has(varId) ?? false,
+    canvas.zoom,
+  );
   const queueReorder = useQueueReorder();
+  const varReorder = useVariationReorder(
+    elements,
+    (elementType, newOrder) => onUpdateVariationOrder?.(elementType, newOrder),
+  );
   const comment = useCommentMerge(onCommentModify);
 
-  const cardElMapRef = useRef<Map<string, HTMLDivElement>>(new Map());
+  const variationElMapRef = useRef<Map<string, HTMLDivElement>>(new Map());
+  const slotPositionMapRef = useRef<Map<string, SlotPosition>>(new Map());
+  const filmstripScrollMapRef = useRef<Map<string, number>>(new Map());
+  const prevLoadingRef = useRef<Set<string>>(new Set());
+  const [layoutTick, setLayoutTick] = useState(0);
+  const [filmstripScrollTick, setFilmstripScrollTick] = useState(0);
+
+  // Increment layout tick when add variation completes → triggers noodle re-measure
+  useEffect(() => {
+    const prev = prevLoadingRef.current;
+    const curr = loadingElementIds ?? new Set();
+    const hadShrink = prev.size > 0 && [...prev].some((id) => !curr.has(id));
+    prevLoadingRef.current = curr;
+    if (hadShrink) {
+      const id = requestAnimationFrame(() => setLayoutTick((t) => t + 1));
+      return () => cancelAnimationFrame(id);
+    }
+  }, [loadingElementIds]);
 
   // Presence check
-  const isGenerating = phase.startsWith("generating-");
-  const isLoadingOrBeyond = isGenerating || phase === "visual-complete";
+  const isGenerating = pipelineStage !== null;
+  const isLoadingOrBeyond = projectPhase === "curating";
 
-  const isCardPresent = useCallback(
-    (cardId: string): boolean => {
-      switch (cardId) {
-        case "brand-brief":      return !!brandData.brandBrief;
-        case "visual-concept":   return !!brandData.visualConcept    || isLoadingOrBeyond;
-        case "art-style":        return !!brandData.artStyle         || isLoadingOrBeyond;
-        case "color-palette":    return !!brandData.colorPalette     || isLoadingOrBeyond;
-        case "font":             return !!brandData.font             || isLoadingOrBeyond;
-        case "logo":             return !!brandData.logoInspiration  || isLoadingOrBeyond;
-        case "layout":           return !!brandData.layout           || isLoadingOrBeyond;
-        case "visual-snapshot":  return !!(brandData.styleReferences?.length) || isGenerating;
-        default: return false;
-      }
+  const isElementQueuePresent = useCallback(
+    (elementType: string): boolean => {
+      const slot = elements[elementType as ElementId];
+      if (!slot) return false;
+      return slot.variations.length > 0 || isLoadingOrBeyond;
     },
-    [brandData, phase, isLoadingOrBeyond, isGenerating]
+    [elements, isLoadingOrBeyond],
+  );
+
+  // Ordered list of visible queue element types (for noodle Y calculation)
+  const visibleQueueTypes = useMemo(
+    () => queueReorder.elementQueueOrder.filter(isElementQueuePresent),
+    [queueReorder.elementQueueOrder, isElementQueuePresent],
   );
 
   // Active element queue detection
   const activeQueueIds = useMemo(() => {
     const ids = new Set<string>();
-    for (const cardId of queueReorder.cardOrder) {
-      const variations = allVariationsByCard[cardId] ?? [];
+    for (const elementType of queueReorder.elementQueueOrder) {
+      const variations = allVariationsByElementType[elementType] ?? [];
       if (variations.some(v => checkedVariationIds.has(v.id))) {
-        ids.add(cardId);
+        ids.add(elementType);
       }
     }
     return ids;
-  }, [queueReorder.cardOrder, allVariationsByCard, checkedVariationIds]);
+  }, [queueReorder.elementQueueOrder, allVariationsByElementType, checkedVariationIds]);
 
-  if (phase === "empty") {
+  if (projectPhase === "empty") {
     return <EmptyState suggestions={suggestions} onSuggestionClick={onSuggestionClick} />;
   }
 
   const dotSize = CANVAS.DOT_SIZE;
-  const dotOffset = { x: canvas.pan.x % dotSize, y: canvas.pan.y % dotSize };
+  const dotOffset = { x: 0, y: canvas.pan.y % dotSize };
 
   return (
     <div
       ref={canvas.containerRef}
       className="h-full overflow-hidden relative"
       style={{
-        marginTop: "16px",
-        marginBottom: "16px",
         background: "var(--bb-canvas-bg)",
         backgroundImage: "radial-gradient(circle, var(--bb-canvas-dot) 1px, transparent 1px)",
         backgroundSize: `${dotSize}px ${dotSize}px`,
@@ -163,33 +206,40 @@ export function CurationBoard({
           willChange: "transform",
         }}
       >
-        <div className="pb-24" style={{ minWidth: 320, paddingTop: 0 }}>
-          {queueReorder.cardOrder.map((cardId) => {
-            if (!isCardPresent(cardId)) return null;
+        <CanvasZoomContext.Provider value={canvas.zoom}>
+          <VSPanelContext.Provider value={vsPanelExpanded}>
+          <div className="pb-24" style={{ minWidth: 320, paddingTop: 0 }}>
+            {queueReorder.elementQueueOrder.map((elementType) => {
+            if (!isElementQueuePresent(elementType)) return null;
 
-            const versions = allVariationsByCard[cardId] ?? [];
-            const activeId = activeVariationByCard[cardId] ?? (versions[0]?.id ?? cardId);
+            const versions = allVariationsByElementType[elementType] ?? [];
+            const activeId = activeVariationByElementType[elementType] ?? null;
+            const queueIndex = visibleQueueTypes.indexOf(elementType);
 
             return (
               <ElementQueue
-                key={cardId}
-                cardId={cardId}
+                key={elementType}
+                elementType={elementType}
+                queueIndex={queueIndex}
                 zoom={canvas.zoom}
                 pan={canvas.pan}
                 containerWidth={canvas.containerSize.w}
-                variations={versions}
+                variations={varReorder.getOrderedVariations(elementType, versions)}
                 activeVariationId={activeId}
-                isQueueActive={activeQueueIds.has(cardId)}
-                isMerging={mergingCardIds.has(cardId)}
-                isDragSource={drag.draggedId === cardId}
-                isQueueReorderDragging={queueReorder.reorderDragId === cardId}
-                isQueueReorderDropTarget={queueReorder.reorderOverId === cardId}
+                isQueueActive={activeQueueIds.has(elementType)}
+                isMerging={mergingElementTypes.has(elementType)}
+                isDragSource={drag.draggedId === elementType}
+                isQueueReorderDragging={queueReorder.reorderDragElementType === elementType}
+                isQueueReorderDropTarget={queueReorder.reorderOverElementType === elementType}
                 draggedId={drag.draggedId}
                 mergeTarget={drag.mergeTarget}
                 queueMergeTarget={drag.queueMergeTarget}
                 checkedVariationIds={checkedVariationIds}
-                brandBrief={brandData.brandBrief}
-                cardElMapRef={cardElMapRef}
+                brandBrief={brandSummary}
+                variationElMapRef={variationElMapRef}
+                slotPositionMapRef={slotPositionMapRef}
+                filmstripScrollMapRef={filmstripScrollMapRef}
+                onFilmstripScroll={setFilmstripScrollTick}
                 onDragStart={drag.handleDragStart}
                 onDragEnd={drag.handleDragEnd}
                 onDragOver={drag.handleDragOver}
@@ -199,25 +249,38 @@ export function CurationBoard({
                 onQueueSlotDragOver={drag.handleQueueSlotDragOver}
                 onQueueSlotDragLeave={drag.handleQueueSlotDragLeave}
                 onQueueSlotDrop={drag.handleQueueSlotDrop}
+                queueBodyDropTarget={drag.queueBodyDropTarget}
+                isQueueBodyDropValid={drag.isQueueBodyDropValid}
+                onQueueBodyDragOver={drag.handleQueueBodyDragOver}
+                onQueueBodyDragLeave={drag.handleQueueBodyDragLeave}
+                onQueueBodyDrop={drag.handleQueueBodyDrop}
                 onQueueReorderDragStart={queueReorder.handleQueueReorderDragStart}
                 onQueueReorderDragEnd={queueReorder.handleQueueReorderDragEnd}
                 onQueueReorderDragOver={queueReorder.handleQueueReorderDragOver}
                 onQueueReorderDragLeave={queueReorder.handleQueueReorderDragLeave}
                 onQueueReorderDrop={queueReorder.handleQueueReorderDrop}
                 onEditSave={onEditSave}
-                onRefresh={onRefresh}
+                onAddVariation={onAddVariation}
                 onToggleVariationChecked={onToggleVariationChecked}
                 onDeleteVariation={onDeleteVariation}
-                onAddVariation={onAddVariation ? () => onAddVariation(cardId) : undefined}
-                isAddingVariation={loadingElementIds?.has(cardId)}
-                onUploadVariation={onUploadVariation ? (file: File) => onUploadVariation(cardId, file) : undefined}
+                isAddingVariation={loadingElementIds?.has(elementType)}
+                isGeneratingPhase={isGenerating}
+                onUploadVariation={
+                  onUploadVariation && !(uploadingVariationIds && versions.some((v) => uploadingVariationIds.has(v.id)))
+                    ? (file: File) => onUploadVariation(elementType, file)
+                    : undefined
+                }
+                uploadingVariationIds={uploadingVariationIds}
                 commentMode={comment.commentMode}
                 commentTarget={comment.commentTarget}
-                onCommentClick={comment.handleCardClick}
+                onCommentClick={comment.handleVariationClick}
+                onMoveVariation={varReorder.moveVariation}
               />
             );
           })}
         </div>
+        </VSPanelContext.Provider>
+        </CanvasZoomContext.Provider>
       </div>
 
       {/* Visual Snapshot panel */}
@@ -227,16 +290,22 @@ export function CurationBoard({
           containerRef={canvas.containerRef}
           zoom={canvas.zoom}
           pan={canvas.pan}
-          cardElMapRef={cardElMapRef}
+          slotPositionMapRef={slotPositionMapRef}
+          filmstripScrollMapRef={filmstripScrollMapRef}
+          visibleQueueTypes={visibleQueueTypes}
           checkedVariationIds={checkedVariationIds}
           snapshotHistory={snapshotHistory}
           selectedSnapshotId={selectedSnapshotId}
           snapshotGenerating={snapshotGenerating}
           scrollTick={canvas.scrollTick}
+          filmstripScrollTick={filmstripScrollTick}
+          layoutTick={layoutTick}
           onSelectSnapshot={onSelectSnapshot}
           onDeleteSnapshot={onDeleteSnapshot}
           onGenerateSnapshot={onGenerateSnapshot}
-          onGenerateBrandGuideline={onGenerateBrandGuideline}
+          onGenerateBrandDirection={onGenerateBrandDirection}
+          onViewBrandDirection={onViewBrandDirection}
+          selectedSnapshotHasDirection={selectedSnapshotHasDirection}
         />
       )}
 
@@ -252,7 +321,7 @@ export function CurationBoard({
       {/* Comment-to-Modify input */}
       {comment.commentTarget && (
         <CommentInput
-          anchorEl={cardElMapRef.current.get(comment.commentTarget.varId) ?? null}
+          anchorEl={variationElMapRef.current.get(comment.commentTarget.variationId) ?? null}
           onSubmit={comment.handleCommentSubmit}
           onCancel={comment.handleCommentCancel}
         />

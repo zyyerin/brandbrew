@@ -1,0 +1,41 @@
+---
+description: Data model conventions — use ProjectData types, the legacy types have been removed
+globs: "**/*.ts,**/*.tsx"
+alwaysApply: false
+---
+
+# Data Model Rules
+
+The project uses a layered `ProjectData` architecture. The legacy `BrandData` and `SnapshotHistoryItem` types have been deleted — do NOT reference them.
+
+## Use These (from `src/app/types/project.ts`)
+
+- `ProjectData` — top-level state container
+- `ElementId` — union type for element identifiers
+- `ElementsState` / `ElementSlot<T>` — per-element variation slots
+- `Variation<T>` — a single variation with data, source, and metadata
+- `SnapshotItem` — a frozen composition snapshot
+- `BrandSummaryData` — brand brief + target audience + keywords
+- `DirectionVersion` / `DirectionState` — output direction layer
+- `ElementDataMap` — maps `ElementId` → concrete data type
+- `MergeBrandContext` — API payload shape for merge/comment endpoints (from `utils/merge-logic.ts`)
+
+### Helper functions (prefer these over manual slot traversal)
+
+- `getActiveVariation(elements, elementId)` — current active variation
+- `getActiveElementData(elements, elementId)` — active variation's data
+- `getCheckedVariation(elements, elementId)` — checked variation for snapshot
+- `resolveSnapshotData(project, snapshotId)` — hydrate snapshot with element data
+
+## Example
+
+```typescript
+// ❌ BAD — types no longer exist
+import { BrandData } from "../types/brand";
+import { SnapshotHistoryItem } from "../types/app";
+
+// ✅ GOOD — uses new model with typed accessor
+import { getActiveElementData, type BrandSummaryData } from "../types/project";
+import type { MergeBrandContext } from "../utils/merge-logic";
+const color = getActiveElementData(project.elements, "color-palette");
+```

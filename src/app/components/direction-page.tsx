@@ -1,24 +1,22 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { ArrowLeft, ChevronDown, Check, Loader2 } from "lucide-react";
-import type { BrandData } from "../types/brand";
-import { GuidelineAll } from "./guideline-all";
-import type { GuidelineVersion } from "./guideline-all";
+import { ArrowLeft, ChevronDown, Check, Loader2, GalleryVerticalEnd } from "lucide-react";
+import type { ProjectData, ImageElementData, FontData, ColorPaletteData, DirectionVersion } from "../types/project";
+import { resolveSnapshotData, getActiveElementData } from "../types/project";
+import { DirectionVersionsPanel } from "./DirectionVersionsPanel";
 import { useGoogleFont } from "../utils/useGoogleFont";
-import { generateGuideline } from "../utils/generate-brand";
-import type { GuidelineData, GuidelineColorName } from "../utils/generate-brand";
+import { generateDirection } from "../utils/generate-brand";
+import type { DirectionData, DirectionColorName } from "../utils/generate-brand";
 
-// ── Figma asset imports ─────────────────────────────────────────────────────────
-import imgFashionModelWearingBeigeCoatInMinimalistSetting from "figma:asset/d2490c1757f849733228dd5d88dba5d2cf71b8da.png";
 import { generateBrandContextMockup } from "../utils/generate-image";
 
 // ── Types ───────────────────────────────────────────────────────────────────────
-interface GuidelinePageProps {
-  brandData: BrandData;
+interface DirectionPageProps {
+  project: ProjectData;
   onBack: () => void;
   /** When provided, versions are controlled by parent (e.g. App) so they persist for "all versions" view. */
-  versions?: GuidelineVersion[];
-  onVersionsChange?: React.Dispatch<React.SetStateAction<GuidelineVersion[]>>;
-  /** When navigating from "all versions" with a version selected, open with this version active. */
+  versions?: DirectionVersion[];
+  onVersionsChange?: React.Dispatch<React.SetStateAction<DirectionVersion[]>>;
+  /** When navigating with a version selected, open with this version active. */
   initialActiveVersionId?: string;
 }
 
@@ -102,54 +100,59 @@ function hexToRgba(hex: string, alpha: number): string {
   return `rgba(${r},${g},${b},${alpha})`;
 }
 
-function createGuidelineVersionId(): string {
+function createDirectionVersionId(): string {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return `gv-${crypto.randomUUID()}`;
+    return `dv-${crypto.randomUUID()}`;
   }
-  return `gv-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  return `dv-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────
-export function GuidelinePage({
-  brandData,
+export function DirectionPage({
+  project,
   onBack,
   versions: versionsProp,
   onVersionsChange,
   initialActiveVersionId,
-}: GuidelinePageProps) {
-  const defaultVersionLabel = brandData.visualConcept?.conceptName?.trim() || "Generated guideline";
+}: DirectionPageProps) {
+  const defaultVersionLabel =
+    (getActiveElementData(project.elements, "visual-concept") as string | null)?.trim() || "Generated direction";
 
   // ── Version management (use parent state when provided so versions persist for "all" view) ──
-  const [internalVersions, setInternalVersions] = useState<GuidelineVersion[]>(() => [
-    { id: createGuidelineVersionId(), label: defaultVersionLabel, createdAt: new Date() },
+  const [internalVersions, setInternalVersions] = useState<DirectionVersion[]>(() => [
+    { id: createDirectionVersionId(), label: defaultVersionLabel, createdAt: new Date(), boundSnapshotId: null },
   ]);
   const versions = versionsProp ?? internalVersions;
-  const setVersionsRef = useRef<React.Dispatch<React.SetStateAction<GuidelineVersion[]>>>(setInternalVersions);
+  const setVersionsRef = useRef<React.Dispatch<React.SetStateAction<DirectionVersion[]>>>(setInternalVersions);
   useEffect(() => {
     setVersionsRef.current = onVersionsChange ?? setInternalVersions;
   }, [onVersionsChange]);
-  const setVersions = useCallback<React.Dispatch<React.SetStateAction<GuidelineVersion[]>>>((updater) => {
+  const setVersions = useCallback<React.Dispatch<React.SetStateAction<DirectionVersion[]>>>((updater) => {
     setVersionsRef.current(updater);
   }, []);
-  const [activeVersionId, setActiveVersionId] = useState(initialActiveVersionId ?? versions[0]?.id ?? "gv-default");
+  const [activeVersionId, setActiveVersionId] = useState(initialActiveVersionId ?? versions[0]?.id ?? "dv-default");
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
-  // ── View All overlay ────────────────────────────────────────────────────────
+  // ── Versions side panel ────────────────────────────────────────────────────
   const [showAllView, setShowAllView] = useState(false);
 
-  const handleDeleteVersion = useCallback((versionToDelete: GuidelineVersion) => {
-    if (versions.length <= 1) return;
+  const handleDeleteVersion = useCallback((versionToDelete: DirectionVersion) => {
     if (!window.confirm(`Delete "${versionToDelete.label}"? This cannot be undone.`)) return;
 
     const remaining = versions.filter((v) => v.id !== versionToDelete.id);
     setVersions(remaining);
 
+    if (remaining.length === 0) {
+      onBack();
+      return;
+    }
+
     if (activeVersionIdRef.current === versionToDelete.id) {
       const nextActiveId = remaining[0]?.id;
       if (nextActiveId) setActiveVersionId(nextActiveId);
     }
-  }, [versions, setVersions]);
+  }, [versions, setVersions, onBack]);
 
   const activeVersion = versions.find((v) => v.id === activeVersionId);
   const activeVersionIdRef = useRef(activeVersionId);
@@ -157,34 +160,48 @@ export function GuidelinePage({
     activeVersionIdRef.current = activeVersionId;
   }, [activeVersionId]);
 
-  // Prefer snapshot-bound BVI when available, otherwise fall back to live brandData.
-  const snapshotBvi = activeVersion?.snapshotBvi;
-  const isSnapshotBoundVersion = !!activeVersion?.snapshotId || !!snapshotBvi;
-  const brief = snapshotBvi?.brandBrief ?? brandData.brandBrief;
-  // For snapshot-bound guidelines, only use the concept frozen into that snapshot.
-  // If missing, allow guideline generation to synthesize from the visual snapshot.
-  const concept = snapshotBvi
-    ? snapshotBvi.visualConcept
-    : brandData.visualConcept;
-  const synthesizedConcept = activeVersion?.guidelineCache?.synthesizedVisualConcept;
-  const displayConcept = concept ?? synthesizedConcept;
-  const font = snapshotBvi?.font ?? brandData.font;
-  const artStyle = isSnapshotBoundVersion
-    ? snapshotBvi?.artStyle
-    : brandData.artStyle;
-  const keywords = snapshotBvi?.keywords ?? brandData.keywords ?? [];
-  const colorPalette = snapshotBvi?.colorPalette ?? brandData.colorPalette ?? [];
+  // Prefer snapshot-bound data when available, otherwise fall back to live project state.
+  const isSnapshotBoundVersion = !!activeVersion?.boundSnapshotId;
+  const resolved = isSnapshotBoundVersion && activeVersion?.boundSnapshotId
+    ? resolveSnapshotData(project, activeVersion.boundSnapshotId)
+    : null;
 
-  // ── Logo / imagery from snapshot when version is bound, otherwise live brand data ──
+  const brandSummary = resolved?.brandSummary ?? project.brandSummary.current;
+  const brief = { name: brandSummary.name, tagline: brandSummary.tagline, description: brandSummary.description };
+
+  // For snapshot-bound directions, only use the concept frozen into that snapshot.
+  // If missing, allow direction generation to synthesize from the visual snapshot.
+  const concept = resolved
+    ? (resolved.elementData["visual-concept"] as string | undefined) ?? undefined
+    : (getActiveElementData(project.elements, "visual-concept") as string | null) ?? undefined;
+  const synthesizedConceptName = activeVersion?.cache?.synthesizedVisualConcept;
+  const visualConceptContent = activeVersion?.cache?.visualConceptContent;
+  const displayConceptName: string | undefined = concept ?? synthesizedConceptName;
+
+  const font = resolved
+    ? (resolved.elementData["font"] as FontData | undefined) ?? undefined
+    : getActiveElementData(project.elements, "font") ?? undefined;
+
+  const artStyle = isSnapshotBoundVersion
+    ? (resolved?.elementData["art-style"] as ImageElementData | undefined) ?? undefined
+    : getActiveElementData(project.elements, "art-style") ?? undefined;
+
+  const keywords = brandSummary.keywords ?? [];
+  const colorPalette = (resolved
+    ? (resolved.elementData["color-palette"] as ColorPaletteData | undefined)
+    : getActiveElementData(project.elements, "color-palette") as ColorPaletteData | null
+  ) ?? [];
+
+  // ── Logo / imagery from snapshot when version is bound, otherwise live element data ──
   const logoImageUrl = isSnapshotBoundVersion
-    ? snapshotBvi?.logoInspiration?.imageUrl
-    : brandData.logoInspiration?.imageUrl;
-  const artStyleImageUrl = isSnapshotBoundVersion
-    ? (artStyle?.imageUrl ?? snapshotBvi?.styleReferences?.[0]?.imageUrl)
-    : (artStyle?.imageUrl ?? brandData.styleReferences?.[0]?.imageUrl);
-  const visualSnapshotUrl = isSnapshotBoundVersion
-    ? snapshotBvi?.styleReferences?.[0]?.imageUrl
-    : brandData.styleReferences?.[0]?.imageUrl;
+    ? (resolved?.elementData["logo"] as ImageElementData | undefined)?.imageUrl
+    : getActiveElementData(project.elements, "logo")?.imageUrl ?? undefined;
+
+  const artStyleImageUrl = artStyle?.imageUrl ?? undefined;
+
+  const visualSnapshotUrl = activeVersion?.snapshotImageUrl
+    ?? project.snapshots.find((s) => s.id === activeVersion?.boundSnapshotId)?.imageUrl
+    ?? project.snapshots[0]?.imageUrl;
 
   // ── Load actual Google Fonts from the typography card ───────────────────────
   const titleFontName = font?.titleFont ?? "Inter";
@@ -197,10 +214,10 @@ export function GuidelinePage({
   const brandTextColor = darkestColorHex;
   const brandSubtextColor = isColorLight(darkestColorHex) ? "#64748b" : "#94a3b8";
 
-  // ── AI-generated guideline content ──────────────────────────────────────────
-  const [guidelineLoading, setGuidelineLoading] = useState(true);
-  const [guidelineError, setGuidelineError] = useState<string | null>(null);
-  const [colorNames, setColorNames] = useState<GuidelineColorName[]>([]);
+  // ── AI-generated direction content ──────────────────────────────────────────
+  const [directionLoading, setDirectionLoading] = useState(true);
+  const [directionError, setDirectionError] = useState<string | null>(null);
+  const [colorNames, setColorNames] = useState<DirectionColorName[]>([]);
   const [exporting, setExporting] = useState(false);
   const [contextDescription, setContextDescription] = useState(DEFAULT_CONTEXT_DESCRIPTION);
   const [contextImages, setContextImages] = useState<string[]>([]);
@@ -217,13 +234,13 @@ export function GuidelinePage({
     setRationales((prev) => ({ ...prev, [key]: value }));
   };
 
-  // ── Fetch AI-generated guideline content (extracted for reuse) ─────────────
-  const fetchGuidelineAndContext = useCallback(
+  // ── Fetch AI-generated direction content (extracted for reuse) ─────────────
+  const fetchDirectionAndContext = useCallback(
     async (versionId: string) => {
-      setGuidelineLoading(true);
-      setGuidelineError(null);
+      setDirectionLoading(true);
+      setDirectionError(null);
       try {
-        const data = await generateGuideline({
+        const data = await generateDirection({
           brandBrief: brief,
           keywords,
           colorPalette,
@@ -243,6 +260,7 @@ export function GuidelinePage({
         const newColorNames = data.colorNames ?? [];
         const newContextDesc = data.brandInContextDescription ?? DEFAULT_CONTEXT_DESCRIPTION;
         const newSynthesizedConcept = data.synthesizedVisualConcept;
+        const newVisualConceptContent = data.visualConceptContent;
 
         if (activeVersionIdRef.current === versionId) {
           setRationales(newRationales);
@@ -251,25 +269,39 @@ export function GuidelinePage({
         }
 
         const applications =
-          snapshotBvi?.guidelineApplications && snapshotBvi.guidelineApplications.length > 0
-            ? snapshotBvi.guidelineApplications
+          project.brandSummary.current.applications && project.brandSummary.current.applications.length > 0
+            ? project.brandSummary.current.applications
             : DEFAULT_CONTEXT_APPLICATIONS;
 
-        const results: string[] = [];
-        for (const app of applications) {
-          try {
-            const img = await generateBrandContextMockup({
+        // Reuse the active application variation from the board as the first context image,
+        // avoiding a redundant AI generation for that touchpoint.
+        const activeApplicationData = getActiveElementData(project.elements, "application") as ImageElementData | null;
+        const boardApplicationImageUrl = activeApplicationData?.imageUrl ?? null;
+
+        const appsToGenerate = boardApplicationImageUrl ? applications.slice(1) : applications;
+
+        // Generate remaining context mockups in parallel
+        const settled = await Promise.allSettled(
+          appsToGenerate.map((app) =>
+            generateBrandContextMockup({
               application: app,
               brandName: brief?.name,
               visualSnapshotUrl,
-            });
-            if (img.imageUrl) {
-              results.push(img.imageUrl);
-            }
-          } catch (e) {
-            console.error("Brand in Context generation failed for application:", app, e);
+            }),
+          ),
+        );
+        const generatedResults: string[] = [];
+        settled.forEach((outcome, i) => {
+          if (outcome.status === "fulfilled" && outcome.value?.imageUrl) {
+            generatedResults.push(outcome.value.imageUrl);
+          } else if (outcome.status === "rejected") {
+            console.error("Brand in Context generation failed for application:", appsToGenerate[i], outcome.reason);
           }
-        }
+        });
+
+        const results: string[] = boardApplicationImageUrl
+          ? [boardApplicationImageUrl, ...generatedResults]
+          : generatedResults;
         const finalImages = results.slice(0, 4);
         if (activeVersionIdRef.current === versionId) {
           setContextImages(finalImages);
@@ -277,8 +309,8 @@ export function GuidelinePage({
 
         // Sync AI-generated cache back to the parent version state for persistence
         const newLabel =
-          !concept && newSynthesizedConcept?.conceptName
-            ? newSynthesizedConcept.conceptName.trim()
+          !concept && typeof newSynthesizedConcept === "string" && newSynthesizedConcept.trim()
+            ? newSynthesizedConcept.trim()
             : undefined;
         setVersions((prev) =>
           prev.map((v) =>
@@ -286,11 +318,12 @@ export function GuidelinePage({
               ? {
                   ...v,
                   label: newLabel ?? v.label,
-                  guidelineCache: {
+                  cache: {
                     rationales: newRationales,
                     colorNames: newColorNames,
                     brandInContextDescription: newContextDesc,
                     contextImageUrls: finalImages,
+                    visualConceptContent: newVisualConceptContent,
                     synthesizedVisualConcept: newSynthesizedConcept,
                   },
                 }
@@ -298,17 +331,17 @@ export function GuidelinePage({
           ),
         );
       } catch (err) {
-        console.error("Guideline generation failed:", err);
+        console.error("Direction generation failed:", err);
         if (activeVersionIdRef.current === versionId) {
-          setGuidelineError(String(err));
+          setDirectionError(String(err));
         }
       } finally {
         if (activeVersionIdRef.current === versionId) {
-          setGuidelineLoading(false);
+          setDirectionLoading(false);
         }
       }
     },
-    [brief, keywords, colorPalette, concept, artStyle, font, snapshotBvi, visualSnapshotUrl, setVersions],
+    [brief, keywords, colorPalette, concept, artStyle, font, visualSnapshotUrl, setVersions, project],
   );
 
   // ── Hydrate / fetch when activeVersionId changes ──────────────────────────
@@ -324,8 +357,10 @@ export function GuidelinePage({
 
     const version = versions.find((v) => v.id === activeVersionId);
 
-    if (version?.guidelineCache) {
-      const cache = version.guidelineCache;
+    if (version?.cache) {
+      const cache = version.cache;
+      const cacheContextImages = cache.contextImageUrls ?? [];
+      const shouldRegenerateContext = cacheContextImages.length === 0;
       setRationales({
         logo: cache.rationales.logo ?? "",
         color: cache.rationales.color ?? "",
@@ -334,22 +369,32 @@ export function GuidelinePage({
       });
       if (cache.colorNames?.length) setColorNames(cache.colorNames);
       setContextDescription(cache.brandInContextDescription ?? DEFAULT_CONTEXT_DESCRIPTION);
-      setContextImages(cache.contextImageUrls ?? []);
-      setGuidelineLoading(false);
+      setContextImages(cacheContextImages);
+
+      if (shouldRegenerateContext) {
+        fetchDirectionAndContext(activeVersionId).finally(() => {
+          if (token === hydrationTokenRef.current) {
+            suppressRationalePersistRef.current = false;
+          }
+        });
+        return;
+      }
+
+      setDirectionLoading(false);
       if (token === hydrationTokenRef.current) {
         suppressRationalePersistRef.current = false;
       }
       return;
     }
 
-    fetchGuidelineAndContext(activeVersionId).finally(() => {
+    fetchDirectionAndContext(activeVersionId).finally(() => {
       if (token === hydrationTokenRef.current) {
         suppressRationalePersistRef.current = false;
       }
     });
-  }, [activeVersionId, versions, fetchGuidelineAndContext]);
+  }, [activeVersionId, versions, fetchDirectionAndContext]);
 
-  // ── Persist rationale edits to current version's guidelineCache ─────────────────
+  // ── Persist rationale edits to current version's directionCache ─────────────────
   useEffect(() => {
     if (suppressRationalePersistRef.current) return;
     if (!versions.some((v) => v.id === activeVersionId)) return;
@@ -358,18 +403,18 @@ export function GuidelinePage({
         v.id === activeVersionId
           ? {
               ...v,
-              guidelineCache: {
-                ...v.guidelineCache,
+              cache: {
+                ...v.cache,
                 rationales: {
                   logo: rationales.logo ?? "",
                   color: rationales.color ?? "",
                   typography: rationales.typography ?? "",
                   artStyle: rationales.artStyle ?? "",
                 },
-                colorNames: v.guidelineCache?.colorNames ?? [],
-                brandInContextDescription: v.guidelineCache?.brandInContextDescription ?? "",
-                contextImageUrls: v.guidelineCache?.contextImageUrls ?? [],
-                synthesizedVisualConcept: v.guidelineCache?.synthesizedVisualConcept,
+                colorNames: v.cache?.colorNames ?? [],
+                brandInContextDescription: v.cache?.brandInContextDescription ?? "",
+                contextImageUrls: v.cache?.contextImageUrls ?? [],
+                synthesizedVisualConcept: v.cache?.synthesizedVisualConcept,
               },
             }
           : v,
@@ -457,7 +502,7 @@ export function GuidelinePage({
     setExporting(true);
     try {
       const [exportLogo, exportArtStyle, exportSnapshot, ...exportContextImages] = await Promise.all([
-        toDataUrl(logoImageUrl ?? imgFashionModelWearingBeigeCoatInMinimalistSetting),
+        toDataUrl(logoImageUrl),
         toDataUrl(artStyleImageUrl),
         toDataUrl(visualSnapshotUrl),
         ...contextImages.map((url) => toDataUrl(url)),
@@ -468,15 +513,13 @@ export function GuidelinePage({
         ? `background-image:linear-gradient(${overlayRgba},${overlayRgba}),url("${cssUrl(exportSnapshot)}");background-size:cover;background-position:center;`
         : `background:${escapeHtml(exportGradient)};`;
 
-      const conceptHtml = displayConcept
+      const conceptHtml = displayConceptName
         ? `
     <section class="exp-concept" style="${conceptBannerBg}">
       <div class="exp-concept-inner">
         <p class="exp-concept-label">Visual Concept</p>
-        <p class="exp-concept-name">${escapeHtml(displayConcept.conceptName)}</p>
-        <div class="exp-concept-points">
-          ${displayConcept.points.map((point) => `<p>${escapeHtml(point)}</p>`).join("")}
-        </div>
+        <p class="exp-concept-phrase">${escapeHtml(displayConceptName)}</p>
+        ${visualConceptContent ? `<p class="exp-concept-content">${escapeHtml(visualConceptContent)}</p>` : ""}
       </div>
     </section>`
         : "";
@@ -538,7 +581,7 @@ export function GuidelinePage({
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>${escapeHtml(brief?.name ?? "Brand")} - Brand Guideline</title>
+  <title>${escapeHtml(brief?.name ?? "Brand")} - Brand Direction</title>
   ${fontLinkTags}
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Roboto+Mono:wght@400;700&display=swap" />
   <style>
@@ -661,12 +704,12 @@ export function GuidelinePage({
       const blob = new Blob([html], { type: "text/html;charset=utf-8" });
       const objectUrl = URL.createObjectURL(blob);
       const a = document.createElement("a");
-      const slug = (brief?.name ?? "brand-guideline")
+      const slug = (brief?.name ?? "brand-direction")
         .toLowerCase()
         .replace(/[^a-z0-9]+/g, "-")
         .replace(/^-+|-+$/g, "");
       a.href = objectUrl;
-      a.download = `${slug || "brand-guideline"}-guideline.html`;
+      a.download = `${slug || "brand-direction"}-direction.html`;
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -695,21 +738,20 @@ export function GuidelinePage({
   const gradientCss = buildGradientBg(colorPalette);
 
   return (
-    <div className="h-screen w-screen flex flex-col bg-[#f7f7f7] overflow-hidden">
-      {/* View All overlay */}
+    <div className="h-screen w-screen flex flex-col bg-[#f7f7f7] overflow-hidden relative">
+      {/* ── Versions side panel ── */}
       {showAllView && (
-        <div className="absolute inset-0 z-[100]">
-          <GuidelineAll
-            onBack={() => setShowAllView(false)}
-            versions={versions}
-            visualSnapshotUrl={visualSnapshotUrl}
-            onSelectVersion={(v) => {
-              setActiveVersionId(v.id);
-              setShowAllView(false);
-            }}
-            onDeleteVersion={handleDeleteVersion}
-          />
-        </div>
+        <DirectionVersionsPanel
+          versions={versions}
+          activeVersionId={activeVersionId}
+          visualSnapshotUrl={visualSnapshotUrl}
+          onSelectVersion={(v) => {
+            setActiveVersionId(v.id);
+            setShowAllView(false);
+          }}
+          onDeleteVersion={handleDeleteVersion}
+          onClose={() => setShowAllView(false)}
+        />
       )}
 
       {/* ═══════════════════ Top Navbar ═══════════════════ */}
@@ -725,10 +767,6 @@ export function GuidelinePage({
 
         {/* Right: Controls */}
         <div className="flex items-center gap-3">
-          <span className="text-[12px]" style={{ color: brandSubtextColor }}>
-            Saved Guidelines
-          </span>
-
           {/* Version dropdown */}
           <div className="relative" ref={dropdownRef}>
             <button
@@ -736,7 +774,7 @@ export function GuidelinePage({
               className="flex items-center gap-2 h-8 px-4 bg-white border border-[#d4d4d4] rounded text-[14px] text-[#374151] shadow-[0px_2px_4px_0px_rgba(0,0,0,0.02)] cursor-pointer"
               style={{ fontWeight: 700 }}
             >
-              {activeVersion?.label ?? "Generated guideline"}
+              {activeVersion?.label ?? "Generated direction"}
               <ChevronDown size={14} className="text-[#64748b]" />
             </button>
             {dropdownOpen && (
@@ -756,18 +794,6 @@ export function GuidelinePage({
                     {v.id === activeVersionId && <Check size={14} className="text-[#374151] shrink-0" />}
                   </button>
                 ))}
-                {/* Divider + View All */}
-                <div className="border-t border-[#e5e5e5] mt-1 pt-1">
-                  <button
-                    onClick={() => {
-                      setDropdownOpen(false);
-                      setShowAllView(true);
-                    }}
-                    className="flex items-center gap-2 w-full px-3 py-2 justify-start text-left text-[13px] text-[#64748b] hover:bg-[#f7f7f7] hover:text-[#374151] transition-colors cursor-pointer"
-                  >
-                    View All
-                  </button>
-                </div>
               </div>
             )}
           </div>
@@ -780,6 +806,19 @@ export function GuidelinePage({
             disabled={exporting}
           >
             {exporting ? "Exporting..." : "Export"}
+          </button>
+
+          {/* Versions toggle button */}
+          <button
+            onClick={() => setShowAllView((v) => !v)}
+            className={`p-2 rounded-lg border shadow-sm transition-colors cursor-pointer ${
+              showAllView
+                ? "bg-blue-50 border-blue-200 text-blue-400"
+                : "bg-white border-[#d4d4d4] text-[#64748b] hover:text-[#374151]"
+            }`}
+            title={showAllView ? "Hide directions panel" : "All saved directions"}
+          >
+            <GalleryVerticalEnd size={15} />
           </button>
         </div>
       </nav>
@@ -836,7 +875,7 @@ export function GuidelinePage({
         </section>
 
         {/* ── Visual Concept Banner ────────────────────────────────────────── */}
-        {displayConcept && (
+        {displayConceptName && (
           <section className="w-full">
             <div
               className="relative px-10 md:px-20 lg:px-40 py-20 lg:py-32"
@@ -854,35 +893,37 @@ export function GuidelinePage({
                 <div className="absolute inset-0 backdrop-blur-sm pointer-events-none" style={{ backgroundColor: `color-mix(in srgb, ${brandTextColor} 75%, transparent)` }} />
               )}
               <div className="relative flex flex-col gap-4 max-w-[1200px]">
-                <div>
+                <p
+                  className="text-white text-[16px]"
+                  style={{ fontFamily: bodyFamily, fontWeight: 400, lineHeight: "24px" }}
+                >
+                  Visual Concept
+                </p>
+                <p
+                  className="text-white/90"
+                  style={{
+                    fontFamily: headingFamily,
+                    fontSize: "36px",
+                    fontWeight: 400,
+                    lineHeight: "48px",
+                  }}
+                >
+                  {displayConceptName}
+                </p>
+                {visualConceptContent && (
                   <p
-                    className="text-white text-[16px]"
-                    style={{ fontFamily: bodyFamily, fontWeight: 400, lineHeight: "24px" }}
-                  >
-                    Visual Concept
-                  </p>
-                  <p
-                    className="text-white/90"
+                    className="text-white/75 mt-2"
                     style={{
-                      fontFamily: headingFamily,
-                      fontSize: "36px",
+                      fontFamily: bodyFamily,
+                      fontSize: "16px",
                       fontWeight: 400,
-                      lineHeight: "60px",
+                      lineHeight: "26px",
+                      maxWidth: "640px",
                     }}
                   >
-                    {displayConcept.conceptName}
+                    {visualConceptContent}
                   </p>
-                </div>
-                <div
-                  className="text-white/90 text-[18px]"
-                  style={{ fontFamily: bodyFamily, fontWeight: 400, lineHeight: 1.5 }}
-                >
-                  {displayConcept.points.map((point, i) => (
-                    <p key={i} className={i < displayConcept.points.length - 1 ? "mb-0" : ""}>
-                      {point}
-                    </p>
-                  ))}
-                </div>
+                )}
               </div>
             </div>
           </section>
@@ -921,7 +962,7 @@ export function GuidelinePage({
               rationale={rationales.logo}
               onRationaleChange={(v) => handleRationaleChange("logo", v)}
               readOnly
-              loading={guidelineLoading}
+              loading={directionLoading}
               headingFamily={headingFamily}
               bodyFamily={bodyFamily}
             >
@@ -933,11 +974,9 @@ export function GuidelinePage({
                     src={logoImageUrl}
                   />
                 ) : (
-                  <img
-                    alt="Logo"
-                    className="object-contain w-full h-full"
-                    src={imgFashionModelWearingBeigeCoatInMinimalistSetting}
-                  />
+                  <p className="text-[#94a3b8] text-[14px] m-0" style={{ fontFamily: "inherit" }}>
+                    No logo image available.
+                  </p>
                 )}
               </div>
             </VisualElementRow>
@@ -949,7 +988,7 @@ export function GuidelinePage({
               rationale={rationales.color}
               onRationaleChange={(v) => handleRationaleChange("color", v)}
               readOnly
-              loading={guidelineLoading}
+              loading={directionLoading}
               headingFamily={headingFamily}
               bodyFamily={bodyFamily}
             >
@@ -966,7 +1005,7 @@ export function GuidelinePage({
               rationale={rationales.typography}
               onRationaleChange={(v) => handleRationaleChange("typography", v)}
               readOnly
-              loading={guidelineLoading}
+              loading={directionLoading}
               headingFamily={headingFamily}
               bodyFamily={bodyFamily}
             >
@@ -981,7 +1020,7 @@ export function GuidelinePage({
                 rationale={rationales.artStyle}
                 onRationaleChange={(v) => handleRationaleChange("artStyle", v)}
                 readOnly
-                loading={guidelineLoading}
+                loading={directionLoading}
                 headingFamily={headingFamily}
                 bodyFamily={bodyFamily}
               >
@@ -1003,7 +1042,7 @@ export function GuidelinePage({
                 rationale={rationales.artStyle}
                 onRationaleChange={(v) => handleRationaleChange("artStyle", v)}
                 readOnly
-                loading={guidelineLoading}
+                loading={directionLoading}
                 headingFamily={headingFamily}
                 bodyFamily={bodyFamily}
               >
@@ -1044,39 +1083,100 @@ export function GuidelinePage({
               </div>
             </div>
 
-            {/* Gallery grid — 2x2, using generated context images when available */}
-            {contextImages.length > 0 ? (
-              <div className="flex flex-col gap-8">
-                <div className="flex gap-8">
-                  {contextImages.slice(0, 2).map((url, idx) => (
-                    <div key={idx} className="flex-1 min-w-0 rounded-lg overflow-hidden relative aspect-[16/9]">
-                      <img
-                        alt="Brand in context mockup"
-                        className="absolute inset-0 w-full h-full object-cover"
-                        src={url}
-                      />
+            {/* Gallery grid — 2x2: loading placeholders, images, or empty message */}
+            {(() => {
+              const contextApplications =
+                project.brandSummary.current.applications?.length
+                  ? project.brandSummary.current.applications
+                  : DEFAULT_CONTEXT_APPLICATIONS;
+              const appsToShow = contextApplications.slice(0, 4);
+
+              if (contextImages.length === 0 && directionLoading) {
+                const placeholderColor = accentColor ?? "#94a3b8";
+                const placeholderBorder = accentColor ? { borderColor: placeholderColor } : { borderColor: "#e2e8f0" };
+                return (
+                  <div className="flex flex-col gap-8">
+                    <div className="flex gap-8">
+                      {appsToShow.slice(0, 2).map((app, idx) => (
+                        <div
+                          key={idx}
+                          className="flex-1 min-w-0 rounded-lg border-2 aspect-[16/9] flex flex-col items-center justify-center gap-2 bg-white"
+                          style={{ fontFamily: bodyFamily, ...placeholderBorder }}
+                        >
+                          <div
+                            className="w-5 h-5 border-2 rounded-full animate-spin"
+                            style={{
+                              borderColor: accentColor ? `${accentColor}40` : "#e2e8f0",
+                              borderTopColor: placeholderColor,
+                            }}
+                          />
+                          <span className="text-[13px]" style={{ color: placeholderColor }}>
+                            Designing {app}...
+                          </span>
+                        </div>
+                      ))}
                     </div>
-                  ))}
-                </div>
-                {contextImages.length > 2 && (
-                  <div className="flex gap-8">
-                    {contextImages.slice(2, 4).map((url, idx) => (
-                      <div key={idx} className="flex-1 min-w-0 rounded-lg overflow-hidden relative aspect-[16/9]">
-                        <img
-                          alt="Brand in context mockup"
-                          className="absolute inset-0 w-full h-full object-cover"
-                          src={url}
-                        />
-                      </div>
-                    ))}
+                    <div className="flex gap-8">
+                      {appsToShow.slice(2, 4).map((app, idx) => (
+                        <div
+                          key={idx}
+                          className="flex-1 min-w-0 rounded-lg border-2 aspect-[16/9] flex flex-col items-center justify-center gap-2 bg-white"
+                          style={{ fontFamily: bodyFamily, ...placeholderBorder }}
+                        >
+                          <div
+                            className="w-5 h-5 border-2 rounded-full animate-spin"
+                            style={{
+                              borderColor: accentColor ? `${accentColor}40` : "#e2e8f0",
+                              borderTopColor: placeholderColor,
+                            }}
+                          />
+                          <span className="text-[13px]" style={{ color: placeholderColor }}>
+                            Designing {app}...
+                          </span>
+                        </div>
+                      ))}
+                    </div>
                   </div>
-                )}
-              </div>
-            ) : (
-              <div className="text-center text-[14px] text-[#94a3b8]" style={{ fontFamily: bodyFamily }}>
-                Contextual mockups will appear here once generated from the selected visual snapshot.
-              </div>
-            )}
+                );
+              }
+
+              if (contextImages.length > 0) {
+                return (
+                  <div className="flex flex-col gap-8">
+                    <div className="flex gap-8">
+                      {contextImages.slice(0, 2).map((url, idx) => (
+                        <div key={idx} className="flex-1 min-w-0 rounded-lg overflow-hidden relative aspect-[16/9]">
+                          <img
+                            alt="Brand in context mockup"
+                            className="absolute inset-0 w-full h-full object-cover"
+                            src={url}
+                          />
+                        </div>
+                      ))}
+                    </div>
+                    {contextImages.length > 2 && (
+                      <div className="flex gap-8">
+                        {contextImages.slice(2, 4).map((url, idx) => (
+                          <div key={idx} className="flex-1 min-w-0 rounded-lg overflow-hidden relative aspect-[16/9]">
+                            <img
+                              alt="Brand in context mockup"
+                              className="absolute inset-0 w-full h-full object-cover"
+                              src={url}
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              }
+
+              return (
+                <div className="text-center text-[14px] text-[#94a3b8]" style={{ fontFamily: bodyFamily }}>
+                  Contextual mockups will appear here once generated from the selected visual snapshot.
+                </div>
+              );
+            })()}
           </div>
         </section>
 

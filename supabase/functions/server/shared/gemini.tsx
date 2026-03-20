@@ -16,10 +16,12 @@ export const TEXT_MODEL = "gemini-3-flash-preview";
 
 // Image models: try Pro first for quality, then Flash if Pro fails (e.g. quota or model not enabled).
 export const PRIORITY_IMAGE_MODELS = [
-  {
-    shortName: "gemini-3-pro-image-preview",
-    strategy: "gemini-generateContent" as const,
-  },
+  // Flag out pro for developing purposes! the model is too expensive to run when developing.
+  // !!!
+  // {
+  //   shortName: "gemini-3-pro-image-preview",
+  //   strategy: "gemini-generateContent" as const,
+  // },
   {
     shortName: "gemini-3.1-flash-image-preview",
     strategy: "gemini-generateContent" as const,
@@ -90,7 +92,7 @@ export async function callGeminiText(
   return text;
 }
 
-// ── Gemini text + multiple images → text (for guideline rationale writing) ───
+// ── Gemini text + multiple images → text (for direction rationale writing) ───
 
 export async function callGeminiTextWithImages(
   apiKey: string,

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { FolderOpen, Plus, Save, Trash2, Check } from "lucide-react";
 import { Popover, PopoverTrigger, PopoverContent } from "./ui/popover";
+import { TIMING } from "../utils/design-tokens";
 
 const MAX_PROJECTS = 3;
 
@@ -69,7 +70,7 @@ export function ProjectSwitcher({
     try {
       await onSaveNow();
       setSaved(true);
-      setTimeout(() => setSaved(false), 2000);
+      setTimeout(() => setSaved(false), TIMING.SAVE_FEEDBACK_DURATION);
     } catch {
       // error already logged upstream
     } finally {

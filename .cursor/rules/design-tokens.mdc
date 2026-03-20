@@ -1,0 +1,60 @@
+---
+description: Design token usage — no hardcoded dimensions, colors, or font sizes
+globs: "**/*.tsx,**/*.css"
+alwaysApply: false
+---
+
+# Design Token Rules
+
+All visual constants are centralized. Never hardcode pixel values, hex colors, or font sizes in components.
+
+## Layout Dimensions
+
+Import from `src/app/utils/design-tokens.ts`:
+
+```typescript
+// ❌ BAD
+<div style={{ width: 260 }}>
+
+// ✅ GOOD
+import { LAYOUT } from "../utils/design-tokens";
+<div style={{ width: LAYOUT.VARIATION_SLOT_SIZE }}>
+```
+
+Key constants: `LAYOUT.SIDE_PANEL_WIDTH` (400), `LAYOUT.VARIATIONS_PANEL_WIDTH` (340), `LAYOUT.VARIATION_SLOT_SIZE` (260), `LAYOUT.FILMSTRIP_GAP` (16).
+
+## Typography
+
+Use `TYPOGRAPHY` presets from `design-tokens.ts` — do not invent font sizes:
+
+```typescript
+// ❌ BAD
+<h2 style={{ fontSize: 22 }}>
+
+// ✅ GOOD
+import { TYPOGRAPHY } from "../utils/design-tokens";
+<h2 style={TYPOGRAPHY.cardHeadingMd}>
+```
+
+## Color Semantics
+
+Colors encode meaning. Defined as `--bb-*` CSS variables in `src/styles/theme.css`:
+
+| Semantic | CSS variable prefix | Color family |
+|----------|-------------------|--------------|
+| AI actions/affordances | `--bb-ai-*` | Purple (#a78bfa / #8b5cf6) |
+| User actions | `--bb-user-*` | Blue (#60a5fa) |
+| Canvas chrome | `--bb-canvas-*` | Gray |
+| Frosted panels | `--bb-frosted-*` | Semi-transparent |
+
+```tsx
+// ❌ BAD — hardcoded hex breaks semantic meaning
+<div className="border-[#a78bfa]">
+
+// ✅ GOOD — uses Tailwind token from theme.css
+<div className="border-bb-ai-affordance-border">
+```
+
+## Animation Timing
+
+Use `TIMING` constants from `design-tokens.ts` for delays and durations. Do not hardcode `setTimeout` values.
