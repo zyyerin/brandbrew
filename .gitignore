@@ -1,6 +1,7 @@
 # Dependencies & build
 node_modules/
 dist/
+reports/
 
 # Env and local secrets (use .env.example as template)
 .env
@@ -15,5 +16,9 @@ supabase/.temp/
 
 # Editor / IDE debug logs
 .cursor/debug*.log
+
+# Local thesis / paper — never pushed (see thesis-local/README.md). Not part of Vite dist/.
+thesis-local/*
+!thesis-local/README.md
 
 .DS_Store

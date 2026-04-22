@@ -1,5 +1,15 @@
-import { useState, useRef, useEffect, useCallback } from "react";
-import { ChevronDown, Search, Check } from "lucide-react";
+import { useState, useCallback, useRef } from "react";
+import { ChevronDown, Check } from "lucide-react";
+import { TIMING, TYPE } from "../utils/design-tokens";
+import { Popover, PopoverTrigger, PopoverContent } from "./ui/popover";
+import {
+  Command,
+  CommandInput,
+  CommandList,
+  CommandEmpty,
+  CommandGroup,
+  CommandItem,
+} from "./ui/command";
 
 // ─── Curated list of popular Google Fonts ────────────────────────────────────
 export const GOOGLE_FONTS: { name: string; category: string }[] = [
@@ -128,181 +138,151 @@ export function FontPicker({
   value,
   onChange,
   label,
-  placeholder = "Search fonts…",
+  placeholder = "Select font…",
   variant = "body",
 }: FontPickerProps) {
-  const [isOpen, setIsOpen] = useState(false);
-  const [query, setQuery] = useState("");
-  const containerRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
-  const listRef = useRef<HTMLUListElement>(null);
+  const [open, setOpen] = useState(false);
   const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Filtered list
-  const filtered = query.trim()
-    ? GOOGLE_FONTS.filter((f) =>
-        f.name.toLowerCase().includes(query.toLowerCase()) ||
-        f.category.toLowerCase().includes(query.toLowerCase())
-      )
-    : GOOGLE_FONTS;
+  const previewFontSize =
+    variant === "heading"
+      ? TYPE.size.lg
+      : TYPE.size.baseLg;
 
-  // Pre-load first visible batch when dropdown opens or query changes
-  useEffect(() => {
-    if (isOpen) {
-      filtered.slice(0, 18).forEach((f) => loadFontPreview(f.name));
-    }
-  }, [isOpen, query]);
+  const handleSelect = useCallback(
+    (fontName: string) => {
+      loadFontPreview(fontName);
+      onChange(fontName);
+      setOpen(false);
+    },
+    [onChange],
+  );
 
-  // Close on outside click
-  useEffect(() => {
-    const handler = (e: MouseEvent) => {
-      if (
-        containerRef.current &&
-        !containerRef.current.contains(e.target as Node)
-      ) {
-        close();
-      }
-    };
-    if (isOpen) document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, [isOpen]);
-
-  // Scroll selected item into view when opening
-  useEffect(() => {
-    if (!isOpen) return;
-    setTimeout(() => {
-      const el = listRef.current?.querySelector("[data-selected]") as HTMLElement | null;
-      el?.scrollIntoView({ block: "center" });
-      inputRef.current?.focus();
-    }, 40);
-  }, [isOpen]);
-
-  // Load font on hover (debounced 150 ms so we don't spam while scrolling)
   const handleMouseEnter = useCallback((name: string) => {
     if (hoverTimer.current) clearTimeout(hoverTimer.current);
-    hoverTimer.current = setTimeout(() => loadFontPreview(name), 150);
+    hoverTimer.current = setTimeout(
+      () => loadFontPreview(name),
+      TIMING.FONT_HOVER_DELAY,
+    );
   }, []);
 
-  function close() {
-    setIsOpen(false);
-    setQuery("");
-  }
-
-  function handleSelect(name: string) {
-    loadFontPreview(name);
-    onChange(name);
-    close();
-  }
-
-  const previewSize = variant === "heading" ? "text-[18px]" : "text-[14px]";
-  const triggerFontFamily = value ? `"${value}", sans-serif` : undefined;
+  const handleOpenChange = useCallback((next: boolean) => {
+    if (next) {
+      // Pre-load first visible batch when opening
+      GOOGLE_FONTS.slice(0, 18).forEach((f) => loadFontPreview(f.name));
+    }
+    setOpen(next);
+  }, []);
 
   return (
-    <div ref={containerRef} className="relative w-full">
+    <div className="w-full">
       {label && (
-        <span className="text-[10px] tracking-[0.12em] uppercase text-muted-foreground/60 block mb-1.5">
+        <span
+          className="uppercase text-muted-foreground/60 block mb-1.5"
+          style={{
+            fontSize: TYPE.size.xs,
+            letterSpacing: TYPE.tracking.wide,
+          }}
+        >
           {label}
         </span>
       )}
 
-      {/* ── Trigger button ── */}
-      <button
-        type="button"
-        onClick={() => setIsOpen((v) => !v)}
-        className={`w-full flex items-center justify-between gap-2 px-3 py-2.5 rounded-lg border text-left transition-colors
-          ${isOpen
-            ? "border-blue-400 ring-2 ring-blue-200/50 bg-white"
-            : "border-border/60 bg-muted/20 hover:border-blue-300"
-          }`}
-      >
-        <span
-          className={`${previewSize} text-foreground truncate`}
-          style={{ fontFamily: triggerFontFamily }}
-        >
-          {value || <span className="text-muted-foreground/40 text-[13px]">{placeholder}</span>}
-        </span>
-        <ChevronDown
-          size={13}
-          className={`text-muted-foreground/50 shrink-0 transition-transform duration-150 ${isOpen ? "rotate-180" : ""}`}
-        />
-      </button>
-
-      {/* ── Dropdown ── */}
-      {isOpen && (
-        <div className="absolute z-50 left-0 right-0 mt-1.5 bg-white border border-border/60 rounded-xl shadow-2xl shadow-black/10 overflow-hidden">
-
-          {/* Search bar */}
-          <div className="flex items-center gap-2 px-3 py-2.5 border-b border-border/40 bg-muted/10">
-            <Search size={12} className="text-muted-foreground/40 shrink-0" />
-            <input
-              ref={inputRef}
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search by name or style…"
-              className="flex-1 text-[13px] bg-transparent outline-none placeholder:text-muted-foreground/40"
-              onKeyDown={(e) => e.key === "Escape" && close()}
-            />
-            {query && (
-              <button
-                onClick={() => setQuery("")}
-                className="text-[10px] text-muted-foreground/40 hover:text-foreground"
-              >
-                ✕
-              </button>
-            )}
-          </div>
-
-          {/* Font list */}
-          <ul
-            ref={listRef}
-            className="max-h-[260px] overflow-y-auto overscroll-contain py-1"
+      <Popover open={open} onOpenChange={handleOpenChange}>
+        <PopoverTrigger asChild>
+          <button
+            type="button"
+            className={`w-full flex items-center justify-between gap-2 px-3 py-2.5 rounded-lg border text-left transition-colors
+              ${
+                open
+                  ? "border-blue-400 ring-2 ring-blue-200/50 bg-white"
+                  : "border-border/60 bg-muted/20 hover:border-blue-300"
+              }`}
           >
-            {filtered.length === 0 ? (
-              <li className="px-3 py-4 text-[12px] text-muted-foreground/50 text-center">
-                No fonts match "{query}"
-              </li>
-            ) : (
-              filtered.map((font) => {
-                const isSelected = value === font.name;
-                return (
-                  <li
-                    key={font.name}
-                    data-selected={isSelected ? "true" : undefined}
-                    onMouseEnter={() => handleMouseEnter(font.name)}
-                    onClick={() => handleSelect(font.name)}
-                    className={`flex items-center justify-between gap-3 px-3 py-2 cursor-pointer transition-colors
-                      ${isSelected
-                        ? "bg-blue-50"
-                        : "hover:bg-slate-50"
-                      }`}
-                  >
-                    {/* Font name rendered in its own typeface */}
-                    <span
-                      className={`${previewSize} leading-tight truncate ${isSelected ? "text-blue-600" : "text-foreground"}`}
-                      style={{ fontFamily: `"${font.name}", sans-serif` }}
-                    >
-                      {font.name}
-                    </span>
+            <span
+              className="text-foreground truncate"
+              style={{
+                fontFamily: value ? `"${value}", sans-serif` : undefined,
+                fontSize: previewFontSize,
+              }}
+            >
+              {value || (
+                <span
+                  className="text-muted-foreground/40"
+                  style={{ fontSize: TYPE.size.base }}
+                >
+                  {placeholder}
+                </span>
+              )}
+            </span>
+            <ChevronDown
+              size={13}
+              className={`text-muted-foreground/50 shrink-0 transition-transform duration-150 ${open ? "rotate-180" : ""}`}
+            />
+          </button>
+        </PopoverTrigger>
 
-                    <div className="flex items-center gap-2 shrink-0">
-                      {/* Category badge */}
+        <PopoverContent
+          className="p-0 rounded-xl border-border/60 shadow-2xl shadow-black/10"
+          style={{
+            width: "max(var(--radix-popover-trigger-width), min(90vw, 26rem))",
+          }}
+          align="start"
+          sideOffset={6}
+          onClick={(e) => e.stopPropagation()}
+          onPointerDown={(e) => e.stopPropagation()}
+        >
+          <Command>
+            <CommandInput placeholder="Search by name or style…" />
+            <CommandList className="max-h-[260px]">
+              <CommandEmpty className="py-4 text-[12px] text-muted-foreground/50">
+                No fonts found.
+              </CommandEmpty>
+              <CommandGroup>
+                {GOOGLE_FONTS.map((font) => {
+                  const isSelected = value === font.name;
+                  return (
+                    <CommandItem
+                      key={font.name}
+                      value={font.name}
+                      keywords={[font.category]}
+                      onSelect={() => handleSelect(font.name)}
+                      onMouseEnter={() => handleMouseEnter(font.name)}
+                      className={`flex items-center justify-between gap-3 px-3 py-2 cursor-pointer rounded-sm
+                        ${isSelected ? "bg-blue-50 text-blue-600" : ""}`}
+                    >
                       <span
-                        className={`text-[9px] tracking-wide px-1.5 py-0.5 rounded-full font-medium ${CATEGORY_COLOURS[font.category] ?? "bg-muted text-muted-foreground"}`}
+                        className="leading-tight truncate"
+                        style={{
+                          fontFamily: `"${font.name}", sans-serif`,
+                          fontSize: previewFontSize,
+                        }}
                       >
-                        {font.category}
+                        {font.name}
                       </span>
-                      {/* Selected checkmark */}
-                      {isSelected && (
-                        <Check size={12} className="text-blue-500" strokeWidth={2.5} />
-                      )}
-                    </div>
-                  </li>
-                );
-              })
-            )}
-          </ul>
-        </div>
-      )}
+
+                      <div className="flex items-center gap-2 shrink-0 ml-auto">
+                        <span
+                          className={`text-[9px] tracking-wide px-1.5 py-0.5 rounded-full font-medium ${CATEGORY_COLOURS[font.category] ?? "bg-muted text-muted-foreground"}`}
+                        >
+                          {font.category}
+                        </span>
+                        {isSelected && (
+                          <Check
+                            size={12}
+                            className="text-blue-500"
+                            strokeWidth={2.5}
+                          />
+                        )}
+                      </div>
+                    </CommandItem>
+                  );
+                })}
+              </CommandGroup>
+            </CommandList>
+          </Command>
+        </PopoverContent>
+      </Popover>
     </div>
   );
 }

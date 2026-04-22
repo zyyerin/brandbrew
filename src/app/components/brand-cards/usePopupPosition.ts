@@ -1,9 +1,22 @@
 import { useState, useEffect, useRef, type RefObject } from "react";
+import { LAYOUT } from "../../utils/design-tokens";
 
 interface PopupPositionConfig {
   width: number;
   maxHeight: number;
   padding: number;
+}
+
+export interface PopupPosition {
+  top: number;
+  left: number;
+  width: number;
+  /** When true, popover grows downward; when false, grows upward. */
+  growDown: boolean;
+  /** Max height for the popover container. */
+  maxHeight: number;
+  /** CSS transform when growing upward (e.g. "translateY(-100%)"). */
+  transform?: string;
 }
 
 export function usePopupPosition(
@@ -14,7 +27,7 @@ export function usePopupPosition(
 ) {
   const { width, maxHeight, padding } = config;
   const containerRef = useRef<HTMLDivElement>(null);
-  const [pos, setPos] = useState<{ top: number; left: number; width: number } | null>(null);
+  const [pos, setPos] = useState<PopupPosition | null>(null);
 
   useEffect(() => {
     if (!isOpen || !triggerRef.current) {
@@ -22,12 +35,28 @@ export function usePopupPosition(
       return;
     }
     const rect = triggerRef.current.getBoundingClientRect();
-    let top = rect.top - 8;
-    let left = rect.right - width;
-    top = Math.max(top, padding + maxHeight);
-    top = Math.min(top, window.innerHeight - padding);
-    left = Math.max(padding, Math.min(left, window.innerWidth - width - padding));
-    setPos({ top, left, width });
+    const bottomGap = LAYOUT.popup.offset;
+    const spaceAbove = rect.top - padding;
+    const spaceBelow = window.innerHeight - rect.bottom - bottomGap;
+    const growDown = spaceBelow >= spaceAbove;
+
+    let top: number;
+    let popupMaxHeight: number;
+    let transform: string | undefined;
+
+    if (growDown) {
+      top = rect.bottom + LAYOUT.popup.offset;
+      top = Math.min(top, window.innerHeight - padding - LAYOUT.popup.offset);
+      popupMaxHeight = Math.max(LAYOUT.popup.minHeight, window.innerHeight - top - LAYOUT.popup.offset);
+    } else {
+      top = rect.top - LAYOUT.popup.offset;
+      top = Math.max(top, padding);
+      popupMaxHeight = Math.max(LAYOUT.popup.minHeight, top);
+      transform = "translateY(-100%)";
+    }
+
+    const left = Math.max(padding, Math.min(rect.right - width, window.innerWidth - width - padding));
+    setPos({ top, left, width, growDown, maxHeight: popupMaxHeight, transform });
   }, [isOpen, width, maxHeight, padding]);
 
   useEffect(() => {

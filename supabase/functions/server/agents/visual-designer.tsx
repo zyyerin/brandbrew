@@ -20,50 +20,92 @@ import {
   generateImage,
   uploadAndSignImage,
   fetchImageAsBase64,
-  getLastUsedImageModel,
-  generateMoodboardImage,
+  callGeminiText,
   callGeminiVision,
   TEXT_MODEL,
+  safeParseJson,
 } from "../shared/gemini.tsx";
-import { MERGE_SPECS, mergeCardIdToField, applyFieldGuard } from "../shared/merge-specs.tsx";
-import type { ImagePromptContext } from "../shared/types.tsx";
+import {
+  MERGE_SPECS,
+  mergeCardIdToField,
+  applyFieldGuard,
+  COMMENT_MODIFY_FIELDS,
+  MERGE_TEMPERATURES,
+  buildCommentModifyPrompt,
+  buildEditImagePrompt,
+  buildExtractPalettePrompt,
+  buildMergeJsonPrompt,
+  buildVisionMergePrompt,
+  buildMergeGeneratePrompt,
+  buildMergeGeneratePromptColorPaletteStructured,
+  isMergeGenerateColorPaletteStructuredSlot,
+  formatMergeBoardPromptContext,
+  mergeBoardContextFromBrandData,
+  normalizeMergeBoardFromBody,
+} from "../shared/merge-specs.tsx";
 import { resolveAspectRatio } from "../shared/image-config.tsx";
-import { buildCreativeBrief } from "./art-director.tsx";
+import { buildBriefIdentityContextText, normalizeShortContext } from "../shared/brand-context.ts";
 
 const visualDesigner = new Hono();
 
-// ── Agent persona (embedded into prompt context) ─────────────────────────────
+// ── Base64 payload guard ──────────────────────────────────────────────────────
+// Client-supplied base64 is not fetched through fetchImageAsBase64, so it has
+// no server-side size check. ~8 MB decoded → ~11.2 MB base64.
 
-const VISUAL_DESIGNER_PERSONA = `You are a visual designer specialising in refining and adapting existing visual assets.
-You preserve composition, structure, and silhouette while precisely applying new colors, textures, and style treatments.
-Every edit must feel seamless — as if the image was originally created with the new parameters.`;
+const MAX_B64_LENGTH = 11_200_000;
 
-// ── Img2img prompt builder ───────────────────────────────────────────────────
-// Layers img2img-specific framing (palette / recolor instructions) on top of
-// the Art Director's canonical creative brief — single source of truth for
-// what each card type's prompt should look like.
+function validateBase64(b64: string | undefined, label: string): string | null {
+  if (!b64) return null;
+  if (b64.length > MAX_B64_LENGTH) return `${label} exceeds size limit`;
+  return null;
+}
 
-export function buildImg2ImgPrompt(
-  cardType: string,
-  ctx: ImagePromptContext,
-  hasPaletteImage = false,
-): string {
-  const palette = (ctx.colorPalette ?? []).join(", ");
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
 
-  const palettePrefix = hasPaletteImage
-    ? `I am providing two images. ` +
-      `The FIRST image is a color palette showing horizontal color swatches. ` +
-      `The SECOND image is the design to recolor. `
-    : "";
-  const colorInstr = hasPaletteImage
-    ? `Recolor the SECOND image using ONLY the exact colors visible in the FIRST image's swatches. `
-    : palette
-      ? `Recolor using ONLY these brand colors: ${palette}. `
-      : "";
+function isDevMode(): boolean {
+  return Deno.env.get("ENABLE_DEV_ROUTES") === "true";
+}
 
-  const creativeBrief = buildCreativeBrief(cardType, ctx);
+function getEffectiveOverride<T>(overrideValue: T): T | undefined {
+  return isDevMode() ? overrideValue : undefined;
+}
 
-  return palettePrefix + colorInstr + creativeBrief;
+function hasShortContext(body: unknown): boolean {
+  return !!(
+    body &&
+    typeof body === "object" &&
+    "brandContextShort" in body &&
+    body.brandContextShort &&
+    typeof body.brandContextShort === "object"
+  );
+}
+
+function buildErrorPayload(publicMessage: string, err: unknown, debug?: Record<string, unknown>) {
+  const payload: Record<string, unknown> = { error: publicMessage };
+  if (isDevMode()) {
+    payload.error = `${publicMessage}: ${String(err)}`;
+    if (debug) payload._debug = debug;
+  }
+  return payload;
+}
+
+// ── Unwrap single-key LLM wrappers ──────────────────────────────────────────
+// LLM responses often wrap the value in {"fieldName": value}. This helper
+// unwraps when the parsed result has exactly one key whose value type matches
+// the expected target shape (array, string, or object).
+
+function unwrapSingleKeyWrapper(targetData: unknown, parsed: unknown): unknown {
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return parsed;
+  const keys = Object.keys(parsed as Record<string, unknown>);
+  if (keys.length !== 1) return parsed;
+  const inner = (parsed as Record<string, unknown>)[keys[0]];
+  if (Array.isArray(targetData) && Array.isArray(inner)) return inner;
+  if (typeof targetData === "string" && typeof inner === "string") return inner;
+  if (typeof targetData === "object" && targetData !== null && !Array.isArray(targetData) &&
+      typeof inner === "object" && inner !== null && !Array.isArray(inner)) return inner;
+  return parsed;
 }
 
 // ── Route: POST /edit ────────────────────────────────────────────────────────
@@ -73,19 +115,21 @@ visualDesigner.post("/edit", async (c) => {
   try {
     const startTime = Date.now();
     const body = await c.req.json();
+    if (!hasShortContext(body)) {
+      return c.json({ error: "brandContextShort is required" }, 400);
+    }
     const {
       cardType,
-      brandName,
-      brandDescription,
-      conceptName,
-      conceptPoints,
-      keywords,
+      newHint,
       colorPalette,
-      mergeContext,
       sourceImageUrl,
+      referenceImageUrl,
       paletteImageBase64,
       aspectRatio,
     } = body;
+    const shortContext = normalizeShortContext(body);
+    const brandName = shortContext.name;
+    const tagline = shortContext.tagline;
 
     const apiKey = Deno.env.get("GEMINI_API_KEY");
     if (!apiKey) return c.json({ error: "GEMINI_API_KEY not configured" }, 500);
@@ -94,41 +138,61 @@ visualDesigner.post("/edit", async (c) => {
       return c.json({ error: "sourceImageUrl is required for image editing" }, 400);
     }
 
+    const paletteB64Error = validateBase64(paletteImageBase64, "paletteImageBase64");
+    if (paletteB64Error) return c.json({ error: paletteB64Error }, 400);
+
     // Fetch the source image for img2img editing
     console.log(`[visual-designer] Fetching source image for img2img edit…`);
     const fetched = await fetchImageAsBase64(sourceImageUrl);
     if ("error" in fetched) {
-      return c.json({ error: `Source image fetch failed: ${fetched.error}` }, 400);
+      console.log(`[visual-designer] Source image fetch failed: ${fetched.error}`);
+      return c.json({ error: "Source image fetch failed" }, 400);
     }
     const sourceImage = fetched;
+
+    // Fetch optional reference image (source card image in card-to-card merge)
+    let referenceImage: { b64: string; mimeType: string } | undefined;
+    if (referenceImageUrl) {
+      console.log(`[visual-designer] Fetching reference image for card-to-card merge…`);
+      const refFetched = await fetchImageAsBase64(referenceImageUrl);
+      if ("error" in refFetched) {
+        console.log(`[visual-designer] Reference image fetch failed (proceeding without): ${refFetched.error}`);
+      } else {
+        referenceImage = refFetched;
+      }
+    }
 
     const paletteImage: { b64: string; mimeType: string } | undefined =
       paletteImageBase64 ? { b64: paletteImageBase64, mimeType: "image/png" } : undefined;
 
     const effectiveAR = resolveAspectRatio(cardType, aspectRatio);
-
-    const ctx: ImagePromptContext = {
-      brandName, brandDescription, conceptName,
-      conceptPoints, keywords, colorPalette, mergeContext,
-      aspectRatio: effectiveAR,
-    };
-
     const hasPalette = !!paletteImage;
-    const prompt = buildImg2ImgPrompt(cardType, ctx, hasPalette);
+    const hasRef = !!referenceImage;
 
-    const mode = hasPalette ? "img2img+palette" : "img2img";
+    const prompt = buildEditImagePrompt({
+      newHint,
+      hasPaletteImage: hasPalette,
+      hasReferenceImage: hasRef,
+      colorPaletteHex: colorPalette as string[] | undefined,
+      cardType,
+      brandName,
+      tagline,
+    });
+
+    const mode = hasRef ? "img2img+ref" : hasPalette ? "img2img+palette" : "img2img";
     console.log(`[visual-designer] Editing (${mode}) — cardType=${cardType} ar=${effectiveAR} prompt="${prompt.slice(0, 80)}…"`);
 
-    const genResult = await generateImage(apiKey, prompt, sourceImage, paletteImage, effectiveAR);
+    const genResult = await generateImage(apiKey, prompt, { cardType, sourceImage, paletteImage, referenceImage, aspectRatio: effectiveAR });
     if (genResult.errors.length > 0) {
       console.log(`[visual-designer] Warning: some models failed: ${genResult.errors.join(" | ")}`);
     }
 
-    const imageUrl = await uploadAndSignImage(genResult.b64, genResult.mimeType, cardType);
+    const imageUrl = await uploadAndSignImage(genResult.b64, genResult.mimeType, cardType, c.req.header("X-Project-Id"));
     const generationTime = Date.now() - startTime;
-    const usedModel = getLastUsedImageModel()?.shortName ?? "unknown";
+    const usedModel = genResult.usedModel;
 
     const selectedElementLabels = [
+      referenceImageUrl && "Reference image",
       "Source image",
       paletteImageBase64 && "Color Palette",
     ].filter(Boolean) as string[];
@@ -138,10 +202,12 @@ visualDesigner.post("/edit", async (c) => {
       _meta: {
         agent: "visual-designer",
         prompt,
+        promptKey: `edit:${cardType}`,
         model: usedModel,
         generationTime,
-        ingredients: [brandName, conceptName, ...(keywords ?? [])].filter(Boolean),
-        referenceImageUrls: [sourceImageUrl],
+        ...(newHint ? { userInput: newHint } : {}),
+        ingredients: [],
+        referenceImageUrls: [referenceImageUrl, sourceImageUrl].filter(Boolean) as string[],
         paletteImageDataUrl: paletteImageBase64
           ? `data:image/png;base64,${paletteImageBase64}`
           : undefined,
@@ -149,27 +215,94 @@ visualDesigner.post("/edit", async (c) => {
       },
     });
   } catch (err) {
-    console.log("[visual-designer] edit error:", err);
-    return c.json({ error: `Image editing failed: ${String(err)}` }, 500);
+    console.error("[visual-designer] edit error:", (err as Error)?.stack ?? String(err));
+    return c.json(buildErrorPayload("Image editing failed", err), 500);
   }
 });
 
-// ── Route: POST /moodboard ───────────────────────────────────────────────────
-// Generates a visual snapshot / moodboard from multiple reference images
-// (palette image + one or more brand imagery references) using a fixed prompt.
+// ── Snapshot prompt builder ──────────────────────────────────────────────────
+// Builds a structured art-director-grade prompt for the visual snapshot route.
+// Composition bullets use referenceImageRoles order (parallel to ref images). Optional legacy:
+// paletteImageBase64 prepends a swatch as Image 1 before URL refs.
 
-visualDesigner.post("/moodboard", async (c) => {
+interface SnapshotPromptContext {
+  brandName?: string;
+  brandDescription?: string;
+  keywords?: string[];
+  visualConcept?: { concept: string; description: string };
+  colorPalette?: string[];
+  font1?: string;
+  font2?: string;
+  hasPalette: boolean;
+  referenceImageRoles?: string[];
+}
+
+function buildSnapshotPrompt(ctx: SnapshotPromptContext): string {
+  const paletteText = (ctx.colorPalette ?? []).length > 0
+    ? `Color Palette: ${ctx.colorPalette!.join(", ")}.`
+    : "";
+  const fontText = [ctx.font1, ctx.font2].filter(Boolean).join(", ");
+
+  const roles = ctx.referenceImageRoles ?? [];
+  const compositionLines: string[] = [];
+  let compIdx = 1;
+  if (ctx.hasPalette) compIdx++;
+  for (const role of roles) {
+    const n = compIdx++;
+    if (role === "art-style") {
+      compositionLines.push(
+        `- extracting and remixing individual graphic elements from Image ${n}`,
+      );
+    } else if (role === "logo") {
+      compositionLines.push(`- the Logo (Image ${n})`);
+    } else {
+      console.warn(`[visual-designer] buildSnapshotPrompt: unexpected referenceImageRoles entry "${role}" (Image ${n}); no composition bullet`);
+    }
+  }
+  if (paletteText) compositionLines.push(`- ${paletteText}`);
+  if (fontText) compositionLines.push(`- Fonts: ${fontText}`);
+
+  const intro =
+    "A clean and structured modular brand identity snapshot presented in a bento box grid of distinct, separated compartments. No text labels. The composition features diverse assets:";
+  return [intro, compositionLines.join("\n")].join("\n\n");
+}
+
+// ── Route: POST /visual-snapshot ─────────────────────────────────────────────
+// Generates a visual snapshot from reference image URLs (client: logo then art-style)
+// plus optional legacy palette bitmap and text context (colors, fonts, concept).
+// When new context fields are present the prompt is built server-side;
+// otherwise falls back to the legacy client-supplied prompt string.
+
+visualDesigner.post("/visual-snapshot", async (c) => {
   try {
     const startTime = Date.now();
     const body = await c.req.json();
+    if (!hasShortContext(body)) {
+      return c.json({ error: "brandContextShort is required" }, 400);
+    }
     const {
       cardType,
-      brandName,
-      prompt,
+      prompt: legacyPrompt,
       referenceImageUrls = [],
+      referenceImageRoles,
       paletteImageBase64,
       aspectRatio,
+      font1,
+      font2,
     } = body;
+    const shortContext = normalizeShortContext(body);
+    const brandName = shortContext.name;
+    const brandDescription = undefined;
+    const keywords = shortContext.keywords;
+    const visualConcept = shortContext.visualConcept
+      ? {
+        concept: shortContext.visualConcept.concept,
+        description: shortContext.visualConcept.description ?? "",
+      }
+      : undefined;
+    const colorPalette = shortContext.colorPalette;
+    const shortFont1 = shortContext.titleFont ?? font1;
+    const shortFont2 = shortContext.bodyFont ?? font2;
 
     const apiKey = Deno.env.get("GEMINI_API_KEY");
     if (!apiKey) return c.json({ error: "GEMINI_API_KEY not configured" }, 500);
@@ -178,6 +311,9 @@ visualDesigner.post("/moodboard", async (c) => {
     if (!hasAnyImages) {
       return c.json({ error: "At least one reference image or paletteImageBase64 is required" }, 400);
     }
+
+    const paletteB64Error = validateBase64(paletteImageBase64, "paletteImageBase64");
+    if (paletteB64Error) return c.json({ error: paletteB64Error }, 400);
 
     const images: Array<{ b64: string; mimeType: string }> = [];
 
@@ -197,21 +333,42 @@ visualDesigner.post("/moodboard", async (c) => {
     }
 
     if (images.length === 0) {
-      return c.json({ error: "Failed to load all reference images" }, 400);
+      return c.json({ error: "Failed to load reference images" }, 400);
     }
 
     const effectiveAR = resolveAspectRatio(cardType ?? "visual-snapshot", aspectRatio);
 
+    // Build a structured prompt when new context fields are present;
+    // fall back to the legacy client-supplied prompt string for backward compat.
+    const hasNewContext = brandDescription || (keywords?.length) || visualConcept || referenceImageRoles;
+    const prompt = hasNewContext
+      ? buildSnapshotPrompt({
+          brandName,
+          brandDescription,
+          keywords,
+          visualConcept,
+          colorPalette,
+          font1: shortFont1,
+          font2: shortFont2,
+          hasPalette: !!paletteImageBase64,
+          referenceImageRoles,
+        })
+      : String(legacyPrompt ?? "");
+
     console.log(
-      `[visual-designer] Generating moodboard — cardType=${cardType} ar=${effectiveAR} refs=${referenceImageUrls?.length ?? 0} ` +
-      `palette=${paletteImageBase64 ? "yes" : "no"} prompt="${String(prompt).slice(0, 80)}…"`,
+      `[visual-designer] Generating visual snapshot — cardType=${cardType} ar=${effectiveAR} refs=${referenceImageUrls?.length ?? 0} ` +
+      `palette=${paletteImageBase64 ? "yes" : "no"} newContext=${!!hasNewContext} prompt="${prompt.slice(0, 80)}…"`,
     );
 
-    const promptText = String(prompt ?? "");
-    let genResult: Awaited<ReturnType<typeof generateMoodboardImage>> | null = null;
+    const promptText = prompt;
+    let genResult: Awaited<ReturnType<typeof generateImage>> | null = null;
     let fallbackMode = "none";
     try {
-      genResult = await generateMoodboardImage(apiKey, promptText, images, effectiveAR);
+      genResult = await generateImage(apiKey, promptText, {
+        cardType: cardType ?? "visual-snapshot",
+        refImages: images,
+        aspectRatio: effectiveAR,
+      });
     } catch (err) {
       const errMsg = String(err);
       const likelySafetyBlock =
@@ -227,7 +384,7 @@ visualDesigner.post("/moodboard", async (c) => {
         fallbackCandidates.push({ mode: "drop-palette", images: images.slice(1) });
       }
       if (images.length > 1) {
-        fallbackCandidates.push({ mode: "first-reference-only", images: [images[images.length - 1]] });
+        fallbackCandidates.push({ mode: "last-reference-only", images: [images[images.length - 1]] });
       }
       if (paletteImageBase64) {
         fallbackCandidates.push({ mode: "palette-only", images: [images[0]] });
@@ -237,11 +394,19 @@ visualDesigner.post("/moodboard", async (c) => {
       let recovered = false;
       for (const candidate of fallbackCandidates) {
         if (!candidate.images.length) continue;
+        if (Date.now() - startTime > 120_000) {
+          console.log(`[visual-designer] Fallback deadline exceeded, aborting retries`);
+          break;
+        }
         try {
-          genResult = await generateMoodboardImage(apiKey, promptText, candidate.images, effectiveAR);
+          genResult = await generateImage(apiKey, promptText, {
+            cardType: cardType ?? "visual-snapshot",
+            refImages: candidate.images,
+            aspectRatio: effectiveAR,
+          });
           fallbackMode = candidate.mode;
           recovered = true;
-          console.log(`[visual-designer] Moodboard recovered with fallback=${fallbackMode}`);
+          console.log(`[visual-designer] Visual snapshot recovered with fallback=${fallbackMode}`);
           break;
         } catch (fallbackErr) {
           fallbackErrors.push(`${candidate.mode}: ${String(fallbackErr)}`);
@@ -254,30 +419,30 @@ visualDesigner.post("/moodboard", async (c) => {
     }
 
     if (!genResult) {
-      throw new Error("Moodboard generation produced no result");
+      throw new Error("Visual snapshot generation produced no result");
     }
 
     if (genResult.errors.length > 0) {
-      console.log(`[visual-designer] Moodboard warnings: ${genResult.errors.join(" | ")}`);
+      console.log(`[visual-designer] Visual snapshot warnings: ${genResult.errors.join(" | ")}`);
     }
 
-    const imageUrl = await uploadAndSignImage(genResult.b64, genResult.mimeType, cardType ?? "visual-snapshot");
+    const imageUrl = await uploadAndSignImage(genResult.b64, genResult.mimeType, cardType ?? "visual-snapshot", c.req.header("X-Project-Id"));
     const generationTime = Date.now() - startTime;
-    const usedModel = getLastUsedImageModel()?.shortName ?? "unknown";
+    const usedModel = genResult.usedModel;
 
     return c.json({
       imageUrl,
       _meta: {
-        agent: "visual-designer-moodboard",
+        agent: "visual-designer-visual-snapshot",
         prompt,
         model: usedModel,
         generationTime,
-        ingredients: [brandName, fallbackMode !== "none" ? `fallback:${fallbackMode}` : null].filter(Boolean),
+        ingredients: [brandName].filter(Boolean),
       },
     });
   } catch (err) {
-    console.log("[visual-designer] moodboard error:", err);
-    return c.json({ error: `Moodboard image generation failed: ${String(err)}` }, 500);
+    console.error("[visual-designer] visual-snapshot error:", (err as Error)?.stack ?? String(err));
+    return c.json(buildErrorPayload("Visual snapshot image generation failed", err), 500);
   }
 });
 
@@ -291,17 +456,26 @@ visualDesigner.post("/context", async (c) => {
     const body = await c.req.json();
     const {
       application,
-      brandName,
       prompt,
       referenceImageUrls = [],
       aspectRatio,
+      brandDescription: rawBrandDescription,
     } = body as {
       application?: string;
-      brandName?: string;
       prompt?: string;
       referenceImageUrls?: string[];
       aspectRatio?: string;
+      brandDescription?: string;
     };
+    const brandName = normalizeShortContext(body).name;
+    const brandDescription =
+      typeof rawBrandDescription === "string" && rawBrandDescription.trim().length > 0
+        ? rawBrandDescription.trim()
+        : "";
+    const brandDescriptionForPrompt =
+      brandDescription.length > 1500
+        ? `${brandDescription.slice(0, 1500)}…`
+        : brandDescription;
 
     const apiKey = Deno.env.get("GEMINI_API_KEY");
     if (!apiKey) return c.json({ error: "GEMINI_API_KEY not configured" }, 500);
@@ -320,17 +494,43 @@ visualDesigner.post("/context", async (c) => {
       images.push(fetched);
     }
 
-    const hasAnyImages = images.length > 0;
     const effectiveAR = resolveAspectRatio("brand-context", aspectRatio);
-    const effectivePrompt =
+    let effectivePrompt =
       prompt ??
-      `Create a ${application} mockup for the brand. Clean composition.`;
+      `Create a curated brand mockup of ${application}. Apply the reference visual dynamically across the items, varying the scale between full-bleed macro crops on some items and small, isolated placements on others. Clean composition. Avoid redundant, tiled patterns.`;
+    if (brandDescriptionForPrompt) {
+      effectivePrompt =
+        `${effectivePrompt}\n\nBrand description: ${brandDescriptionForPrompt}`;
+    }
 
     console.log(
       `[visual-designer] Generating context mockup — application=${application} ar=${effectiveAR} refs=${images.length} prompt="${effectivePrompt.slice(0, 80)}…"`,
     );
 
-    const genResult = await generateMoodboardImage(apiKey, effectivePrompt, images, effectiveAR);
+    if (images.length === 0) {
+      console.log(`[visual-designer] No reference images available, generating context from text only`);
+    }
+
+    let genResult;
+    try {
+      genResult = await generateImage(apiKey, effectivePrompt, {
+        cardType: "application",
+        refImages: images,
+        aspectRatio: effectiveAR,
+      });
+    } catch (err) {
+      const errMsg = String(err);
+      const likelySafetyBlock = errMsg.includes("blockReason") || errMsg.includes("no inlineData");
+      if (!likelySafetyBlock || images.length === 0) throw err;
+
+      console.log(`[visual-designer] Context safety block, retrying without reference images`);
+      genResult = await generateImage(apiKey, effectivePrompt, {
+        cardType: "application",
+        refImages: [],
+        aspectRatio: effectiveAR,
+      });
+    }
+
     if (genResult.errors.length > 0) {
       console.log(`[visual-designer] Context warnings: ${genResult.errors.join(" | ")}`);
     }
@@ -339,9 +539,10 @@ visualDesigner.post("/context", async (c) => {
       genResult.b64,
       genResult.mimeType,
       "brand-context",
+      c.req.header("X-Project-Id"),
     );
     const generationTime = Date.now() - startTime;
-    const usedModel = getLastUsedImageModel()?.shortName ?? "unknown";
+    const usedModel = genResult.usedModel;
 
     return c.json({
       imageUrl,
@@ -350,34 +551,49 @@ visualDesigner.post("/context", async (c) => {
         prompt: effectivePrompt,
         model: usedModel,
         generationTime,
-        ingredients: [brandName, application, hasAnyImages ? "with-ref" : "no-ref"].filter(
-          Boolean,
-        ),
+        ingredients: [brandName, application].filter(Boolean),
       },
     });
   } catch (err) {
-    console.log("[visual-designer] context error:", err);
-    return c.json({ error: `Context image generation failed: ${String(err)}` }, 500);
+    console.error("[visual-designer] context error:", (err as Error)?.stack ?? String(err));
+    return c.json(buildErrorPayload("Context image generation failed", err), 500);
   }
 });
 
 // ── Route: POST /merge-generate ──────────────────────────────────────────────
-// Generates a new image when an element card is dragged onto another element's
-// queue slot (queue drop). Uses a minimal prompt: the merge hint from the client
-// plus the brand name and description. When the source card has an image it is
-// passed as an img2img reference so the result visually relates to the source.
+// Queue-slot image merge: palette→logo|art-style uses structured brief + 【Visual Concept】; others use buildMergeGeneratePrompt (hint → active slots → VC).
+// Gemini parts: reference images first, then text. Board: optional mergeBoardContext or shortContext patch.
 
 visualDesigner.post("/merge-generate", async (c) => {
   try {
     const startTime = Date.now();
-    const body = await c.req.json();
-    const { cardType, brandName, brandDescription, mergeContext, sourceImageUrl, aspectRatio } = body;
+    const body = await c.req.json() as Record<string, unknown>;
+    if (!hasShortContext(body)) {
+      return c.json({ error: "brandContextShort is required" }, 400);
+    }
+    const {
+      cardType,
+      newHint,
+      sourceId,
+      sourceImageUrl,
+      sourceTextData,
+      aspectRatio,
+    } = body as {
+      cardType: string;
+      newHint: string;
+      sourceId?: string;
+      sourceImageUrl?: string;
+      sourceTextData?: unknown;
+      aspectRatio?: string;
+    };
+    const shortContext = normalizeShortContext(body);
+    const brandName = shortContext.name;
 
     const apiKey = Deno.env.get("GEMINI_API_KEY");
     if (!apiKey) return c.json({ error: "GEMINI_API_KEY not configured" }, 500);
 
-    if (!mergeContext) {
-      return c.json({ error: "mergeContext is required for merge generation" }, 400);
+    if (!newHint) {
+      return c.json({ error: "newHint is required for merge generation" }, 400);
     }
 
     let sourceImage: { b64: string; mimeType: string } | undefined;
@@ -391,55 +607,133 @@ visualDesigner.post("/merge-generate", async (c) => {
     }
 
     const effectiveAR = resolveAspectRatio(cardType, aspectRatio);
-    const brand = brandName ?? "the brand";
-    const desc = brandDescription ? ` ${brandDescription}` : "";
-    const prompt = `${mergeContext}. Brand: "${brand}".${desc}`;
 
-    const mode = sourceImage ? "img2img" : "txt2img";
+    // Only inject application touchpoint when generating application mockups
+    const contextForPrompt = cardType === "application"
+      ? shortContext
+      : { ...shortContext, application: undefined };
+
+    const board = normalizeMergeBoardFromBody(body, contextForPrompt);
+    const be = board.boardElements;
+
+    const seenImageUrls = new Set<string>();
+    if (typeof sourceImageUrl === "string" && sourceImageUrl.trim()) {
+      seenImageUrls.add(sourceImageUrl.trim());
+    }
+
+    let artBoardImage: { b64: string; mimeType: string } | undefined;
+    const artStyleUrl = be.artStyle?.imageUrl?.trim();
+    if (artStyleUrl && !seenImageUrls.has(artStyleUrl)) {
+      const fetched = await fetchImageAsBase64(artStyleUrl);
+      if ("error" in fetched) {
+        console.log(`[visual-designer] merge-generate board art-style fetch failed: ${fetched.error}`);
+      } else {
+        artBoardImage = fetched;
+        seenImageUrls.add(artStyleUrl);
+      }
+    }
+
+    let logoBoardImage: { b64: string; mimeType: string } | undefined;
+    const logoUrl = be.logoInspiration?.imageUrl?.trim();
+    if (logoUrl && !seenImageUrls.has(logoUrl)) {
+      const fetched = await fetchImageAsBase64(logoUrl);
+      if ("error" in fetched) {
+        console.log(`[visual-designer] merge-generate board logo fetch failed: ${fetched.error}`);
+      } else {
+        logoBoardImage = fetched;
+        seenImageUrls.add(logoUrl);
+      }
+    }
+
+    const useBoardInlineImages = !!(artBoardImage || logoBoardImage);
+    const refImages: Array<{ b64: string; mimeType: string }> = [];
+    const refGuideParts: string[] = [];
+    let refIdx = 1;
+    if (useBoardInlineImages) {
+      if (sourceImage) {
+        refImages.push(sourceImage);
+        refGuideParts.push(`${refIdx++}) primary merge source image`);
+      }
+      if (artBoardImage) {
+        refImages.push(artBoardImage);
+        refGuideParts.push(`${refIdx++}) style reference`);
+      }
+      if (logoBoardImage) {
+        refImages.push(logoBoardImage);
+        refGuideParts.push(`${refIdx++}) logo`);
+      }
+    }
+
+    const colorPaletteStructuredSlot = isMergeGenerateColorPaletteStructuredSlot(sourceId, cardType);
+    const refImageGuide = colorPaletteStructuredSlot
+      ? undefined
+      : refGuideParts.length > 0
+        ? `The ${refGuideParts.length} reference image(s) are provided before this text, in order: ${refGuideParts.join("; ")}.`
+        : undefined;
+
+    const boardFormat = {
+      omitArtStyleUrl: !!artBoardImage,
+      omitLogoUrl: !!logoBoardImage,
+    };
+
+    const prompt = colorPaletteStructuredSlot
+      ? buildMergeGeneratePromptColorPaletteStructured({
+          taskLine: newHint.trim(),
+          board,
+          brandCoreText: buildBriefIdentityContextText(shortContext),
+          boardFormat,
+        })
+      : buildMergeGeneratePrompt({
+          newHint,
+          sourceId,
+          sourceTextData,
+          board,
+          boardFormat,
+          refImageGuide,
+        });
+
+    const mode = useBoardInlineImages
+      ? `multi-ref(${refImages.length})`
+      : sourceImage
+        ? "img2img"
+        : "txt2img";
     console.log(`[visual-designer] Merge-generate (${mode}) — cardType=${cardType} ar=${effectiveAR} prompt="${prompt.slice(0, 80)}…"`);
 
-    const genResult = await generateImage(apiKey, prompt, sourceImage, undefined, effectiveAR);
+    const genResult = useBoardInlineImages && refImages.length > 0
+      ? await generateImage(apiKey, prompt, {
+        cardType,
+        refImages,
+        aspectRatio: effectiveAR,
+      })
+      : await generateImage(apiKey, prompt, {
+        cardType,
+        sourceImage,
+        aspectRatio: effectiveAR,
+      });
     if (genResult.errors.length > 0) {
       console.log(`[visual-designer] Merge-generate warnings: ${genResult.errors.join(" | ")}`);
     }
 
-    const imageUrl = await uploadAndSignImage(genResult.b64, genResult.mimeType, cardType);
+    const imageUrl = await uploadAndSignImage(genResult.b64, genResult.mimeType, cardType, c.req.header("X-Project-Id"));
     const generationTime = Date.now() - startTime;
-    const usedModel = getLastUsedImageModel()?.shortName ?? "unknown";
+    const usedModel = genResult.usedModel;
 
     return c.json({
       imageUrl,
       _meta: {
         agent: "visual-designer",
         prompt,
+        promptKey: `${sourceId ?? "?"}->${cardType}:merge-generate`,
         model: usedModel,
         generationTime,
-        ingredients: [brandName, mergeContext].filter(Boolean),
+        ingredients: [brandName].filter(Boolean),
       },
     });
   } catch (err) {
-    console.log("[visual-designer] merge-generate error:", err);
-    return c.json({ error: `Merge image generation failed: ${String(err)}` }, 500);
+    console.error("[visual-designer] merge-generate error:", (err as Error)?.stack ?? String(err));
+    return c.json(buildErrorPayload("Merge image generation failed", err), 500);
   }
 });
-
-// ── Wordmark brief builder (text → image prompt) ────────────────────────────
-
-function buildWordmarkBrief(ctx: ImagePromptContext): string {
-  const name = ctx.brandName ?? "the brand";
-  const font = ctx.titleFont ?? "a display";
-  const concept = ctx.conceptName ?? "";
-  const hint = ctx.mergeContext ?? "";
-  const focus = hint ? `Creative direction: ${hint}. ` : "";
-
-  return (
-    `${focus}Brand wordmark logo for "${name}". ` +
-    `Render the brand name "${name}" in the ${font} typeface. ` +
-    (concept ? `Visual mood: ${concept}. ` : "") +
-    `Clean typographic logotype, white background, professional wordmark, ` +
-    `letterforms only — no additional icon or graphic mark. `
-  );
-}
 
 // ── Route: POST /wordmark ────────────────────────────────────────────────────
 // Generates a wordmark logo (brand name as typographic logotype) via txt2img.
@@ -449,46 +743,44 @@ visualDesigner.post("/wordmark", async (c) => {
   try {
     const startTime = Date.now();
     const body = await c.req.json();
+    if (!hasShortContext(body)) {
+      return c.json({ error: "brandContextShort is required" }, 400);
+    }
     const {
       cardType,
-      brandName,
-      brandDescription,
-      conceptName,
-      conceptPoints,
-      keywords,
-      colorPalette,
-      mergeContext,
+      newHint,
       titleFont,
       aspectRatio,
     } = body;
+    const shortContext = normalizeShortContext(body);
+    const brandName = shortContext.name;
+    const effectiveTitleFont = shortContext.titleFont ?? titleFont;
 
     const apiKey = Deno.env.get("GEMINI_API_KEY");
     if (!apiKey) return c.json({ error: "GEMINI_API_KEY not configured" }, 500);
 
     const effectiveAR = resolveAspectRatio("wordmark", aspectRatio);
+    const name = brandName ?? "the brand";
+    const font = effectiveTitleFont ?? "a display typeface";
 
-    const ctx: ImagePromptContext = {
-      brandName, brandDescription, conceptName,
-      conceptPoints, keywords, colorPalette, mergeContext, titleFont,
-      aspectRatio: effectiveAR,
-    };
+    // Concise prompt: one sentence, brand name + font
+    const hint = newHint ? `${newHint}. ` : "";
+    const prompt = `${hint}Brand wordmark logo for "${name}" in ${font} typeface`;
 
-    const prompt = buildWordmarkBrief(ctx);
-    console.log(`[visual-designer] Generating wordmark (txt2img) — font=${titleFont} ar=${effectiveAR} prompt="${prompt.slice(0, 80)}…"`);
+    console.log(`[visual-designer] Generating wordmark (txt2img) — font=${effectiveTitleFont} ar=${effectiveAR} prompt="${prompt.slice(0, 80)}…"`);
 
-    const genResult = await generateImage(apiKey, prompt, undefined, undefined, effectiveAR);
+    const genResult = await generateImage(apiKey, prompt, { cardType, aspectRatio: effectiveAR });
     if (genResult.errors.length > 0) {
       console.log(`[visual-designer] Wordmark warnings: ${genResult.errors.join(" | ")}`);
     }
 
-    const imageUrl = await uploadAndSignImage(genResult.b64, genResult.mimeType, cardType ?? "logo");
+    const imageUrl = await uploadAndSignImage(genResult.b64, genResult.mimeType, cardType ?? "logo", c.req.header("X-Project-Id"));
     const generationTime = Date.now() - startTime;
-    const usedModel = getLastUsedImageModel()?.shortName ?? "unknown";
+    const usedModel = genResult.usedModel;
 
     const selectedElementLabels = [
       brandName && "Brand Brief",
-      titleFont && "Typography",
-      conceptName && "Visual Concept",
+      effectiveTitleFont && "Typography",
     ].filter(Boolean) as string[];
 
     return c.json({
@@ -498,13 +790,13 @@ visualDesigner.post("/wordmark", async (c) => {
         prompt,
         model: usedModel,
         generationTime,
-        ingredients: [brandName, titleFont, conceptName].filter(Boolean),
+        ingredients: [brandName, effectiveTitleFont].filter(Boolean),
         selectedElementLabels: selectedElementLabels.length > 0 ? selectedElementLabels : undefined,
       },
     });
   } catch (err) {
-    console.log("[visual-designer] wordmark error:", err);
-    return c.json({ error: `Wordmark generation failed: ${String(err)}` }, 500);
+    console.error("[visual-designer] wordmark error:", (err as Error)?.stack ?? String(err));
+    return c.json(buildErrorPayload("Wordmark generation failed", err), 500);
   }
 });
 
@@ -513,61 +805,104 @@ visualDesigner.post("/wordmark", async (c) => {
 // Called when an image card (logo, art-style, layout) is dragged onto color-palette.
 
 visualDesigner.post("/extract-palette", async (c) => {
+  let _rawGeminiText: string | undefined;
   try {
     const startTime = Date.now();
-    const { sourceId, sourceImageUrl } = await c.req.json();
+    const { sourceId, sourceImageUrl, brandData, _promptOverride } = await c.req.json();
     const apiKey = Deno.env.get("GEMINI_API_KEY");
     if (!apiKey) return c.json({ error: "GEMINI_API_KEY not configured" }, 500);
 
+    if (!sourceId || typeof sourceId !== "string") {
+      return c.json({ error: "sourceId is required" }, 400);
+    }
     if (!sourceImageUrl) {
       return c.json({ error: "sourceImageUrl is required" }, 400);
     }
 
     const spec = MERGE_SPECS[sourceId]?.["color-palette"];
-    if (!spec?.requiresSourceImage || !spec.instruction) {
+    if (!spec?.instruction) {
       return c.json({ error: `No vision-based palette spec found for source: ${sourceId}` }, 400);
     }
 
     const imageResult = await fetchImageAsBase64(sourceImageUrl);
     if ("error" in imageResult) {
-      return c.json({ error: `Failed to fetch source image: ${imageResult.error}` }, 500);
+      console.log(`[visual-designer] extract-palette source image fetch failed: ${imageResult.error}`);
+      return c.json({ error: "Failed to fetch source image" }, 500);
     }
 
-    console.log(`[visual-designer] Extracting palette — sourceId=${sourceId}`);
-    const raw = await callGeminiVision(apiKey, spec.instruction, imageResult.b64, imageResult.mimeType);
-    const parsed = JSON.parse(raw);
-    const colorPalette: string[] = parsed.colorPalette;
+    // Inject current palette as a constraint so the extracted palette matches
+    // the same number of colors and preserves a similar contrast structure.
+    const currentPalette = isRecord(brandData) && Array.isArray(brandData.colorPalette)
+      ? (brandData.colorPalette as string[])
+      : undefined;
+    const effectiveOverride = getEffectiveOverride(_promptOverride) as { fullPrompt?: string } | undefined;
+
+    const hasExistingPalette = Array.isArray(currentPalette) && currentPalette.length > 0;
+    const altExtract = spec.extractPaletteInstructionWithExistingTarget?.trim();
+    let baseInstruction = spec.instruction ?? "";
+    if (hasExistingPalette && altExtract) {
+      baseInstruction = altExtract.replace(/\{sourceData\}/g, currentPalette.join(", "));
+    }
+
+    const instruction = effectiveOverride?.fullPrompt
+      ?? buildExtractPalettePrompt(
+        baseInstruction,
+        hasExistingPalette && altExtract ? undefined : currentPalette,
+        hasExistingPalette && altExtract ? { omitPaletteConstraint: true } : undefined,
+      );
+
+    console.log(`[visual-designer] Extracting palette — sourceId=${sourceId} currentPaletteSize=${currentPalette?.length ?? "unknown"}`);
+    _rawGeminiText = await callGeminiVision(
+      apiKey,
+      instruction,
+      imageResult.b64,
+      imageResult.mimeType,
+      { temperature: MERGE_TEMPERATURES["extract-palette"] },
+      spec.textModel,
+    );
+    const parsed = safeParseJson<Record<string, unknown>>(_rawGeminiText, "extract-palette");
+    const colorPalette = unwrapSingleKeyWrapper([], parsed?.colorPalette ?? parsed);
 
     if (!Array.isArray(colorPalette) || colorPalette.length === 0) {
       return c.json({ error: "Vision model returned no colorPalette array" }, 500);
     }
+    const checkedPalette = applyFieldGuard(
+      Array.isArray(currentPalette) ? currentPalette : [],
+      colorPalette,
+      ["colorPalette"],
+      "colorPalette",
+    ) as string[];
 
     const generationTime = Date.now() - startTime;
-    console.log(`[visual-designer] Palette extracted (${generationTime}ms): ${colorPalette.join(", ")}`);
+    console.log(`[visual-designer] Palette extracted (${generationTime}ms): ${checkedPalette.join(", ")}`);
 
     const SOURCE_LABELS: Record<string, string> = {
       "art-style": "Art Style",
       "logo": "Logo",
-      "layout": "Layout",
+      "application": "Application",
       "visual-snapshot": "Visual Snapshot",
     };
     const sourceLabel = SOURCE_LABELS[sourceId] ?? sourceId;
 
     return c.json({
-      patch: { colorPalette },
+      patch: { colorPalette: checkedPalette },
       _meta: {
         agent: "visual-designer",
-        prompt: spec.instruction,
-        model: TEXT_MODEL,
+        prompt: instruction,
+        promptKey: `${sourceId}->color-palette:extract-palette`,
+        model: spec.textModel ?? TEXT_MODEL,
         generationTime,
-        ingredients: [sourceId, sourceImageUrl],
+        ingredients: [],
         referenceImageUrls: [sourceImageUrl],
         selectedElementLabels: [sourceLabel],
       },
     });
   } catch (err) {
-    console.log("[visual-designer] extract-palette error:", err);
-    return c.json({ error: `Palette extraction failed: ${String(err)}` }, 500);
+    console.error("[visual-designer] extract-palette error:", (err as Error)?.stack ?? String(err));
+    return c.json(
+      buildErrorPayload("Palette extraction failed", err, _rawGeminiText ? { rawText: _rawGeminiText.slice(0, 500) } : undefined),
+      500,
+    );
   }
 });
 
@@ -576,12 +911,19 @@ visualDesigner.post("/extract-palette", async (c) => {
 // Called when an image card is dragged onto a non-image target queue.
 
 visualDesigner.post("/vision-merge", async (c) => {
+  let _rawGeminiText: string | undefined;
   try {
     const startTime = Date.now();
-    const { sourceId, targetId, sourceImageUrl, brandData } = await c.req.json();
+    const { sourceId, targetId, sourceImageUrl, brandData, _promptOverride } = await c.req.json();
     const apiKey = Deno.env.get("GEMINI_API_KEY");
     if (!apiKey) return c.json({ error: "GEMINI_API_KEY not configured" }, 500);
 
+    if (!sourceId || !targetId) {
+      return c.json({ error: "sourceId and targetId are required" }, 400);
+    }
+    if (!isRecord(brandData)) {
+      return c.json({ error: "brandData must be an object" }, 400);
+    }
     if (!sourceImageUrl) {
       return c.json({ error: "sourceImageUrl is required" }, 400);
     }
@@ -595,53 +937,40 @@ visualDesigner.post("/vision-merge", async (c) => {
     if (!targetField) {
       return c.json({ patch: null });
     }
-    const targetData = brandData?.[targetField];
+    const targetData = brandData[targetField];
     if (targetData === undefined || targetData === null) {
       return c.json({ patch: null });
     }
 
     const imageResult = await fetchImageAsBase64(sourceImageUrl);
     if ("error" in imageResult) {
-      return c.json({ error: `Failed to fetch source image: ${imageResult.error}` }, 500);
+      console.log(`[visual-designer] vision-merge source image fetch failed: ${imageResult.error}`);
+      return c.json({ error: "Failed to fetch source image" }, 500);
     }
 
-    const readonlyContext = JSON.stringify(
-      {
-        brandBrief: brandData?.brandBrief ?? {},
-        visualConcept: brandData?.visualConcept ?? {},
-        keywords: brandData?.keywords ?? [],
-        sourceId,
-        targetId,
-      },
-      null,
-      2,
+    const boardAppendix = formatMergeBoardPromptContext(
+      mergeBoardContextFromBrandData(brandData as Record<string, unknown>, { targetId, sourceId }),
     );
 
-    const prompt = `${spec.instruction}
-
-Allowed fields (modify ONLY these): ${spec.allowedFields.join(", ")}
-
-Current target card value (${targetField}):
-${JSON.stringify(targetData, null, 2)}
-
-Brand context (read-only):
-${readonlyContext}
-
-Important:
-- Analyze the provided source image carefully and base your response primarily on what you observe in it.
-- Keep all non-allowed fields exactly unchanged.`;
+    const effectiveOverride = getEffectiveOverride(_promptOverride) as { fullPrompt?: string } | undefined;
+    const prompt = effectiveOverride?.fullPrompt
+      ?? buildVisionMergePrompt(spec.instruction, targetField, targetData, boardAppendix);
 
     console.log(`[visual-designer] Vision-merge — ${sourceId} -> ${targetId}`);
-    const raw = await callGeminiVision(apiKey, prompt, imageResult.b64, imageResult.mimeType, { temperature: 0.7 });
-    const cleaned = raw.replace(/^```json\s*/i, "").replace(/```\s*$/, "").trim();
-    const parsed: unknown = JSON.parse(cleaned);
+    _rawGeminiText = await callGeminiVision(
+      apiKey,
+      prompt,
+      imageResult.b64,
+      imageResult.mimeType,
+      { temperature: MERGE_TEMPERATURES["vision-merge"] },
+      spec.textModel,
+    );
+    const parsed: unknown = safeParseJson<unknown>(_rawGeminiText, "vision-merge");
 
-    let unwrapped = parsed;
-    if (Array.isArray(targetData) && !Array.isArray(parsed) && typeof parsed === "object" && parsed !== null) {
-      const keys = Object.keys(parsed as Record<string, unknown>);
-      if (keys.length === 1 && Array.isArray((parsed as Record<string, unknown>)[keys[0]])) {
-        unwrapped = (parsed as Record<string, unknown>)[keys[0]];
-      }
+    let unwrapped = unwrapSingleKeyWrapper(targetData, parsed);
+    if (Array.isArray(targetData) && !Array.isArray(unwrapped)) {
+      console.log(`[visual-designer] Vision-merge: wrapping non-array response into array for ${targetField}`);
+      unwrapped = [unwrapped];
     }
     const guarded = applyFieldGuard(targetData, unwrapped, spec.allowedFields, targetField);
 
@@ -651,15 +980,166 @@ Important:
       _meta: {
         agent: "visual-designer",
         prompt,
-        model: TEXT_MODEL,
+        promptKey: `${sourceId}->${targetId}:vision-merge`,
+        model: spec.textModel ?? TEXT_MODEL,
         generationTime,
-        ingredients: [sourceId, targetId, sourceImageUrl],
+        ingredients: [],
         referenceImageUrls: [sourceImageUrl],
       },
     });
   } catch (err) {
-    console.log("[visual-designer] vision-merge error:", err);
-    return c.json({ error: `Vision merge failed: ${String(err)}` }, 500);
+    console.error("[visual-designer] vision-merge error:", (err as Error)?.stack ?? String(err));
+    return c.json(
+      buildErrorPayload("Vision merge failed", err, _rawGeminiText ? { rawText: _rawGeminiText.slice(0, 500) } : undefined),
+      500,
+    );
+  }
+});
+
+// ── Route: POST /comment-modify ──────────────────────────────────────────────
+// Applies a free-form user instruction to a text target card (visual-concept,
+// color-palette, or font).
+
+visualDesigner.post("/comment-modify", async (c) => {
+  let _rawGeminiText: string | undefined;
+  try {
+    const startTime = Date.now();
+    const { targetId, comment, brandData, _promptOverride } = await c.req.json();
+    const apiKey = Deno.env.get("GEMINI_API_KEY");
+    if (!apiKey) return c.json({ error: "GEMINI_API_KEY not configured" }, 500);
+
+    if (!targetId || typeof targetId !== "string") {
+      return c.json({ error: "targetId is required" }, 400);
+    }
+    if (typeof comment !== "string" || !comment.trim()) {
+      return c.json({ error: "comment is required" }, 400);
+    }
+    if (!isRecord(brandData)) {
+      return c.json({ error: "brandData must be an object" }, 400);
+    }
+
+    const targetField = mergeCardIdToField(targetId);
+    if (!targetField) return c.json({ patch: null });
+
+    const targetData = brandData[targetField];
+    if (targetData === undefined || targetData === null) return c.json({ patch: null });
+
+    const allowedFields = COMMENT_MODIFY_FIELDS[targetId];
+    if (!allowedFields) return c.json({ patch: null });
+
+    const effectiveOverride = getEffectiveOverride(_promptOverride) as { fullPrompt?: string } | undefined;
+    const fullPrompt = effectiveOverride?.fullPrompt
+      ?? buildCommentModifyPrompt(targetField, targetData, comment);
+
+    _rawGeminiText = await callGeminiText(apiKey, fullPrompt, {
+      temperature: MERGE_TEMPERATURES["comment-modify"],
+      maxOutputTokens: 2048,
+    });
+
+    const parsed: unknown = safeParseJson<unknown>(_rawGeminiText, "comment-modify");
+
+    const unwrapped = unwrapSingleKeyWrapper(targetData, parsed);
+
+    const guarded = applyFieldGuard(targetData, unwrapped, allowedFields, targetField);
+    const generationTime = Date.now() - startTime;
+    console.log(`[visual-designer] Comment-modify complete: "${comment.slice(0, 40)}" → ${targetId} (field: ${targetField}, ${generationTime}ms)`);
+    return c.json({
+      patch: { [targetField]: guarded },
+      _meta: {
+        agent: "visual-designer",
+        prompt: fullPrompt,
+        promptKey: `${targetId}:comment-modify`,
+        model: TEXT_MODEL,
+        generationTime,
+        userInput: comment,
+        ingredients: [],
+      },
+    });
+  } catch (err) {
+    console.error("[visual-designer] comment-modify error:", (err as Error)?.stack ?? String(err));
+    return c.json(
+      buildErrorPayload("Comment-modify failed", err, _rawGeminiText ? { rawText: _rawGeminiText.slice(0, 500) } : undefined),
+      500,
+    );
+  }
+});
+
+// ── Route: POST /merge ───────────────────────────────────────────────────────
+// Text-to-text merge: applies a source card's influence to a text target card.
+// Handles all spec-driven merges where both source and target are text elements.
+
+visualDesigner.post("/merge", async (c) => {
+  let _rawGeminiText: string | undefined;
+  try {
+    const startTime = Date.now();
+    const { sourceId, targetId, brandData, _promptOverride } = await c.req.json();
+    const apiKey = Deno.env.get("GEMINI_API_KEY");
+    if (!apiKey) return c.json({ error: "GEMINI_API_KEY not configured" }, 500);
+
+    if (!sourceId || !targetId) {
+      return c.json({ error: "sourceId and targetId are required" }, 400);
+    }
+    if (!isRecord(brandData)) {
+      return c.json({ error: "brandData must be an object" }, 400);
+    }
+
+    const spec = MERGE_SPECS[sourceId]?.[targetId];
+    if (!spec || !spec.allowedFields?.length || !spec.instruction) {
+      return c.json({ patch: null });
+    }
+
+    const targetField = mergeCardIdToField(targetId);
+    const sourceField = mergeCardIdToField(sourceId);
+    if (!targetField) return c.json({ patch: null });
+
+    const targetData = brandData[targetField];
+    const sourceData = sourceField ? brandData[sourceField] : null;
+    if (targetData === undefined || targetData === null) return c.json({ patch: null });
+
+    const boardAppendix = formatMergeBoardPromptContext(
+      mergeBoardContextFromBrandData(brandData as Record<string, unknown>, { targetId, sourceId }),
+      { omitArtStyleUrl: true, omitLogoUrl: true },
+    );
+
+    const omitCurrentTargetInContext =
+      (sourceId === "color-palette" && targetId === "font") ||
+      (sourceId === "font" && targetId === "color-palette");
+
+    const effectiveOverride = getEffectiveOverride(_promptOverride) as { fullPrompt?: string } | undefined;
+    const fullPrompt = effectiveOverride?.fullPrompt
+      ?? buildMergeJsonPrompt(spec.instruction, sourceData, targetField, targetData, boardAppendix, {
+          omitCurrentTargetInContext,
+        });
+
+    _rawGeminiText = await callGeminiText(apiKey, fullPrompt, {
+      temperature: MERGE_TEMPERATURES["merge"],
+      maxOutputTokens: 2048,
+    }, spec.textModel);
+
+    const parsed: unknown = safeParseJson<unknown>(_rawGeminiText, "merge");
+
+    const unwrapped = unwrapSingleKeyWrapper(targetData, parsed);
+
+    const guarded = applyFieldGuard(targetData, unwrapped, spec.allowedFields!, targetField);
+    const generationTime = Date.now() - startTime;
+    console.log(`[visual-designer] Merge complete: ${sourceId} → ${targetId} (field: ${targetField}, ${generationTime}ms)`);
+    return c.json({
+      patch: { [targetField]: guarded },
+      _meta: {
+        agent: "visual-designer",
+        prompt: fullPrompt,
+        promptKey: `${sourceId}->${targetId}:merge`,
+        model: spec.textModel ?? TEXT_MODEL,
+        generationTime,
+        ingredients: [],
+      },
+    });
+  } catch (err) {
+    console.error("[visual-designer] merge error:", (err as Error)?.stack ?? String(err));
+    return c.json(
+      buildErrorPayload("Merge failed", err, _rawGeminiText ? { rawText: _rawGeminiText.slice(0, 500) } : undefined),
+      500,
+    );
   }
 });
 

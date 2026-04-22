@@ -3,6 +3,7 @@
 // Extracted from index.tsx so every agent can call the same primitives.
 // ─────────────────────────────────────────────────────────────────────────────
 
+import { jsonrepair } from "https://esm.sh/jsonrepair@3.12.0";
 import { getSupabaseClient } from "../supabase-client.tsx";
 import type {
   GeminiTextConfig,
@@ -13,15 +14,27 @@ import type {
 // ── Constants ────────────────────────────────────────────────────────────────
 
 export const TEXT_MODEL = "gemini-3-flash-preview";
+export const PRO_IMAGE_MODEL = "gemini-3-pro-image-preview";
+export const FLASH_IMAGE_MODEL = "gemini-3.1-flash-image-preview";
+
+const PRO_CARD_TYPES = new Set(["art-style", "visual-snapshot", "application"]);
+
+function isProImageEnabled(): boolean {
+  const denoEnv = (globalThis as { Deno?: { env?: { get?: (key: string) => string | undefined } } }).Deno?.env;
+  const raw = denoEnv?.get?.("ENABLE_PRO") ?? denoEnv?.get?.("ENABLE_PRO_IMAGE_FOR_KEY_CARDS");
+  return raw === "true";
+}
 
 // Image models: try Pro first for quality, then Flash if Pro fails (e.g. quota or model not enabled).
 export const PRIORITY_IMAGE_MODELS = [
+  // Flag out pro for developing purposes! the model is too expensive to run when developing.
+  // !!!
+  // {
+  //   shortName: "gemini-3-pro-image-preview",
+  //   strategy: "gemini-generateContent" as const,
+  // },
   {
-    shortName: "gemini-3-pro-image-preview",
-    strategy: "gemini-generateContent" as const,
-  },
-  {
-    shortName: "gemini-3.1-flash-image-preview",
+    shortName: FLASH_IMAGE_MODEL,
     strategy: "gemini-generateContent" as const,
   },
 ];
@@ -45,12 +58,43 @@ async function ensureBucket(supabase: ReturnType<typeof getSupabaseClient>) {
   }
 }
 
+// ── JSON parsing with code-fence stripping ────────────────────────────────────
+
+/**
+ * Strip optional markdown code fences from Gemini text output, then parse JSON.
+ * Throws a descriptive error that includes a preview of the raw text on failure,
+ * making it easy to trace the exact model output that caused the issue.
+ */
+export function safeParseJson<T = unknown>(text: string, context = "unknown"): T {
+  const cleaned = text
+    .replace(/^```json\s*/i, "")
+    .replace(/^```\s*/i, "")
+    .replace(/```\s*$/i, "")
+    .trim();
+  try {
+    return JSON.parse(cleaned) as T;
+  } catch {
+    // Gemini occasionally emits unescaped quotes or other minor JSON violations
+    // inside long string values. Try jsonrepair as a fallback before giving up.
+    try {
+      const repaired = jsonrepair(cleaned);
+      console.warn(`[safeParseJson:${context}] Used jsonrepair fallback`);
+      return JSON.parse(repaired) as T;
+    } catch (err) {
+      throw new Error(
+        `[safeParseJson:${context}] ${(err as Error).message} | raw preview: "${cleaned.slice(0, 300)}"`,
+      );
+    }
+  }
+}
+
 // ── Gemini text generation ───────────────────────────────────────────────────
 
 export async function callGeminiText(
   apiKey: string,
   prompt: string,
   config: GeminiTextConfig = {},
+  model = TEXT_MODEL,
 ): Promise<string> {
   const {
     temperature = 0.9,
@@ -64,8 +108,10 @@ export async function callGeminiText(
   };
   if (maxOutputTokens) generationConfig.maxOutputTokens = maxOutputTokens;
 
+  console.log(`[gemini] callGeminiText → model=${model} prompt="${prompt.slice(0, 120).replace(/\n/g, " ")}…"`);
+
   const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${TEXT_MODEL}:generateContent?key=${apiKey}`,
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -78,19 +124,32 @@ export async function callGeminiText(
 
   if (!res.ok) {
     const errText = await res.text();
-    throw new Error(`Gemini API error (HTTP ${res.status}): ${errText.slice(0, 300)}`);
+    let errMsg = errText.slice(0, 300);
+    try {
+      const errJson = JSON.parse(errText);
+      if (errJson?.error?.message) {
+        errMsg = `${errJson.error.message} (code: ${errJson.error.code ?? errJson.error.status ?? res.status})`;
+      }
+    } catch { /* non-JSON error body */ }
+    throw new Error(`Gemini API error (HTTP ${res.status}): ${errMsg}`);
   }
 
   const data = await res.json();
+  const finishReason: string = data.candidates?.[0]?.finishReason ?? "STOP";
+  const WARN_REASONS = ["SAFETY", "MAX_TOKENS", "RECITATION"];
+  if (WARN_REASONS.includes(finishReason)) {
+    console.warn(`[gemini] callGeminiText → finishReason=${finishReason} (response may be incomplete or blocked)`);
+  }
+
   const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
   if (!text) {
-    const finishReason = data.candidates?.[0]?.finishReason ?? "unknown";
     throw new Error(`Gemini returned empty content (finishReason: ${finishReason})`);
   }
+  console.log(`[gemini] callGeminiText → ok (${text.length} chars) preview: "${text.slice(0, 120).replace(/\n/g, " ")}…"`);
   return text;
 }
 
-// ── Gemini text + multiple images → text (for guideline rationale writing) ───
+// ── Gemini text + multiple images → text (for direction rationale writing) ───
 
 export async function callGeminiTextWithImages(
   apiKey: string,
@@ -115,6 +174,8 @@ export async function callGeminiTextWithImages(
   }));
   parts.push({ text: prompt });
 
+  console.log(`[gemini] callGeminiTextWithImages → model=${TEXT_MODEL} images=${images.length} prompt="${prompt.slice(0, 120).replace(/\n/g, " ")}…"`);
+
   const res = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${TEXT_MODEL}:generateContent?key=${apiKey}`,
     {
@@ -129,15 +190,27 @@ export async function callGeminiTextWithImages(
 
   if (!res.ok) {
     const errText = await res.text();
-    throw new Error(`Gemini multimodal API error (HTTP ${res.status}): ${errText.slice(0, 300)}`);
+    let errMsg = errText.slice(0, 300);
+    try {
+      const errJson = JSON.parse(errText);
+      if (errJson?.error?.message) {
+        errMsg = `${errJson.error.message} (code: ${errJson.error.code ?? errJson.error.status ?? res.status})`;
+      }
+    } catch { /* non-JSON error body */ }
+    throw new Error(`Gemini multimodal API error (HTTP ${res.status}): ${errMsg}`);
   }
 
   const data = await res.json();
+  const finishReason: string = data.candidates?.[0]?.finishReason ?? "STOP";
+  const WARN_REASONS = ["SAFETY", "MAX_TOKENS", "RECITATION"];
+  if (WARN_REASONS.includes(finishReason)) {
+    console.warn(`[gemini] callGeminiTextWithImages → finishReason=${finishReason} (response may be incomplete or blocked)`);
+  }
   const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
   if (!text) {
-    const finishReason = data.candidates?.[0]?.finishReason ?? "unknown";
     throw new Error(`Gemini multimodal returned empty content (finishReason: ${finishReason})`);
   }
+  console.log(`[gemini] callGeminiTextWithImages → ok (${text.length} chars) preview: "${text.slice(0, 120).replace(/\n/g, " ")}…"`);
   return text;
 }
 
@@ -149,6 +222,7 @@ export async function callGeminiVision(
   imageB64: string,
   imageMimeType: string,
   config: GeminiTextConfig = {},
+  model = TEXT_MODEL,
 ): Promise<string> {
   const {
     temperature = 0.2,
@@ -162,8 +236,10 @@ export async function callGeminiVision(
   };
   if (maxOutputTokens) generationConfig.maxOutputTokens = maxOutputTokens;
 
+  console.log(`[gemini] callGeminiVision → model=${model} prompt="${prompt.slice(0, 120).replace(/\n/g, " ")}…"`);
+
   const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${TEXT_MODEL}:generateContent?key=${apiKey}`,
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -181,15 +257,27 @@ export async function callGeminiVision(
 
   if (!res.ok) {
     const errText = await res.text();
-    throw new Error(`Gemini Vision API error (HTTP ${res.status}): ${errText.slice(0, 300)}`);
+    let errMsg = errText.slice(0, 300);
+    try {
+      const errJson = JSON.parse(errText);
+      if (errJson?.error?.message) {
+        errMsg = `${errJson.error.message} (code: ${errJson.error.code ?? errJson.error.status ?? res.status})`;
+      }
+    } catch { /* non-JSON error body */ }
+    throw new Error(`Gemini Vision API error (HTTP ${res.status}): ${errMsg}`);
   }
 
   const data = await res.json();
+  const finishReason: string = data.candidates?.[0]?.finishReason ?? "STOP";
+  const WARN_REASONS = ["SAFETY", "MAX_TOKENS", "RECITATION"];
+  if (WARN_REASONS.includes(finishReason)) {
+    console.warn(`[gemini] callGeminiVision → finishReason=${finishReason} (response may be incomplete or blocked)`);
+  }
   const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
   if (!text) {
-    const finishReason = data.candidates?.[0]?.finishReason ?? "unknown";
     throw new Error(`Gemini Vision returned empty content (finishReason: ${finishReason})`);
   }
+  console.log(`[gemini] callGeminiVision → ok (${text.length} chars) preview: "${text.slice(0, 120).replace(/\n/g, " ")}…"`);
   return text;
 }
 
@@ -199,6 +287,8 @@ const ALLOWED_IMAGE_HOSTS = [
   /^[a-z0-9-]+\.supabase\.co$/i,
   /^fonts\.googleapis\.com$/i,
   /^fonts\.gstatic\.com$/i,
+  /^[a-z0-9-]+\.cos\.[a-z0-9-]+\.myqcloud\.com$/i,  // Tencent Cloud COS
+  /^[a-z0-9-]+\.file\.myqcloud\.com$/i,              // Tencent Cloud COS default CDN
 ];
 
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024; // 8MB
@@ -208,7 +298,11 @@ function isAllowedImageUrl(urlString: string): boolean {
     const u = new URL(urlString);
     if (u.protocol !== "https:") return false;
     const host = u.hostname;
-    return ALLOWED_IMAGE_HOSTS.some((re) => re.test(host));
+    if (ALLOWED_IMAGE_HOSTS.some((re) => re.test(host))) return true;
+    // Also allow configured COS CDN custom domain
+    const cdnDomain = (globalThis as any).Deno?.env?.get?.("COS_CDN_DOMAIN");
+    if (cdnDomain && host === cdnDomain) return true;
+    return false;
   } catch {
     return false;
   }
@@ -361,7 +455,7 @@ export async function callGeminiGenerateContent(
   }
 }
 
-// ── Gemini text+images → image (moodboard / multi-reference) ──────────────────
+// ── Gemini text+images → image (multi-reference guided generation) ────────────
 
 export async function callGeminiGenerateContentWithImages(
   apiKey: string,
@@ -372,7 +466,7 @@ export async function callGeminiGenerateContentWithImages(
 ): Promise<ImageResult | ImageError> {
   try {
     const finalPrompt = withAspectHint(prompt, aspectRatio);
-    const parts: any[] = [{ text: finalPrompt }];
+    const parts: any[] = [];
     for (const img of images) {
       parts.push({
         inlineData: {
@@ -381,6 +475,7 @@ export async function callGeminiGenerateContentWithImages(
         },
       });
     }
+    parts.push({ text: finalPrompt });
 
     const generationConfig: any = { responseModalities: ["IMAGE", "TEXT"] };
 
@@ -399,7 +494,7 @@ export async function callGeminiGenerateContentWithImages(
 
     if (!res.ok) {
       const errText = await res.text();
-      return { error: `${model} :generateContent(moodboard) → HTTP ${res.status}: ${errText.slice(0, 300)}` };
+      return { error: `${model} :generateContent(multiRef) → HTTP ${res.status}: ${errText.slice(0, 300)}` };
     }
 
     const data = await res.json();
@@ -407,7 +502,7 @@ export async function callGeminiGenerateContentWithImages(
     const imagePart = responseParts.find((p: any) => p.inlineData?.data);
 
     if (!imagePart) {
-      return { error: `${model} :generateContent(moodboard) → no inlineData: ${JSON.stringify(data).slice(0, 300)}` };
+      return { error: `${model} :generateContent(multiRef) → no inlineData: ${JSON.stringify(data).slice(0, 300)}` };
     }
 
     return {
@@ -417,9 +512,9 @@ export async function callGeminiGenerateContentWithImages(
   } catch (err: unknown) {
     const name = (err as Error)?.name ?? "";
     if (name === "AbortError" || name === "TimeoutError") {
-      return { error: `${model} :generateContent(moodboard) → timed out (80 s)` };
+      return { error: `${model} :generateContent(multiRef) → timed out (80 s)` };
     }
-    return { error: `${model} :generateContent(moodboard) → fetch error: ${String(err)}` };
+    return { error: `${model} :generateContent(multiRef) → fetch error: ${String(err)}` };
   }
 }
 
@@ -434,14 +529,19 @@ export async function callGeminiImageEdit(
   extraImageB64?: string,
   extraMimeType = "image/png",
   aspectRatio?: string,
+  referenceImage?: { b64: string; mimeType: string },
 ): Promise<ImageResult | ImageError> {
   try {
     const finalPrompt = withAspectHint(prompt, aspectRatio);
-    const requestParts: any[] = [{ text: finalPrompt }];
+    const requestParts: any[] = [];
+    if (referenceImage) {
+      requestParts.push({ inlineData: { mimeType: referenceImage.mimeType, data: referenceImage.b64 } });
+    }
     if (extraImageB64) {
       requestParts.push({ inlineData: { mimeType: extraMimeType, data: extraImageB64 } });
     }
     requestParts.push({ inlineData: { mimeType: imageMimeType, data: imageB64 } });
+    requestParts.push({ text: finalPrompt });
 
     const generationConfig: any = { responseModalities: ["IMAGE", "TEXT"] };
 
@@ -485,26 +585,57 @@ export async function callGeminiImageEdit(
 }
 
 // ── Image generation waterfall (tries models in priority order) ──────────────
+// Unified entry point for all image generation modes:
+//   - refImages[]   → multi-reference guided generation
+//   - sourceImage   → img2img editing (with optional paletteImage)
+//   - neither       → txt2img generation
+
+export type GenerateImageOpts = {
+  cardType?: string;
+  sourceImage?: { b64: string; mimeType: string };
+  paletteImage?: { b64: string; mimeType: string };
+  /** Additional reference image for img2img merge (e.g. source card image in card-to-card merge) */
+  referenceImage?: { b64: string; mimeType: string };
+  refImages?: Array<{ b64: string; mimeType: string }>;
+  aspectRatio?: string;
+  /** Use this specific model instead of the PRIORITY_IMAGE_MODELS waterfall. */
+  modelOverride?: string;
+};
 
 export async function generateImage(
   apiKey: string,
   prompt: string,
-  sourceImage?: { b64: string; mimeType: string },
-  paletteImage?: { b64: string; mimeType: string },
-  aspectRatio?: string,
-): Promise<{ b64: string; mimeType: string; errors: string[] }> {
+  opts: GenerateImageOpts = {},
+): Promise<{ b64: string; mimeType: string; errors: string[]; usedModel: string }> {
+  const { cardType, sourceImage, paletteImage, referenceImage, refImages, aspectRatio, modelOverride } = opts;
+  const hasRefs = refImages && refImages.length > 0;
   const errors: string[] = [];
+  const proEnabled = isProImageEnabled();
 
-  for (const model of PRIORITY_IMAGE_MODELS) {
+  const modelsToTry = modelOverride
+    ? [{ shortName: modelOverride, strategy: "gemini-generateContent" as const }]
+    : (proEnabled && cardType && PRO_CARD_TYPES.has(cardType))
+      ? [
+        { shortName: PRO_IMAGE_MODEL, strategy: "gemini-generateContent" as const },
+        { shortName: FLASH_IMAGE_MODEL, strategy: "gemini-generateContent" as const },
+      ]
+    : PRIORITY_IMAGE_MODELS;
+
+  console.log(`[gemini] generateImage → cardType=${cardType ?? "unknown"} ENABLE_PRO=${proEnabled} modelOverride=${modelOverride ?? "none"}`);
+
+  for (const model of modelsToTry) {
     console.log(`Trying ${model.strategy}: ${model.shortName}`);
     let attempt: ImageResult | ImageError;
 
-    if (sourceImage && model.strategy === "gemini-generateContent") {
+    if (hasRefs && model.strategy === "gemini-generateContent") {
+      attempt = await callGeminiGenerateContentWithImages(apiKey, model.shortName, prompt, refImages, aspectRatio);
+    } else if (sourceImage && model.strategy === "gemini-generateContent") {
       attempt = await callGeminiImageEdit(
         apiKey, model.shortName, prompt,
         sourceImage.b64, sourceImage.mimeType,
         paletteImage?.b64, paletteImage?.mimeType,
         aspectRatio,
+        referenceImage,
       );
     } else if (model.strategy === "imagen-predict") {
       attempt = await callImagenPredict(apiKey, model.shortName, prompt, aspectRatio);
@@ -518,65 +649,105 @@ export async function generateImage(
     } else {
       console.log(`  ✓ Success with ${model.shortName}`);
       lastUsedImageModel = { shortName: model.shortName, strategy: model.strategy };
-      return { ...attempt, errors };
+      return { ...attempt, errors, usedModel: model.shortName };
     }
   }
 
   throw new Error(`All image models failed: ${errors.join(" | ")}`);
 }
 
-// ── Moodboard image generation (prompt + multiple reference images) ───────────
+// ── Tencent Cloud COS upload helpers ─────────────────────────────────────────
 
-export async function generateMoodboardImage(
-  apiKey: string,
-  prompt: string,
-  images: Array<{ b64: string; mimeType: string }>,
-  aspectRatio?: string,
-): Promise<{ b64: string; mimeType: string; errors: string[] }> {
-  const errors: string[] = [];
-
-  for (const model of PRIORITY_IMAGE_MODELS) {
-    console.log(`Trying moodboard via ${model.strategy}: ${model.shortName}`);
-    let attempt: ImageResult | ImageError;
-
-    if (model.strategy === "gemini-generateContent") {
-      attempt = await callGeminiGenerateContentWithImages(apiKey, model.shortName, prompt, images, aspectRatio);
-    } else if (model.strategy === "imagen-predict") {
-      // Imagen predict does not support extra reference images; fall back to text-only prompt.
-      attempt = await callImagenPredict(apiKey, model.shortName, prompt, aspectRatio);
-    } else {
-      attempt = await callGeminiGenerateContent(apiKey, model.shortName, prompt, aspectRatio);
-    }
-
-    if ("error" in attempt) {
-      console.log(`  ✗ ${attempt.error}`);
-      errors.push(attempt.error);
-    } else {
-      console.log(`  ✓ Moodboard success with ${model.shortName}`);
-      lastUsedImageModel = { shortName: model.shortName, strategy: model.strategy };
-      return { ...attempt, errors };
-    }
-  }
-
-  throw new Error(`All image models failed for moodboard: ${errors.join(" | ")}`);
+function isCosConfigured(): boolean {
+  const env = (globalThis as any).Deno?.env;
+  return !!(env?.get?.("COS_SECRET_ID") && env?.get?.("COS_SECRET_KEY") && env?.get?.("COS_BUCKET") && env?.get?.("COS_REGION"));
 }
 
-// ── Upload image to Supabase Storage and return a signed URL ─────────────────
+function getCosConfig() {
+  const env = Deno.env;
+  return {
+    secretId: env.get("COS_SECRET_ID")!,
+    secretKey: env.get("COS_SECRET_KEY")!,
+    bucket: env.get("COS_BUCKET")!,
+    region: env.get("COS_REGION")!,
+    cdnDomain: env.get("COS_CDN_DOMAIN"),  // optional custom CDN domain
+  };
+}
+
+async function hmacSha1Hex(key: string, data: string): Promise<string> {
+  const enc = new TextEncoder();
+  const cryptoKey = await crypto.subtle.importKey(
+    "raw", enc.encode(key), { name: "HMAC", hash: "SHA-1" }, false, ["sign"],
+  );
+  const sig = await crypto.subtle.sign("HMAC", cryptoKey, enc.encode(data));
+  return [...new Uint8Array(sig)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function sha1Hex(data: string): Promise<string> {
+  const hash = await crypto.subtle.digest("SHA-1", new TextEncoder().encode(data));
+  return [...new Uint8Array(hash)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function cosAuthorization(
+  secretId: string, secretKey: string, method: string, pathname: string, host: string,
+): Promise<string> {
+  const now = Math.floor(Date.now() / 1000);
+  const keyTime = `${now - 60};${now + 3600}`;
+  const signKey = await hmacSha1Hex(secretKey, keyTime);
+  const httpString = `${method.toLowerCase()}\n${pathname}\n\nhost=${host}\n`;
+  const stringToSign = `sha1\n${keyTime}\n${await sha1Hex(httpString)}\n`;
+  const signature = await hmacSha1Hex(signKey, stringToSign);
+  return `q-sign-algorithm=sha1&q-ak=${secretId}&q-sign-time=${keyTime}&q-key-time=${keyTime}&q-header-list=host&q-url-param-list=&q-signature=${signature}`;
+}
+
+async function uploadToCos(buffer: Uint8Array, mimeType: string, fileName: string): Promise<string> {
+  const { secretId, secretKey, bucket, region, cdnDomain } = getCosConfig();
+  const host = `${bucket}.cos.${region}.myqcloud.com`;
+  const pathname = `/${fileName}`;
+  const auth = await cosAuthorization(secretId, secretKey, "PUT", pathname, host);
+
+  const res = await fetch(`https://${host}${pathname}`, {
+    method: "PUT",
+    headers: { Host: host, Authorization: auth, "Content-Type": mimeType, "Content-Length": String(buffer.length) },
+    body: buffer,
+    signal: AbortSignal.timeout(30_000),
+  });
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`COS upload error (HTTP ${res.status}): ${errText.slice(0, 300)}`);
+  }
+  const baseUrl = cdnDomain ? `https://${cdnDomain}` : `https://${host}`;
+  return `${baseUrl}${pathname}`;
+}
+
+// ── Upload image and return a public URL ─────────────────────────────────────
+// Uses Tencent Cloud COS when configured, falls back to Supabase Storage.
 
 export async function uploadAndSignImage(
   b64: string,
   mimeType: string,
   cardType: string,
+  projectId?: string,
 ): Promise<string> {
   const binary = atob(b64);
   const buffer = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) buffer[i] = binary.charCodeAt(i);
 
+  const ext = mimeType.includes("jpeg") ? "jpg" : "png";
+  const baseName = `${cardType}-${Date.now()}.${ext}`;
+  const fileName = projectId ? `projects/${projectId}/${baseName}` : baseName;
+
+  // ── Tencent Cloud COS (preferred when configured) ────────────────────────
+  if (isCosConfigured()) {
+    const url = await uploadToCos(buffer, mimeType, fileName);
+    console.log(`Image ready (COS): ${fileName}`);
+    return url;
+  }
+
+  // ── Supabase Storage fallback ────────────────────────────────────────────
   const supabase = getSupabaseClient();
   await ensureBucket(supabase);
 
-  const ext = mimeType.includes("jpeg") ? "jpg" : "png";
-  const fileName = `${cardType}-${Date.now()}.${ext}`;
   const { error: uploadError } = await supabase.storage
     .from(BUCKET_NAME)
     .upload(fileName, buffer, { contentType: mimeType });

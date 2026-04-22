@@ -22,7 +22,7 @@ export interface ImageCardConfig {
 export const IMAGE_CARD_CONFIGS: Record<string, ImageCardConfig> = {
   "logo":             { aspectRatio: "1:1",  displayRatio: 1 },
   "art-style":        { aspectRatio: "16:9",  displayRatio: 16 / 9 },
-  "layout":           { aspectRatio: "16:9",  displayRatio: 16 / 9 },
+  "application":      { aspectRatio: "16:9",  displayRatio: 16 / 9 },
   "visual-snapshot":  { aspectRatio: "16:9",  displayRatio: 16 / 9 },
   "brand-context":    { aspectRatio: "16:9", displayRatio: 16 / 9 },
   "wordmark":         { aspectRatio: "1:1",  displayRatio: 1 },

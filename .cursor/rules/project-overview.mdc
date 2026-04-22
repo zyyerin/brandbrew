@@ -1,0 +1,33 @@
+---
+description: BrandBrew project architecture overview — key files and tech stack
+alwaysApply: true
+---
+
+# BrandBrew Project Overview
+
+An AI-powered brand identity generation tool. Users describe a brand → AI generates visual elements → users curate variations on a canvas board → export as a brand direction guideline.
+
+## Tech Stack
+
+- **Frontend:** React 18 + TypeScript + Vite + Tailwind CSS v4 + shadcn/ui + react-dnd
+- **Backend:** Supabase Edge Functions (Deno) + Google Gemini API
+- **State:** React state in `App.tsx`, persisted to Supabase via `useProjectPersistence`
+
+## Key File Map
+
+| Concern | Location |
+|---------|----------|
+| Top-level data model | `src/app/types/project.ts` — `ProjectData` is the root type |
+| Design tokens (JS) | `src/app/utils/design-tokens.ts` — `LAYOUT`, `CANVAS`, `TYPE`, `TIMING` |
+| Design tokens (CSS) | `src/styles/theme.css` — `--bb-*` custom properties |
+| Brand brief form | `src/app/components/brand-brief.tsx` — `BrandBriefPanel`, `BrandBriefForm`, `BrandBriefFields` |
+| Brand element cards | `src/app/components/brand-cards/` |
+| Canvas board | `src/app/components/curation-board/` |
+| Custom hooks | `src/app/hooks/` (generation, brief-completion, variations, snapshots, persistence) |
+| UI primitives | `src/app/components/ui/` — shadcn/ui, do NOT create new base UI components |
+| Backend AI agents | `supabase/functions/server/agents/` (brand-strategist, visual-designer, art-director) |
+| API client | `src/app/utils/apiClient.ts` |
+
+## Board Element Types
+
+Six element slots on the curation board: `visual-concept`, `art-style`, `color-palette`, `font`, `logo`, `layout`. The `ElementId` union type in `project.ts` is the canonical list.

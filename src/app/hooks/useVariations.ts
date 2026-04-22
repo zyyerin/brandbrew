@@ -16,7 +16,7 @@ export interface UseVariationsParams {
 
 export interface UseVariationsReturn {
   boardVariationCounts: Record<string, number>;
-  handleSelectVariationForCard: (elementId: string, variationId: string) => void;
+  handleSelectVariation: (elementId: string, variationId: string | null) => void;
   handleToggleVariationChecked: (elementId: string, variationId: string) => void;
   handleDeleteVariation: (elementId: string, variationId: string) => void;
   handleEditSave: (elementId: string, newData: unknown) => void;
@@ -37,8 +37,8 @@ export function useVariations({
     return counts;
   }, [project.elements]);
 
-  const handleSelectVariationForCard = useCallback(
-    (elementId: string, variationId: string) => {
+  const handleSelectVariation = useCallback(
+    (elementId: string, variationId: string | null) => {
       if (!(ALL_ELEMENT_IDS as readonly string[]).includes(elementId)) return;
       setProject((prev) => ({
         ...prev,
@@ -68,7 +68,7 @@ export function useVariations({
             [elementId]: {
               ...slot,
               checkedVariationId: wasChecked ? null : variationId,
-              // Sync active card with the checked variation so the guideline
+              // Sync active card with the checked variation so the direction
               // and other activeVariationId consumers always reflect the selection.
               activeVariationId: wasChecked ? slot.activeVariationId : variationId,
             },
@@ -154,7 +154,7 @@ export function useVariations({
 
   return {
     boardVariationCounts,
-    handleSelectVariationForCard,
+    handleSelectVariation,
     handleToggleVariationChecked,
     handleDeleteVariation,
     handleEditSave,

@@ -1,83 +1,109 @@
-import React from "react";
-import type { CardMeta, CardState } from "./types";
-import { CardWrapper } from "./CardWrapper";
+import React, { useEffect, useRef } from "react";
+import type { VariationMeta, VariationState } from "./types";
+import type { VisualConceptData } from "../../types/project";
+import { ElementWrapper } from "./ElementWrapper";
+import { TYPE, LAYOUT, adaptiveSize } from "../../utils/design-tokens";
+import { useCanvasZoom } from "../../contexts/CanvasZoomContext";
 import { useCardEditing } from "./useCardEditing";
 
 interface VisualConceptProps {
-  conceptName: string;
-  points: string[];
-  state?: CardState;
+  data: VisualConceptData;
+  state?: VariationState;
   onToggleActive?: () => void;
-  onChange?: (data: { conceptName: string; points: string[] }) => void;
-  onRefresh?: () => void;
+  onChange?: (data: VisualConceptData) => void;
   onDelete?: () => void;
-  meta?: CardMeta;
+  meta?: VariationMeta;
 }
 
-export function VisualConceptCard({ conceptName, points, state, onToggleActive, onChange, onRefresh, onDelete, meta }: VisualConceptProps) {
-  const { isEditing, local, updateField, setLocal, editingProps } = useCardEditing(
-    { conceptName, points },
+export function VisualConceptCard({
+  data,
+  state,
+  onToggleActive,
+  onChange,
+  onDelete,
+  meta,
+}: VisualConceptProps) {
+  const { isEditing, local, updateField, editingProps } = useCardEditing<VisualConceptData>(
+    data,
     {
       onChange,
-      transformOnSave: (d) => ({ ...d, points: d.points.filter((p) => p.trim() !== "") }),
+      transformOnSave: (d) => ({ ...d, concept: d.concept.trim() }),
     },
   );
+  const conceptRef = useRef<HTMLTextAreaElement>(null);
+
+  const zoom = useCanvasZoom();
+  const conceptFontSize = Math.round(adaptiveSize(
+    TYPE.size.xl,
+    zoom,
+    TYPE.size.baseSm,
+  ));
+  const isActive = state === "active";
+  const conceptDotSize = Math.round(
+    adaptiveSize(LAYOUT.connection.portRadius * 2, zoom),
+  );
+
+  useEffect(() => {
+    if (isEditing && conceptRef.current) {
+      const el = conceptRef.current;
+      el.style.height = "auto";
+      el.style.height = `${el.scrollHeight}px`;
+    }
+  }, [isEditing, local.concept]);
+
+  const handleConceptKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter") { e.preventDefault(); editingProps.onEditSave(); }
+    else if (e.key === "Escape") { e.preventDefault(); editingProps.onEditCancel(); }
+  };
 
   return (
-    <CardWrapper
+    <ElementWrapper
       label="Visual Concept"
       state={state}
       editVariant="text"
       {...editingProps}
-      onRegenerate={onRefresh}
       onDelete={onDelete}
       onToggleActive={isEditing ? undefined : onToggleActive}
       meta={meta}
     >
-      <div onClick={(e) => isEditing && e.stopPropagation()}>
+      <div
+        className="flex-1 flex flex-row items-center justify-center gap-2 px-2 min-w-0"
+        onClick={(e) => isEditing && e.stopPropagation()}
+      >
         {isEditing ? (
-          <div className="flex flex-col gap-2.5">
-            <input
-              autoFocus
-              value={local.conceptName}
-              onChange={(e) => updateField("conceptName", e.target.value)}
-              className="text-[18px] text-foreground italic bg-transparent border-b border-blue-300 focus:border-blue-500 outline-none w-full"
-              style={{ fontWeight: 400 }}
-              placeholder="Concept name"
-            />
-            <div className="space-y-2 mt-1">
-              {local.points.map((pt, i) => (
-                <textarea
-                  key={i}
-                  value={pt}
-                  onChange={(e) => {
-                    const next = [...local.points];
-                    next[i] = e.target.value;
-                    setLocal((prev) => ({ ...prev, points: next }));
-                  }}
-                  rows={2}
-                  className="text-[12px] text-foreground/70 leading-[1.6] bg-muted/20 border border-blue-300 focus:border-blue-500 outline-none w-full rounded-lg px-2 py-1 resize-none block"
-                  placeholder={`Point ${i + 1}`}
-                />
-              ))}
-            </div>
-          </div>
+          <textarea
+            ref={conceptRef}
+            autoFocus
+            value={local.concept}
+            onChange={(e) => updateField("concept", e.target.value)}
+            onKeyDown={handleConceptKeyDown}
+            className="w-full italic bg-transparent border-b border-bb-user-active-border focus:border-bb-user-active-accent outline-none text-foreground resize-none overflow-hidden leading-snug text-center"
+            style={{ fontSize: conceptFontSize }}
+            placeholder="Concept name"
+            rows={1}
+          />
         ) : (
-          <div>
-            <h3 className="text-[18px] text-foreground italic mb-3" style={{ fontWeight: 400 }}>
-              {local.conceptName}
-            </h3>
-            <ul className="space-y-1.5">
-              {local.points.map((point, i) => (
-                <li key={i} className="text-[12px] text-foreground/70 leading-[1.6] flex gap-2">
-                  <span className="text-foreground/40 mt-0.5">•</span>
-                  <span>{point}</span>
-                </li>
-              ))}
-            </ul>
-          </div>
+          <>
+            {isActive && (
+              <span
+                aria-hidden
+                className="shrink-0 rounded-full"
+                style={{
+                  width: conceptDotSize,
+                  height: conceptDotSize,
+                  background: "var(--bb-ai-active-ring)",
+                }}
+              />
+            )}
+            <span
+              className="italic text-foreground/80 leading-snug text-center min-w-0"
+              style={{ fontSize: conceptFontSize }}
+            >
+              {data.concept}
+            </span>
+          </>
         )}
       </div>
-    </CardWrapper>
+    </ElementWrapper>
   );
 }

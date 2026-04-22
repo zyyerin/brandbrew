@@ -1,140 +1,255 @@
-import { useCallback, useRef, useEffect } from "react";
-import type { ProjectData, ElementId, SnapshotItem, CardMeta } from "../types/project";
+import { useCallback, useRef } from "react";
+import type { ProjectData, ElementId, SnapshotItem } from "../types/project";
 import {
   ALL_ELEMENT_IDS,
   ELEMENT_LABELS,
-  getActiveElementData,
 } from "../types/project";
 import { generateVisualSnapshotFromElements } from "../utils/generate-image";
 import type { VisualSnapshotFromElementsParams } from "../utils/generate-image";
-import { paletteToBase64 } from "../utils/helpers";
+import type { DebugInterceptor } from "./usePipelineDebugger";
+
+function selectedImageUrl(
+  project: ProjectData,
+  selections: Partial<Record<ElementId, string>>,
+  elementId: ElementId,
+): string | undefined {
+  const varId = selections[elementId];
+  if (!varId) return undefined;
+  const slot = project.elements[elementId];
+  const variation = slot.variations.find((v) => v.id === varId);
+  if (!variation) return undefined;
+  const url = (variation.data as { imageUrl?: string })?.imageUrl;
+  return typeof url === "string" && url.length > 0 ? url : undefined;
+}
 
 export interface UseSnapshotHistoryParams {
   project: ProjectData;
   setProject: React.Dispatch<React.SetStateAction<ProjectData>>;
   projectRef: React.MutableRefObject<ProjectData>;
   setLoadingElements: React.Dispatch<React.SetStateAction<Set<string>>>;
+  debugInterceptor?: DebugInterceptor;
 }
+
+// ── Payload builder ─────────────────────────────────────────────────────────
+// Shared by generateVisualSnapshot (from checked slots) and
+// regenerateWithOverride (from explicit selections).
+
+interface SnapshotPayload {
+  params: VisualSnapshotFromElementsParams;
+  sourceSelections: Partial<Record<ElementId, string>>;
+  selectedElementLabels: string[];
+}
+
+function buildSnapshotPayload(
+  project: ProjectData,
+  selections: Partial<Record<ElementId, string>>,
+): SnapshotPayload | null {
+  const brief = project.brandBrief.current;
+  let font1: string | undefined;
+  let font2: string | undefined;
+  let visualConcept: { concept: string; description: string } | undefined;
+  let colorPalette: string[] | undefined;
+  const selectedElementLabels: string[] = [];
+
+  for (const elementId of ALL_ELEMENT_IDS) {
+    const varId = selections[elementId];
+    if (!varId) continue;
+
+    const slot = project.elements[elementId];
+    const variation = slot.variations.find((v) => v.id === varId);
+    if (!variation) continue;
+
+    selectedElementLabels.push(ELEMENT_LABELS[elementId]);
+
+    if (elementId === "color-palette") {
+      const colors = variation.data as string[];
+      if (colors?.length) colorPalette = colors;
+    }
+
+    if (elementId === "visual-concept") {
+      const vc = variation.data as { concept?: string; description?: string };
+      if (vc?.concept && vc?.description) {
+        visualConcept = { concept: vc.concept, description: vc.description };
+      }
+    }
+
+    if (elementId === "font") {
+      const fontData = variation.data as { titleFont?: string; bodyFont?: string };
+      if (!font1 && fontData?.titleFont) font1 = fontData.titleFont;
+      if (!font2 && fontData?.bodyFont && fontData.bodyFont !== font1) {
+        font2 = fontData.bodyFont;
+      }
+    }
+  }
+
+  // Visual snapshot multimodal inputs: Logo (image 1) then Art style (image 2). No palette bitmap.
+  const logoUrl = selectedImageUrl(project, selections, "logo");
+  const artUrl = selectedImageUrl(project, selections, "art-style");
+  const referenceImageUrls: string[] = [];
+  const referenceImageRoles: string[] = [];
+  if (logoUrl) {
+    referenceImageUrls.push(logoUrl);
+    referenceImageRoles.push("logo");
+  }
+  if (artUrl && artUrl !== logoUrl) {
+    referenceImageUrls.push(artUrl);
+    referenceImageRoles.push("art-style");
+  }
+
+  if (referenceImageUrls.length === 0) return null;
+
+  const brandName = brief.name || project.projectName;
+
+  return {
+    params: {
+      brandName,
+      prompt: "",
+      referenceImageUrls,
+      referenceImageRoles,
+      font1,
+      font2,
+      brandDescription: brief.description || undefined,
+      keywords: brief.keywords?.length ? brief.keywords : undefined,
+      visualConcept,
+      colorPalette,
+    },
+    sourceSelections: selections,
+    selectedElementLabels,
+  };
+}
+
+// ── Hook ─────────────────────────────────────────────────────────────────────
 
 export function useSnapshotHistory({
   project,
   setProject,
   projectRef,
   setLoadingElements,
+  debugInterceptor,
 }: UseSnapshotHistoryParams) {
 
+  const snapshotInFlightRef = useRef(false);
+
+  // ── Shared generation helper ────────────────────────────────────────────
+  const executeSnapshotGeneration = useCallback(
+    async (payload: SnapshotPayload): Promise<void> => {
+      setLoadingElements((prev) => new Set([...prev, "visual-snapshot"]));
+
+      try {
+        const snapshotResult = debugInterceptor
+          ? await debugInterceptor.logCall(
+              {
+                label: "Visual Snapshot",
+                agent: "visual-designer-visual-snapshot",
+                endpoint: "visual-designer/visual-snapshot",
+                request: payload.params as unknown as Record<string, unknown>,
+              },
+              () => generateVisualSnapshotFromElements(payload.params),
+            )
+          : await generateVisualSnapshotFromElements(payload.params);
+        const snapshotMeta = snapshotResult._meta;
+
+        const p = projectRef.current;
+        const latestBriefVer =
+          p.brandBrief.versions.length > 0
+            ? p.brandBrief.versions[p.brandBrief.versions.length - 1]
+            : null;
+
+        const newSnapshot: SnapshotItem = {
+          id: `snap-${Date.now()}`,
+          imageUrl: snapshotResult.imageUrl,
+          createdAt: new Date(),
+          sourceSelections: payload.sourceSelections,
+          sourceBriefVerId: latestBriefVer?.id ?? null,
+          generationMeta: {
+            prompt: snapshotMeta?.prompt || undefined,
+            model: snapshotMeta?.model,
+            referenceImageUrls: payload.params.referenceImageUrls.length
+              ? payload.params.referenceImageUrls
+              : undefined,
+            hasPalette: !!payload.params.paletteImageBase64,
+            paletteImageDataUrl: payload.params.paletteImageBase64
+              ? `data:image/png;base64,${payload.params.paletteImageBase64}`
+              : undefined,
+            selectedElementLabels: payload.selectedElementLabels,
+          },
+        };
+
+        setProject((prev) => ({
+          ...prev,
+          phase: "curating",
+          snapshots: [newSnapshot, ...prev.snapshots],
+          selectedSnapshotId: newSnapshot.id,
+        }));
+      } catch (err) {
+        console.error("Visual snapshot generation failed:", err);
+      } finally {
+        setLoadingElements((prev) => {
+          const n = new Set(prev);
+          n.delete("visual-snapshot");
+          return n;
+        });
+      }
+    },
+    [projectRef, setProject, setLoadingElements, debugInterceptor],
+  );
+
+  // ── Generate from currently checked slots ───────────────────────────────
   const generateVisualSnapshot = useCallback(async () => {
-    const p = projectRef.current;
-    const bs = p.brandSummary.current;
-
-    const sourceSelections: Partial<Record<ElementId, string>> = {};
-    const referenceImageUrls: string[] = [];
-    let paletteImageBase64: string | undefined;
-    let font1: string | undefined;
-    let font2: string | undefined;
-    const selectedElementLabels: string[] = [];
-
-    for (const elementId of ALL_ELEMENT_IDS) {
-      const slot = p.elements[elementId];
-      if (!slot.checkedVariationId) continue;
-
-      const variation = slot.variations.find(
-        (v) => v.id === slot.checkedVariationId,
-      );
-      if (!variation) continue;
-
-      sourceSelections[elementId] = variation.id;
-      selectedElementLabels.push(ELEMENT_LABELS[elementId]);
-
-      if (elementId === "color-palette") {
-        const colors = variation.data as string[];
-        if (colors?.length) {
-          const b64 = paletteToBase64(colors);
-          if (b64) paletteImageBase64 = b64;
-        }
-      }
-
-      const imageUrl = (variation.data as any)?.imageUrl;
-      if (imageUrl && !referenceImageUrls.includes(imageUrl)) {
-        referenceImageUrls.push(imageUrl);
-      }
-
-      if (elementId === "font") {
-        const fontData = variation.data as { titleFont?: string; bodyFont?: string };
-        if (!font1 && fontData?.titleFont) font1 = fontData.titleFont;
-        if (!font2 && fontData?.bodyFont && fontData.bodyFont !== font1) {
-          font2 = fontData.bodyFont;
-        }
-      }
-    }
-
-    if (!paletteImageBase64 && referenceImageUrls.length === 0) {
-      console.warn("generateVisualSnapshot: no visual inputs; aborting.");
-      return;
-    }
-
-    const brandName = bs.name || p.projectName;
-    const fontFragment =
-      font1 || font2
-        ? ` Font choice: ${[font1, font2].filter(Boolean).join(", ")}.`
-        : "";
-    const prompt =
-      `Create a visual moodboard for a brand called ${brandName} inspired by given images.` +
-      `${fontFragment} No text label.`;
-
-    setLoadingElements((prev) => new Set([...prev, "visual-snapshot"]));
+    if (snapshotInFlightRef.current) return;
+    snapshotInFlightRef.current = true;
 
     try {
-      const payload: VisualSnapshotFromElementsParams = {
-        brandName,
-        prompt,
-        referenceImageUrls,
-        paletteImageBase64,
-        font1,
-        font2,
-      };
-      const snapshotResult = await generateVisualSnapshotFromElements(payload);
-      const snapshotMeta = snapshotResult._meta;
+      const p = projectRef.current;
+      const selections: Partial<Record<ElementId, string>> = {};
+      for (const elementId of ALL_ELEMENT_IDS) {
+        const slot = p.elements[elementId];
+        if (slot.checkedVariationId) {
+          selections[elementId] = slot.checkedVariationId;
+        }
+      }
 
-      const latestBsVer =
-        p.brandSummary.versions.length > 0
-          ? p.brandSummary.versions[p.brandSummary.versions.length - 1]
-          : null;
+      const payload = buildSnapshotPayload(p, selections);
+      if (!payload) {
+        console.warn("generateVisualSnapshot: no visual inputs; aborting.");
+        return;
+      }
 
-      const newSnapshot: SnapshotItem = {
-        id: `snap-${Date.now()}`,
-        imageUrl: snapshotResult.imageUrl,
-        createdAt: new Date(),
-        sourceSelections,
-        sourceBrandSummaryVerId: latestBsVer?.id ?? null,
-        generationMeta: {
-          prompt,
-          model: snapshotMeta?.model,
-          referenceImageUrls: referenceImageUrls.length ? referenceImageUrls : undefined,
-          hasPalette: !!paletteImageBase64,
-          paletteImageDataUrl: paletteImageBase64
-            ? `data:image/png;base64,${paletteImageBase64}`
-            : undefined,
-          selectedElementLabels,
-        },
-      };
-
-      setProject((prev) => ({
-        ...prev,
-        phase: "curating",
-        snapshots: [newSnapshot, ...prev.snapshots],
-        selectedSnapshotId: newSnapshot.id,
-      }));
-    } catch (err) {
-      console.error("Visual snapshot generation failed:", err);
+      await executeSnapshotGeneration(payload);
     } finally {
-      setLoadingElements((prev) => {
-        const n = new Set(prev);
-        n.delete("visual-snapshot");
-        return n;
-      });
+      snapshotInFlightRef.current = false;
     }
-  }, [projectRef, setProject, setLoadingElements]);
+  }, [projectRef, executeSnapshotGeneration]);
+
+  // ── Regenerate with one element overridden ──────────────────────────────
+  const regenerateWithOverride = useCallback(
+    async (snapshotId: string, overrideElementId: ElementId, overrideVariationId: string) => {
+      if (snapshotInFlightRef.current) return;
+      snapshotInFlightRef.current = true;
+
+      try {
+        const p = projectRef.current;
+        const snapshot = p.snapshots.find((s) => s.id === snapshotId);
+        if (!snapshot) return;
+
+        const updatedSelections: Partial<Record<ElementId, string>> = {
+          ...snapshot.sourceSelections,
+          [overrideElementId]: overrideVariationId,
+        };
+
+        const payload = buildSnapshotPayload(p, updatedSelections);
+        if (!payload) {
+          console.warn("regenerateWithOverride: no visual inputs; aborting.");
+          return;
+        }
+
+        await executeSnapshotGeneration(payload);
+      } finally {
+        snapshotInFlightRef.current = false;
+      }
+    },
+    [projectRef, executeSnapshotGeneration],
+  );
 
   const handleSelectSnapshot = useCallback(
     (snapshotId: string | null) => {
@@ -148,12 +263,18 @@ export function useSnapshotHistory({
         const nextElements = { ...prev.elements };
         for (const [elemId, varId] of Object.entries(snapshot.sourceSelections)) {
           const eid = elemId as ElementId;
-          if (nextElements[eid]) {
-            nextElements[eid] = {
+          if (!nextElements[eid]) continue;
+          const variationStillExists = nextElements[eid].variations.some((v) => v.id === varId);
+          if (variationStillExists) {
+            (nextElements as Record<string, unknown>)[eid] = {
               ...nextElements[eid],
               checkedVariationId: varId,
-              // Also activate the variation so the guideline page reflects the selection.
               activeVariationId: varId,
+            };
+          } else {
+            (nextElements as Record<string, unknown>)[eid] = {
+              ...nextElements[eid],
+              checkedVariationId: null,
             };
           }
         }
@@ -182,6 +303,7 @@ export function useSnapshotHistory({
 
   return {
     generateVisualSnapshot,
+    regenerateWithOverride,
     handleSelectSnapshot,
     handleDeleteSnapshot,
   };

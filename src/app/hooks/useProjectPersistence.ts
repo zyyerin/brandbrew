@@ -2,21 +2,27 @@ import { useState, useRef, useEffect, useCallback, type MutableRefObject } from 
 import { saveProject, loadProject } from "../utils/generate-brand";
 import type { ProjectEntry } from "../components/project-switcher";
 import { buildProjectSnapshot, hydrateProjectData } from "../utils/project-snapshot";
-import type { ProjectData } from "../types/project";
+import type { ProjectData, PipelineStage } from "../types/project";
 import { createEmptyProject } from "../types/project";
 
 const MAX_PROJECTS = 3;
 
 export interface UseProjectPersistenceParams {
+  project: ProjectData;
   projectRef: MutableRefObject<ProjectData>;
   setProject: React.Dispatch<React.SetStateAction<ProjectData>>;
   resetToEmpty: () => void;
+  uploadingVariationIdsRef?: MutableRefObject<Set<string>>;
+  pipelineStageRef: MutableRefObject<PipelineStage>;
 }
 
 export function useProjectPersistence({
+  project,
   projectRef,
   setProject,
   resetToEmpty,
+  uploadingVariationIdsRef,
+  pipelineStageRef,
 }: UseProjectPersistenceParams) {
   const [currentProjectId, setCurrentProjectId] = useState(
     () => localStorage.getItem("bb_currentProjectId") ?? "default",
@@ -81,14 +87,14 @@ export function useProjectPersistence({
 
   useEffect(() => {
     if (!isLoaded) return;
-    const p = projectRef.current;
-    if (p.phase === "generating") return;
+    if (pipelineStageRef.current !== null) return;
 
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     saveTimerRef.current = setTimeout(() => {
+      if (uploadingVariationIdsRef?.current && uploadingVariationIdsRef.current.size > 0) return;
       const p = projectRef.current;
       const snapshot = buildProjectSnapshot(p);
-      const name = p.brandSummary.current.name || p.projectName;
+      const name = p.brandBrief.current.name || p.projectName;
       saveProject(snapshot, currentProjectId)
         .then(() => upsertIndex(currentProjectId, name))
         .catch((err) => console.warn("[Brand Brew] Auto-save failed:", err));
@@ -97,12 +103,12 @@ export function useProjectPersistence({
     return () => {
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     };
-  }, [isLoaded, currentProjectId, upsertIndex, projectRef.current]);
+  }, [isLoaded, currentProjectId, upsertIndex, project, uploadingVariationIdsRef]);
 
   const doSave = useCallback(async () => {
     const p = projectRef.current;
     const snapshot = buildProjectSnapshot(p);
-    const name = p.brandSummary.current.name || p.projectName;
+    const name = p.brandBrief.current.name || p.projectName;
     await saveProject(snapshot, currentProjectId);
     upsertIndex(currentProjectId, name);
   }, [projectRef, currentProjectId, upsertIndex]);

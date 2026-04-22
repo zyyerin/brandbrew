@@ -1,8 +1,8 @@
-import type { BrandSummaryFields } from "../components/brand-summary";
+import type { BrandBriefFields } from "../components/brand-brief";
 
 export const SUGGESTIONS = ["View an Example: Community Cafe"];
 
-export const SUGGESTION_PROMPTS: Record<string, BrandSummaryFields> = {
+export const SUGGESTION_PROMPTS: Record<string, BrandBriefFields> = {
   "View an Example: Community Cafe": {
     brandName: "Community Cafe",
     tagline: "Crafted with care, served with soul",
@@ -10,5 +10,6 @@ export const SUGGESTION_PROMPTS: Record<string, BrandSummaryFields> = {
     keywords: "artisan, cozy, community, sustainable, craft coffee",
     brandDescription:
       "A modern specialty cafe brand that celebrates craft coffee and warm community. Focused on local sourcing, slow brewing methods, and creating an elevated yet inviting atmosphere.",
+    applications: "Coffee Sleeve, Loyalty Card, Tote Bag, Menu Card, Storefront Signage",
   },
 };

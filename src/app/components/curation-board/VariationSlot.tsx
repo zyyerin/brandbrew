@@ -1,6 +1,5 @@
 import React from "react";
 import {
-  BrandBriefCard,
   ColorPaletteCard,
   VisualConceptCard,
   FontCard,
@@ -8,36 +7,33 @@ import {
   ImageCard,
   VisualSnapshotCard,
 } from "../brand-cards";
-import type { CardState } from "../brand-cards";
-import { CARD_LABELS as LABELS } from "../../utils/design-tokens";
+import type { VariationState } from "../brand-cards";
+import { ELEMENT_TYPE_LABELS as LABELS } from "../../utils/design-tokens";
 import type { VariationItem } from "../variations-panel";
-import type { BrandData } from "../../types/brand";
 
 interface VariationSlotProps {
-  cardId: string;
+  elementType: string;
   variation: VariationItem;
   isActive: boolean;
   canDelete: boolean;
-  cardState: CardState;
+  variationState: VariationState;
   peerVariationIds: string[];
-  brandBrief?: BrandData["brandBrief"];
-  onEditSave?: (componentId: string, patch: Partial<BrandData>) => void;
-  onRefresh?: (componentId: string) => void;
+  brandBrief?: { name?: string; tagline?: string; description?: string };
+  onEditSave?: (elementId: string, data: unknown) => void;
   onToggleVariationChecked?: (variationId: string, peerVariationIds: string[]) => void;
   onDeleteVariation?: (componentId: string, variationId: string) => void;
   onImageAspectRatioChange?: (variationId: string, aspectRatio: number) => void;
 }
 
 export function VariationSlot({
-  cardId,
+  elementType,
   variation,
   isActive,
   canDelete,
-  cardState,
+  variationState,
   peerVariationIds,
   brandBrief,
   onEditSave,
-  onRefresh,
   onToggleVariationChecked,
   onDeleteVariation,
   onImageAspectRatioChange,
@@ -45,51 +41,38 @@ export function VariationSlot({
   const { type, data } = variation;
 
   const stateHandlers = {
-    state: cardState,
+    state: variationState,
     onToggleActive: () => onToggleVariationChecked?.(variation.id, peerVariationIds),
   };
 
-  const deleteHandler = canDelete ? () => onDeleteVariation?.(cardId, variation.id) : undefined;
+  const deleteHandler = canDelete ? () => onDeleteVariation?.(elementType, variation.id) : undefined;
 
   switch (type) {
-    case "brand-brief":
-      return (
-        <BrandBriefCard
-          name={data.name ?? ""}
-          tagline={data.tagline ?? ""}
-          description={data.description ?? ""}
-          {...stateHandlers}
-          onChange={(d) => onEditSave?.(cardId, { brandBrief: d })}
-          onRefresh={isActive ? () => onRefresh?.(cardId) : undefined}
-          onDelete={deleteHandler}
-          meta={variation.meta}
-        />
-      );
-
     case "color":
       return (
         <ColorPaletteCard
           colors={data.colors ?? []}
           {...stateHandlers}
-          onChange={(colors) => onEditSave?.(cardId, { colorPalette: colors })}
-          onRefresh={isActive ? () => onRefresh?.(cardId) : undefined}
+          onChange={(colors) => onEditSave?.(elementType, colors)}
           onDelete={deleteHandler}
           meta={variation.meta}
         />
       );
 
-    case "visual-concept":
+    case "visual-concept": {
+      const vcData = data && typeof data === "object" && "concept" in data
+        ? data as { concept: string; description: string }
+        : { concept: typeof data === "string" ? data : "", description: "" };
       return (
         <VisualConceptCard
-          conceptName={data.conceptName ?? ""}
-          points={data.points ?? []}
+          data={vcData}
           {...stateHandlers}
-          onChange={(d) => onEditSave?.(cardId, { visualConcept: d })}
-          onRefresh={isActive ? () => onRefresh?.(cardId) : undefined}
+          onChange={(d) => onEditSave?.(elementType, d)}
           onDelete={deleteHandler}
           meta={variation.meta}
         />
       );
+    }
 
     case "art-style":
       return (
@@ -97,7 +80,6 @@ export function VariationSlot({
           imageUrl={data.imageUrl ?? ""}
           onAspectRatioChange={(aspectRatio) => onImageAspectRatioChange?.(variation.id, aspectRatio)}
           {...stateHandlers}
-          onRefresh={isActive ? () => onRefresh?.(cardId) : undefined}
           onDelete={deleteHandler}
           meta={variation.meta}
         />
@@ -109,10 +91,9 @@ export function VariationSlot({
           titleFont={data.titleFont ?? ""}
           bodyFont={data.bodyFont ?? ""}
           brandName={brandBrief?.name}
-          brandSummary={brandBrief?.description}
+          brandDescription={brandBrief?.description}
           {...stateHandlers}
-          onChange={(d) => onEditSave?.(cardId, { font: d })}
-          onRefresh={isActive ? () => onRefresh?.(cardId) : undefined}
+          onChange={(d) => onEditSave?.(elementType, d)}
           onDelete={deleteHandler}
           meta={variation.meta}
         />
@@ -120,13 +101,12 @@ export function VariationSlot({
 
     default:
       if (data?.imageUrl) {
-        if (type === "visual-snapshot" || (type === "style-reference" && cardId === "visual-snapshot")) {
+        if (type === "visual-snapshot" || (type === "style-reference" && elementType === "visual-snapshot")) {
           return (
             <VisualSnapshotCard
               images={[{ id: variation.id, imageUrl: data.imageUrl, label: variation.label }]}
               onAspectRatioChange={(aspectRatio) => onImageAspectRatioChange?.(variation.id, aspectRatio)}
               {...stateHandlers}
-              onRefresh={isActive ? () => onRefresh?.(cardId) : undefined}
               onDelete={deleteHandler}
               meta={variation.meta}
             />
@@ -134,11 +114,10 @@ export function VariationSlot({
         }
         return (
           <ImageCard
-            label={variation.label || LABELS[cardId] || cardId}
+            label={variation.label || LABELS[elementType] || elementType}
             imageUrl={data.imageUrl}
             onAspectRatioChange={(aspectRatio) => onImageAspectRatioChange?.(variation.id, aspectRatio)}
             {...stateHandlers}
-            onRefresh={isActive ? () => onRefresh?.(cardId) : undefined}
             onDelete={deleteHandler}
             meta={variation.meta}
           />

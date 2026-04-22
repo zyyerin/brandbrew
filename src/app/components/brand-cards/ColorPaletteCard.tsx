@@ -1,216 +1,195 @@
-import React, { useMemo } from "react";
-import type { CardMeta, CardState } from "./types";
-import { CardWrapper } from "./CardWrapper";
+import React, { useCallback, useRef, useState } from "react";
+import { Plus, X } from "lucide-react";
+import type { VariationMeta, VariationState } from "./types";
+import { ElementWrapper } from "./ElementWrapper";
 import { useCardEditing } from "./useCardEditing";
+import { ColorPickerPopover } from "./ColorPickerPopover";
+import { PALETTE } from "../../utils/design-tokens";
+
+function luminance(hex: string): number {
+  const c = (hex.replace("#", "") + "000000").slice(0, 6);
+  const r = parseInt(c.slice(0, 2), 16) / 255;
+  const g = parseInt(c.slice(2, 4), 16) / 255;
+  const b = parseInt(c.slice(4, 6), 16) / 255;
+  const lin = (v: number) => (v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4);
+  return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+}
+
+function fgFor(hex: string) {
+  return luminance(hex) > 0.35 ? "rgba(0,0,0,0.6)" : "rgba(255,255,255,0.85)";
+}
+
+function overlayFor(hex: string) {
+  return luminance(hex) > 0.35 ? "rgba(0,0,0,0.07)" : "rgba(255,255,255,0.13)";
+}
 
 interface ColorPaletteProps {
   colors: string[];
-  state?: CardState;
+  state?: VariationState;
   onToggleActive?: () => void;
   onChange?: (colors: string[]) => void;
-  onRefresh?: () => void;
   onDelete?: () => void;
-  meta?: CardMeta;
+  meta?: VariationMeta;
 }
 
-interface RgbColor {
-  r: number;
-  g: number;
-  b: number;
-}
-
-interface PaletteEntry {
-  color: string;
-  originalIndex: number;
-}
-
-interface ColorMetrics {
-  entry: PaletteEntry;
-  hue: number;
-  saturation: number;
-  lightness: number;
-}
-
-function parseHexColor(hex: string): RgbColor | null {
-  const normalized = hex.trim().replace(/^#/, "");
-  if (!/^[0-9a-fA-F]{3}([0-9a-fA-F]{3})?$/.test(normalized)) return null;
-
-  const full = normalized.length === 3
-    ? normalized.split("").map((ch) => ch + ch).join("")
-    : normalized;
-
-  const r = Number.parseInt(full.slice(0, 2), 16);
-  const g = Number.parseInt(full.slice(2, 4), 16);
-  const b = Number.parseInt(full.slice(4, 6), 16);
-
-  if ([r, g, b].some((value) => Number.isNaN(value))) return null;
-  return { r, g, b };
-}
-
-function rgbToHsl(rgb: RgbColor): { h: number; s: number; l: number } {
-  const r = rgb.r / 255;
-  const g = rgb.g / 255;
-  const b = rgb.b / 255;
-  const max = Math.max(r, g, b);
-  const min = Math.min(r, g, b);
-  const delta = max - min;
-
-  let h = 0;
-  if (delta !== 0) {
-    if (max === r) h = ((g - b) / delta) % 6;
-    else if (max === g) h = (b - r) / delta + 2;
-    else h = (r - g) / delta + 4;
-    h *= 60;
-    if (h < 0) h += 360;
-  }
-
-  const l = (max + min) / 2;
-  const s = delta === 0 ? 0 : delta / (1 - Math.abs(2 * l - 1));
-  return { h, s, l };
-}
-
-function hueDistance(h1: number, h2: number): number {
-  const diff = Math.abs(h1 - h2);
-  return Math.min(diff, 360 - diff) / 180;
-}
-
-function transitionCost(from: ColorMetrics, to: ColorMetrics): number {
-  const avgSat = (from.saturation + to.saturation) / 2;
-  const hueCost = hueDistance(from.hue, to.hue) * avgSat;
-  const satCost = Math.abs(from.saturation - to.saturation);
-  const lightnessCost = Math.abs(from.lightness - to.lightness);
-  const lightRisePenalty = Math.max(0, to.lightness - from.lightness);
-
-  return (
-    hueCost * 0.55 +
-    satCost * 0.2 +
-    lightnessCost * 0.25 +
-    lightRisePenalty * 0.85
-  );
-}
-
-function buildMetrics(entry: PaletteEntry): ColorMetrics | null {
-  const rgb = parseHexColor(entry.color);
-  if (!rgb) return null;
-  const hsl = rgbToHsl(rgb);
-  return {
-    entry,
-    hue: hsl.h,
-    saturation: hsl.s,
-    lightness: hsl.l,
-  };
-}
-
-function sortPaletteForHarmony(colors: string[]): PaletteEntry[] {
-  const entries = colors.map((color, originalIndex) => ({ color, originalIndex }));
-  const validMetrics = entries
-    .map((entry) => buildMetrics(entry))
-    .filter((value): value is ColorMetrics => value !== null);
-
-  const validIndexSet = new Set(validMetrics.map((m) => m.entry.originalIndex));
-  const invalidEntries = entries.filter((entry) => !validIndexSet.has(entry.originalIndex));
-  if (validMetrics.length <= 1) return [...validMetrics.map((m) => m.entry), ...invalidEntries];
-
-  const anchor = validMetrics.reduce((best, current) => {
-    if (current.lightness > best.lightness) return current;
-    if (current.lightness < best.lightness) return best;
-    if (current.saturation > best.saturation) return current;
-    if (current.saturation < best.saturation) return best;
-    return current.entry.originalIndex < best.entry.originalIndex ? current : best;
-  });
-
-  let bestOrder: ColorMetrics[] = [];
-  let bestCost = Number.POSITIVE_INFINITY;
-
-  const buildOrder = (order: ColorMetrics[], remaining: ColorMetrics[], runningCost: number) => {
-    if (runningCost >= bestCost) return;
-    if (remaining.length === 0) {
-      const endPenalty = order[order.length - 1].lightness * 0.15;
-      const finalCost = runningCost + endPenalty;
-      if (finalCost < bestCost) {
-        bestCost = finalCost;
-        bestOrder = order;
-      }
-      return;
-    }
-
-    const previous = order[order.length - 1];
-    for (let i = 0; i < remaining.length; i += 1) {
-      const next = remaining[i];
-      buildOrder(
-        [...order, next],
-        [...remaining.slice(0, i), ...remaining.slice(i + 1)],
-        runningCost + transitionCost(previous, next),
-      );
-    }
-  };
-
-  if (validMetrics.length <= 8) {
-    buildOrder([anchor], validMetrics.filter((m) => m !== anchor), 0);
-  } else {
-    const order: ColorMetrics[] = [anchor];
-    let remaining = validMetrics.filter((m) => m !== anchor);
-    while (remaining.length > 0) {
-      const previous = order[order.length - 1];
-      let bestNext = remaining[0];
-      let nextCost = Number.POSITIVE_INFINITY;
-      for (const candidate of remaining) {
-        const cost = transitionCost(previous, candidate) + candidate.lightness * 0.1;
-        if (cost < nextCost) {
-          nextCost = cost;
-          bestNext = candidate;
-        }
-      }
-      order.push(bestNext);
-      remaining = remaining.filter((candidate) => candidate !== bestNext);
-    }
-    bestOrder = order;
-  }
-
-  return [...bestOrder.map((m) => m.entry), ...invalidEntries];
-}
-
-export function ColorPaletteCard({ colors, state, onToggleActive, onChange, onRefresh, onDelete, meta }: ColorPaletteProps) {
+export function ColorPaletteCard({ colors, state, onToggleActive, onChange, onDelete, meta }: ColorPaletteProps) {
   const { isEditing, local, setLocal, editingProps } = useCardEditing(
     { colors },
     { onChange: onChange ? (d) => onChange(d.colors) : undefined },
   );
 
-  const safeColors = Array.isArray(local.colors) ? local.colors : [];
-  const orderedColors = useMemo(() => sortPaletteForHarmony(safeColors), [safeColors]);
+  const safeColors: string[] = Array.isArray(local.colors) ? local.colors : [];
+
+  const updateColor = useCallback(
+    (index: number, value: string) => {
+      const next = [...safeColors];
+      next[index] = value;
+      setLocal({ colors: next } as typeof local);
+    },
+    [safeColors, setLocal],
+  );
+
+  const removeColor = useCallback(
+    (index: number) => {
+      const next = [...safeColors];
+      next.splice(index, 1);
+      setLocal({ colors: next } as typeof local);
+    },
+    [safeColors, setLocal],
+  );
+
+  const addColor = useCallback(() => {
+    setLocal({ colors: [...safeColors, PALETTE.DEFAULT_NEW_COLOR] } as typeof local);
+  }, [safeColors, setLocal]);
+
+  // ── Horizontal drag-to-reorder ───────────────────────────────
+  const [dragIdx, setDragIdx] = useState<number | null>(null);
+  const [overIdx, setOverIdx] = useState<number | null>(null);
+  const dragEnterCount = useRef<Record<number, number>>({});
+
+  const handleDragStart = useCallback((e: React.DragEvent, idx: number) => {
+    setDragIdx(idx);
+    e.dataTransfer.effectAllowed = "move";
+    const ghost = document.createElement("div");
+    ghost.style.cssText = "position:fixed;top:-999px;width:1px;height:1px;";
+    document.body.appendChild(ghost);
+    e.dataTransfer.setDragImage(ghost, 0, 0);
+    requestAnimationFrame(() => document.body.removeChild(ghost));
+  }, []);
+
+  const handleDragEnd = useCallback(() => {
+    if (dragIdx !== null && overIdx !== null && dragIdx !== overIdx) {
+      const next = [...safeColors];
+      const [moved] = next.splice(dragIdx, 1);
+      next.splice(overIdx, 0, moved);
+      setLocal({ colors: next } as typeof local);
+    }
+    setDragIdx(null);
+    setOverIdx(null);
+    dragEnterCount.current = {};
+  }, [dragIdx, overIdx, safeColors, setLocal]);
+
+  const handleDragEnter = useCallback((e: React.DragEvent, idx: number) => {
+    e.preventDefault();
+    dragEnterCount.current[idx] = (dragEnterCount.current[idx] ?? 0) + 1;
+    setOverIdx(idx);
+  }, []);
+
+  const handleDragLeave = useCallback((_e: React.DragEvent, idx: number) => {
+    dragEnterCount.current[idx] = (dragEnterCount.current[idx] ?? 1) - 1;
+    if ((dragEnterCount.current[idx] ?? 0) <= 0) {
+      dragEnterCount.current[idx] = 0;
+      setOverIdx((prev) => (prev === idx ? null : prev));
+    }
+  }, []);
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+  }, []);
 
   return (
-    <CardWrapper
+    <ElementWrapper
       label="Color Palette"
       state={state}
       editVariant="color"
       {...editingProps}
-      onRegenerate={onRefresh}
       onDelete={onDelete}
       onToggleActive={isEditing ? undefined : onToggleActive}
       meta={meta}
     >
       <div className="flex flex-1 gap-0 rounded-lg overflow-hidden h-full">
-        {orderedColors.map(({ color, originalIndex }) => (
-          <div key={`${color}-${originalIndex}`} className="flex-1 h-full relative" style={{ backgroundColor: color }}>
-            {isEditing && (
-              <label className="absolute inset-0 cursor-pointer flex items-end justify-center pb-3">
-                <input
-                  type="color"
-                  value={color}
-                  onChange={(e) => {
-                    const next = [...local.colors];
-                    next[originalIndex] = e.target.value;
-                    setLocal({ colors: next });
-                  }}
-                  className="w-7 h-7 rounded-full border-2 border-white/80 shadow-md cursor-pointer"
-                  style={{ padding: 0 }}
-                />
-              </label>
-            )}
-          </div>
-        ))}
+        {safeColors.map((color, i) => {
+          const isDragging = isEditing && dragIdx === i;
+          const isDropTarget = isEditing && overIdx === i && dragIdx !== null && dragIdx !== i;
+          const fg = fgFor(color);
+          const labelBg = overlayFor(color);
+
+          // The strip div is the same in both modes — only the wrapper differs
+          const stripContent = (
+            <div
+              draggable={isEditing}
+              onDragStart={isEditing ? (e) => handleDragStart(e, i) : undefined}
+              onDragEnd={isEditing ? handleDragEnd : undefined}
+              onDragEnter={isEditing ? (e) => handleDragEnter(e, i) : undefined}
+              onDragLeave={isEditing ? (e) => handleDragLeave(e, i) : undefined}
+              onDragOver={isEditing ? handleDragOver : undefined}
+              onClick={isEditing ? (e) => e.stopPropagation() : undefined}
+              className={[
+                "flex-1 h-full relative group/swatch transition-all duration-150",
+                isEditing ? "cursor-pointer" : "",
+                isDragging ? "opacity-30 scale-x-95" : "",
+                isDropTarget ? "ring-inset ring-2 ring-white/70 brightness-110" : "",
+              ].join(" ")}
+              style={{ backgroundColor: color }}
+            >
+              {/* ── Delete button (edit mode, hover reveal) ── */}
+              {isEditing && safeColors.length > PALETTE.MIN_COLORS && (
+                <button
+                  draggable={false}
+                  onClick={(e) => { e.stopPropagation(); removeColor(i); }}
+                  onPointerDown={(e) => e.stopPropagation()}
+                  className="absolute top-2 left-1/2 -translate-x-1/2 w-5 h-5 rounded-full flex items-center justify-center z-10 opacity-0 group-hover/swatch:opacity-100 transition-opacity backdrop-blur-sm"
+                  style={{ backgroundColor: labelBg, color: fg }}
+                  title="Remove color"
+                >
+                  <X size={10} strokeWidth={2.5} />
+                </button>
+              )}
+
+            </div>
+          );
+
+          // In display mode: plain strip, clicks pass through to card toggle
+          // In edit mode: wrap with ColorPickerPopover — the strip div IS the trigger
+          if (!isEditing) {
+            return <React.Fragment key={i}>{stripContent}</React.Fragment>;
+          }
+
+          return (
+            <ColorPickerPopover
+              key={i}
+              color={color}
+              onChange={(c) => updateColor(i, c)}
+              side="top"
+              align="center"
+            >
+              {stripContent}
+            </ColorPickerPopover>
+          );
+        })}
+
+        {/* ── Add color strip ── */}
+        {isEditing && safeColors.length < PALETTE.MAX_COLORS && (
+          <button
+            onClick={(e) => { e.stopPropagation(); addColor(); }}
+            className="w-8 h-full flex-shrink-0 flex items-center justify-center bg-black/5 hover:bg-black/10 transition-colors"
+            title="Add color"
+          >
+            <Plus size={13} className="text-black/30" strokeWidth={2} />
+          </button>
+        )}
       </div>
-    </CardWrapper>
+    </ElementWrapper>
   );
 }

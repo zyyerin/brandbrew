@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { RefreshCw, ChevronDown, ChevronUp, X, Cpu, Image, Wifi, WifiOff, List } from "lucide-react";
 import { callApi } from "../utils/apiClient";
 import { Skeleton } from "./ui/skeleton";
@@ -32,6 +32,14 @@ export function DevPanel() {
   const [fetchState, setFetchState] = useState<FetchState>("idle");
   const [error, setError] = useState<string | null>(null);
   const [lastFetched, setLastFetched] = useState<Date | null>(null);
+
+  // Drag state — initialise to bottom-right corner
+  const [pos, setPos] = useState<{ x: number; y: number }>(() => ({
+    x: window.innerWidth - 308,
+    y: window.innerHeight - 400,
+  }));
+  const dragRef = useRef<{ startX: number; startY: number; originX: number; originY: number } | null>(null);
+  const didDragRef = useRef(false);
 
   // All-models list
   const [allModels, setAllModels] = useState<{ name: string; displayName: string; methods: string[] }[] | null>(null);
@@ -68,6 +76,32 @@ export function DevPanel() {
     }
   }, []);
 
+  const onHeaderPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    // Only drag on primary button; ignore clicks on child buttons
+    if (e.button !== 0) return;
+    if ((e.target as HTMLElement).closest("button")) return;
+    didDragRef.current = false;
+    dragRef.current = { startX: e.clientX, startY: e.clientY, originX: pos.x, originY: pos.y };
+    e.currentTarget.setPointerCapture(e.pointerId);
+  }, [pos]);
+
+  const onHeaderPointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    if (!dragRef.current) return;
+    const dx = e.clientX - dragRef.current.startX;
+    const dy = e.clientY - dragRef.current.startY;
+    if (Math.abs(dx) > 3 || Math.abs(dy) > 3) didDragRef.current = true;
+    setPos({
+      x: Math.max(0, Math.min(window.innerWidth - 288, dragRef.current.originX + dx)),
+      y: Math.max(0, Math.min(window.innerHeight - 40, dragRef.current.originY + dy)),
+    });
+  }, []);
+
+  const onHeaderPointerUp = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    dragRef.current = null;
+    // Suppress the click for expand/collapse if we actually dragged
+    if (didDragRef.current) e.stopPropagation();
+  }, []);
+
   // Fetch on mount
   useEffect(() => { fetchInfo(); }, [fetchInfo]);
 
@@ -83,8 +117,8 @@ export function DevPanel() {
     <div
       style={{
         position: "fixed",
-        bottom: 20,
-        right: 20,
+        left: pos.x,
+        top: pos.y,
         zIndex: 9999,
         width: 288,
         background: "rgba(15, 15, 20, 0.96)",
@@ -107,9 +141,12 @@ export function DevPanel() {
           padding: "7px 10px",
           background: "rgba(255,255,255,0.05)",
           borderBottom: "1px solid rgba(255,255,255,0.07)",
-          cursor: "pointer",
+          cursor: dragRef.current ? "grabbing" : "grab",
         }}
-        onClick={() => setExpanded((v) => !v)}
+        onClick={() => { if (!didDragRef.current) setExpanded((v) => !v); }}
+        onPointerDown={onHeaderPointerDown}
+        onPointerMove={onHeaderPointerMove}
+        onPointerUp={onHeaderPointerUp}
       >
         {/* Traffic-light dot */}
         <span

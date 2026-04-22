@@ -34,7 +34,7 @@ app.use(
   "/*",
   cors({
     origin: "*",
-    allowHeaders: ["Content-Type", "Authorization"],
+    allowHeaders: ["Content-Type", "Authorization", "X-Access-Token", "X-Project-Id"],
     allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     exposeHeaders: ["Content-Length"],
     maxAge: 600,
@@ -201,7 +201,7 @@ app.post(`${PREFIX}/upload-image`, async (c) => {
     if (decodedLen > MAX_UPLOAD_DECODED_BYTES) {
       return c.json({ error: "Image too large" }, 400);
     }
-    const signedUrl = await uploadAndSignImage(String(base64), mime, slug);
+    const signedUrl = await uploadAndSignImage(String(base64), mime, slug, c.req.header("X-Project-Id"));
     return c.json({ imageUrl: signedUrl });
   } catch (err) {
     console.error("upload-image error:", err);
@@ -226,9 +226,19 @@ app.post(`${PREFIX}/generate-brand-data`, async (c) => {
   return res;
 });
 
-app.post(`${PREFIX}/enhance-brief`, async (c) => {
+app.post(`${PREFIX}/auto-complete`, async (c) => {
   const body = await c.req.json();
-  const res = await app.request(`${PREFIX}/strategist/enhance-brief`, {
+  const res = await app.request(`${PREFIX}/strategist/auto-complete`, {
+    method: "POST",
+    headers: c.req.raw.headers,
+    body: JSON.stringify(body),
+  });
+  return res;
+});
+
+app.post(`${PREFIX}/auto-fill`, async (c) => {
+  const body = await c.req.json();
+  const res = await app.request(`${PREFIX}/strategist/auto-fill`, {
     method: "POST",
     headers: c.req.raw.headers,
     body: JSON.stringify(body),
@@ -237,9 +247,11 @@ app.post(`${PREFIX}/enhance-brief`, async (c) => {
 });
 
 app.post(`${PREFIX}/generate-card-variation`, async (c) => {
-  console.log("[compat] /generate-card-variation → /strategist/variation");
   const body = await c.req.json();
-  const res = await app.request(`${PREFIX}/strategist/variation`, {
+  const isVisualDesign = body.cardType === "color-palette" || body.cardType === "font";
+  const target = isVisualDesign ? `${PREFIX}/art-director/variation` : `${PREFIX}/strategist/variation`;
+  console.log(`[compat] /generate-card-variation (${body.cardType}) → ${target.replace(PREFIX, "")}`);
+  const res = await app.request(target, {
     method: "POST",
     headers: c.req.raw.headers,
     body: JSON.stringify(body),
@@ -248,9 +260,9 @@ app.post(`${PREFIX}/generate-card-variation`, async (c) => {
 });
 
 app.post(`${PREFIX}/merge-cards`, async (c) => {
-  console.log("[compat] /merge-cards → /strategist/merge");
+  console.log("[compat] /merge-cards → /visual-designer/merge");
   const body = await c.req.json();
-  const res = await app.request(`${PREFIX}/strategist/merge`, {
+  const res = await app.request(`${PREFIX}/visual-designer/merge`, {
     method: "POST",
     headers: c.req.raw.headers,
     body: JSON.stringify(body),
@@ -259,9 +271,9 @@ app.post(`${PREFIX}/merge-cards`, async (c) => {
 });
 
 app.post(`${PREFIX}/comment-modify`, async (c) => {
-  console.log("[compat] /comment-modify → /strategist/comment-modify");
+  console.log("[compat] /comment-modify → /visual-designer/comment-modify");
   const body = await c.req.json();
-  const res = await app.request(`${PREFIX}/strategist/comment-modify`, {
+  const res = await app.request(`${PREFIX}/visual-designer/comment-modify`, {
     method: "POST",
     headers: c.req.raw.headers,
     body: JSON.stringify(body),
@@ -269,10 +281,22 @@ app.post(`${PREFIX}/comment-modify`, async (c) => {
   return res;
 });
 
-app.post(`${PREFIX}/generate-guideline`, async (c) => {
-  console.log("[compat] /generate-guideline → /strategist/guideline");
+app.post(`${PREFIX}/generate-direction`, async (c) => {
+  console.log("[compat] /generate-direction → /strategist/direction");
   const body = await c.req.json();
-  const res = await app.request(`${PREFIX}/strategist/guideline`, {
+  const res = await app.request(`${PREFIX}/strategist/direction`, {
+    method: "POST",
+    headers: c.req.raw.headers,
+    body: JSON.stringify(body),
+  });
+  return res;
+});
+
+// Backward compat: old clients may still call generate-guideline
+app.post(`${PREFIX}/generate-guideline`, async (c) => {
+  console.log("[compat] /generate-guideline → /strategist/direction");
+  const body = await c.req.json();
+  const res = await app.request(`${PREFIX}/strategist/direction`, {
     method: "POST",
     headers: c.req.raw.headers,
     body: JSON.stringify(body),
@@ -297,19 +321,19 @@ app.post(`${PREFIX}/generate-image`, async (c) => {
   const referenceImageUrls = body.referenceImageUrls as string[] | undefined;
   const paletteImageBase64 = body.paletteImageBase64 as string | undefined;
 
-  // Visual Snapshot: only via moodboard (generateMoodboardImage → PRIORITY_IMAGE_MODELS).
+  // Visual Snapshot: only via multi-ref path (generateImage with refImages → PRIORITY_IMAGE_MODELS).
   // Never route VS to art-director so we never use txt2img or wrong model for snapshots.
   if (cardType === "visual-snapshot") {
-    const hasMoodboardInputs =
+    const hasVisualSnapshotInputs =
       (referenceImageUrls && referenceImageUrls.length > 0) || !!paletteImageBase64;
-    if (!hasMoodboardInputs) {
+    if (!hasVisualSnapshotInputs) {
       return c.json(
         { error: "Visual snapshot requires referenceImageUrls or paletteImageBase64" },
         400,
       );
     }
-    console.log("[compat] /generate-image (moodboard) → /visual-designer/moodboard");
-    const res = await app.request(`${PREFIX}/visual-designer/moodboard`, {
+    console.log("[route] /generate-image (visual-snapshot) → /visual-designer/visual-snapshot");
+    const res = await app.request(`${PREFIX}/visual-designer/visual-snapshot`, {
       method: "POST",
       headers: c.req.raw.headers,
       body: JSON.stringify(body),

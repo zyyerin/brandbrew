@@ -9,10 +9,6 @@ interface NoodleConnectionsProps {
 
 export function NoodleConnections({ cardEndpoints, portX, portY }: NoodleConnectionsProps) {
   if (cardEndpoints.length === 0) return null;
-  const dpr = typeof window !== "undefined" ? Math.max(1, window.devicePixelRatio || 1) : 1;
-  const snap = (v: number) => Math.round(v * dpr) / dpr;
-  const snappedPortX = snap(portX);
-  const snappedPortY = snap(portY);
 
   return (
     <svg
@@ -20,32 +16,30 @@ export function NoodleConnections({ cardEndpoints, portX, portY }: NoodleConnect
       style={{ zIndex: 17, overflow: "visible" }}
     >
       {cardEndpoints.map((ep, i) => {
-        const sx = snap(ep.x);
-        const sy = snap(ep.y);
-        const dx = snappedPortX - sx;
+        const dx = portX - ep.x;
         const cpX = Math.abs(dx) * 0.4;
         return (
           <g key={i}>
             <path
-              d={`M ${sx},${sy} C ${sx + cpX},${sy} ${snappedPortX - cpX},${snappedPortY} ${snappedPortX},${snappedPortY}`}
+              d={`M ${ep.x},${ep.y} C ${ep.x + cpX},${ep.y} ${portX - cpX},${portY} ${portX},${portY}`}
               fill="none"
               stroke="var(--bb-user-active-accent)"
               strokeWidth={2}
               strokeOpacity={0.25}
             />
             <circle
-              cx={sx}
-              cy={sy}
-              r={LAYOUT.PORT_RADIUS}
+              cx={ep.x}
+              cy={ep.y}
+              r={LAYOUT.connection.portRadius}
               fill="var(--bb-user-active-accent)"
             />
           </g>
         );
       })}
       <circle
-        cx={snappedPortX}
-        cy={snappedPortY}
-        r={LAYOUT.PORT_RADIUS + 1}
+        cx={portX}
+        cy={portY}
+        r={LAYOUT.connection.portRadius + 1}
         fill="var(--bb-user-active-accent)"
       />
     </svg>
