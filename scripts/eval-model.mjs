@@ -320,6 +320,10 @@ async function main() {
     results.push(result);
     const icon = result.passed ? "PASS" : "FAIL";
     console.log(`${icon} ${result.id} (${result.elapsedMs}ms)`);
+    if (!result.passed) {
+      console.log(`  Reason: status=${result.status}, errorType=${result.errorType}`);
+      console.log(`  Response: ${result.responseText.slice(0, 500)}`);
+    }
   }
 
   const metrics = calculateMetrics(results);
