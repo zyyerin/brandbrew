@@ -16,7 +16,7 @@ export interface UseVariationsParams {
 
 export interface UseVariationsReturn {
   boardVariationCounts: Record<string, number>;
-  handleSelectVariation: (elementId: string, variationId: string) => void;
+  handleSelectVariation: (elementId: string, variationId: string | null) => void;
   handleToggleVariationChecked: (elementId: string, variationId: string) => void;
   handleDeleteVariation: (elementId: string, variationId: string) => void;
   handleEditSave: (elementId: string, newData: unknown) => void;
@@ -38,7 +38,7 @@ export function useVariations({
   }, [project.elements]);
 
   const handleSelectVariation = useCallback(
-    (elementId: string, variationId: string) => {
+    (elementId: string, variationId: string | null) => {
       if (!(ALL_ELEMENT_IDS as readonly string[]).includes(elementId)) return;
       setProject((prev) => ({
         ...prev,

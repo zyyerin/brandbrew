@@ -1,16 +1,15 @@
 import React, { useCallback } from "react";
-import { Download } from "lucide-react";
+import { Download, ExternalLink } from "lucide-react";
 import type { VariationMeta, VariationState } from "./types";
 import { ElementWrapper } from "./ElementWrapper";
 import { ImageWithFallback } from "./ImageWithFallback";
-import { LAYOUT, TYPOGRAPHY } from "../../utils/design-tokens";
+import { LAYOUT, TYPE } from "../../utils/design-tokens";
 
 interface ImageCardProps {
   label: string;
   imageUrl: string;
   state?: VariationState;
   onToggleActive?: () => void;
-  onAddVariation?: () => void;
   onDelete?: () => void;
   meta?: VariationMeta;
   minHeight?: string;
@@ -22,10 +21,9 @@ export function ImageCard({
   imageUrl,
   state,
   onToggleActive,
-  onAddVariation,
   onDelete,
   meta,
-  minHeight = `${LAYOUT.IMAGE_CARD_MIN_HEIGHT}px`,
+  minHeight = `${LAYOUT.card.imageMinHeight}px`,
   onAspectRatioChange,
 }: ImageCardProps) {
   const handleImageLoad = useCallback(
@@ -59,33 +57,38 @@ export function ImageCard({
   );
 
   const downloadButton = imageUrl ? (
-    <button
-      onClick={handleDownload}
-      className="p-1 rounded-md text-muted-foreground/60 hover:text-foreground hover:bg-black/5 transition-colors"
-      title="Download image"
-    >
-      <Download size={TYPOGRAPHY.actionIconSize} />
-    </button>
+    <>
+      <button
+        onClick={(e) => { e.stopPropagation(); window.open(imageUrl, "_blank", "noopener,noreferrer"); }}
+        className="p-1 rounded-md text-muted-foreground/60 hover:text-foreground hover:bg-black/5 transition-colors"
+        title="Open image in new tab"
+        data-no-card-toggle
+      >
+        <ExternalLink size={TYPE.icon.base} />
+      </button>
+      <button
+        onClick={handleDownload}
+        className="p-1 rounded-md text-muted-foreground/60 hover:text-foreground hover:bg-black/5 transition-colors"
+        title="Download image"
+        data-no-card-toggle
+      >
+        <Download size={TYPE.icon.base} />
+      </button>
+    </>
   ) : null;
 
   return (
     <ElementWrapper
       label={label}
       state={state}
-      onAddVariation={onAddVariation}
       onDelete={onDelete}
       onToggleActive={onToggleActive}
       meta={meta}
       extraActions={downloadButton}
     >
       <div
-        className="relative rounded-lg overflow-hidden flex-1 bg-muted/30 cursor-pointer"
+        className="relative rounded-lg overflow-hidden flex-1 bg-muted/30"
         style={{ minHeight }}
-        onDoubleClick={(e) => {
-          e.stopPropagation();
-          if (imageUrl) window.open(imageUrl, "_blank", "noopener,noreferrer");
-        }}
-        title="Double-click to open image in new window"
       >
         {imageUrl && (
           <ImageWithFallback
@@ -104,7 +107,6 @@ interface VisualSnapshotProps {
   images: { id: string; imageUrl: string; label: string }[];
   state?: VariationState;
   onToggleActive?: () => void;
-  onAddVariation?: () => void;
   onDelete?: () => void;
   meta?: VariationMeta;
   onAspectRatioChange?: (aspectRatio: number) => void;
@@ -119,7 +121,7 @@ export function VisualSnapshotCard({
     <ImageCard
       label="Visual Snapshot"
       imageUrl={images[0]?.imageUrl ?? ""}
-      minHeight={`${LAYOUT.SNAPSHOT_CARD_MIN_HEIGHT}px`}
+      minHeight={`${LAYOUT.card.snapshotMinHeight}px`}
       onAspectRatioChange={onAspectRatioChange}
       {...rest}
     />

@@ -1,6 +1,6 @@
 import { X, Layers } from "lucide-react";
 import type { VariationMeta } from "../types/project";
-import { LAYOUT, TYPOGRAPHY } from "../utils/design-tokens";
+import { LAYOUT, TYPE } from "../utils/design-tokens";
 import { formatTimestamp } from "../utils/helpers";
 
 export interface VariationItem {
@@ -31,17 +31,17 @@ export function VariationsPanel({
   return (
     <div
       className="h-full border-l border-border/60 bg-white flex flex-col overflow-hidden shadow-xl"
-      style={{ width: LAYOUT.VARIATIONS_PANEL_WIDTH }}
+      style={{ width: LAYOUT.panel.variationsWidth }}
     >
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-border/60 shrink-0 bg-muted/10">
         <div className="flex items-center gap-2 min-w-0">
           <Layers size={14} className="text-muted-foreground/50 shrink-0" />
           <div className="min-w-0">
-            <p className="text-foreground truncate" style={{ fontSize: TYPOGRAPHY.cardBody.fontSize, fontWeight: 600 }}>
+            <p className="text-foreground truncate" style={{ fontSize: TYPE.size.base, fontWeight: 600 }}>
               History
             </p>
-            <p className="text-muted-foreground/50" style={{ fontSize: TYPOGRAPHY.queueLabel.fontSize }}>
+            <p className="text-muted-foreground/50" style={{ fontSize: TYPE.size.sm }}>
               {variations.length} variation{variations.length !== 1 ? "s" : ""}
             </p>
           </div>
@@ -80,12 +80,12 @@ export function VariationsPanel({
                   >
                     {/* Timestamp badge */}
                     <div className="flex items-center justify-between px-3 py-2 bg-muted/20">
-                      <span className="font-mono text-muted-foreground/55 tracking-tight" style={{ fontSize: TYPOGRAPHY.microLabel.fontSize }}>
+                      <span className="font-mono text-muted-foreground/55 tracking-tight" style={{ fontSize: TYPE.size.xs }}>
                         {formatTimestamp(v.createdAt)}
                       </span>
                       {isActive && (
                         <div className="flex items-center justify-center shrink-0 px-1.5 py-0.5 bg-blue-500 rounded-full">
-                          <span className="text-white font-semibold tracking-wide leading-none" style={{ fontSize: TYPOGRAPHY.badge.fontSize }}>Active</span>
+                          <span className="text-white font-semibold tracking-wide leading-none" style={{ fontSize: TYPE.size.micro }}>Active</span>
                         </div>
                       )}
                     </div>
@@ -108,28 +108,16 @@ export function VariationsPanel({
 function VariationPreview({ variation }: { variation: VariationItem }) {
   const { type, data } = variation;
 
-  if (type === "brand-brief") {
-    return (
-      <div>
-        <h4 className="text-foreground mb-0.5" style={{ fontSize: 16, fontWeight: 400, lineHeight: 1.2 }}>
-          {data.name}
-        </h4>
-        <p className="text-muted-foreground italic mb-1.5" style={{ fontSize: TYPOGRAPHY.queueLabel.fontSize }}>{data.tagline}</p>
-        <p className="text-foreground/55 leading-[1.5] line-clamp-2" style={{ fontSize: TYPOGRAPHY.queueLabel.fontSize }}>{data.description}</p>
-      </div>
-    );
-  }
-
   if (type === "keywords") {
     return (
       <div className="flex flex-col gap-0.5">
         {data.keywords?.slice(0, 3).map((kw: string, i: number) => (
-          <span key={i} className="text-foreground leading-tight" style={{ fontSize: TYPOGRAPHY.cardTagline.fontSize, fontWeight: i === 0 ? 400 : 700 }}>
+          <span key={i} className="text-foreground leading-tight" style={{ fontSize: TYPE.size.baseLg, fontWeight: i === 0 ? 400 : 700 }}>
             {kw}
           </span>
         ))}
         {data.keywords?.length > 3 && (
-          <span className="text-muted-foreground/40" style={{ fontSize: TYPOGRAPHY.microLabel.fontSize }}>+{data.keywords.length - 3} more</span>
+          <span className="text-muted-foreground/40" style={{ fontSize: TYPE.size.xs }}>+{data.keywords.length - 3} more</span>
         )}
       </div>
     );
@@ -141,7 +129,7 @@ function VariationPreview({ variation }: { variation: VariationItem }) {
       <div className="flex items-center">
         <span
           className="italic text-foreground/70 leading-snug"
-          style={{ fontSize: TYPOGRAPHY.queueLabel.fontSize }}
+          style={{ fontSize: TYPE.size.sm }}
         >
           {keyword}
         </span>
@@ -153,14 +141,14 @@ function VariationPreview({ variation }: { variation: VariationItem }) {
     return (
       <div className="flex flex-col gap-1">
         <div>
-          <span className="uppercase text-muted-foreground/50" style={{ fontSize: TYPOGRAPHY.badge.fontSize, letterSpacing: "0.1em" }}>Title</span>
-          <p className="text-foreground" style={{ fontSize: TYPOGRAPHY.cardHeadingSm.fontSize, fontWeight: 400, lineHeight: 1.2 }}>
+          <span className="uppercase text-muted-foreground/50" style={{ fontSize: TYPE.size.micro, letterSpacing: "0.1em" }}>Title</span>
+          <p className="text-foreground" style={{ fontSize: TYPE.size.lg, fontWeight: 400, lineHeight: 1.2 }}>
             {data.titleFont}
           </p>
         </div>
         <div>
-          <span className="uppercase text-muted-foreground/50" style={{ fontSize: TYPOGRAPHY.badge.fontSize, letterSpacing: "0.1em" }}>Body</span>
-          <p className="text-foreground" style={{ fontSize: TYPOGRAPHY.cardTagline.fontSize, fontWeight: 400, lineHeight: 1.3 }}>
+          <span className="uppercase text-muted-foreground/50" style={{ fontSize: TYPE.size.micro, letterSpacing: "0.1em" }}>Body</span>
+          <p className="text-foreground" style={{ fontSize: TYPE.size.baseLg, fontWeight: 400, lineHeight: 1.3 }}>
             {data.bodyFont}
           </p>
         </div>
@@ -178,8 +166,8 @@ function VariationPreview({ variation }: { variation: VariationItem }) {
     );
   }
 
-  // art-style, logo, application, visual-snapshot — image thumbnail
-  if (type === "art-style" || type === "logo" || type === "application" || type === "visual-snapshot") {
+  // art-style, logo, visual-snapshot — image thumbnail
+  if (type === "art-style" || type === "logo" || type === "visual-snapshot") {
     return (
       <div className="rounded-lg overflow-hidden border border-border/40">
         <div className="h-24 bg-muted/20 overflow-hidden">
@@ -190,7 +178,7 @@ function VariationPreview({ variation }: { variation: VariationItem }) {
           />
         </div>
         <div className="flex items-center px-2.5 py-1.5 border-t border-border/30 bg-muted/5">
-          <span className="uppercase text-muted-foreground/55" style={{ fontSize: TYPOGRAPHY.badge.fontSize, letterSpacing: "0.13em" }}>
+          <span className="uppercase text-muted-foreground/55" style={{ fontSize: TYPE.size.micro, letterSpacing: "0.13em" }}>
             {variation.label}
           </span>
         </div>
@@ -211,5 +199,5 @@ function VariationPreview({ variation }: { variation: VariationItem }) {
     );
   }
 
-  return <p className="text-muted-foreground/40" style={{ fontSize: TYPOGRAPHY.queueLabel.fontSize }}>Preview unavailable</p>;
+  return <p className="text-muted-foreground/40" style={{ fontSize: TYPE.size.sm }}>Preview unavailable</p>;
 }

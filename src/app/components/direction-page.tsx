@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { ArrowLeft, ChevronDown, Check, Loader2, GalleryVerticalEnd } from "lucide-react";
+import { AlertCircle, ArrowLeft, Loader2, GalleryVerticalEnd } from "lucide-react";
 import type { ProjectData, ImageElementData, FontData, ColorPaletteData, DirectionVersion } from "../types/project";
-import { resolveSnapshotData, getActiveElementData } from "../types/project";
+import { resolveSnapshotData, getActiveElementData, resolveVisualConceptForDirection } from "../types/project";
 import { DirectionVersionsPanel } from "./DirectionVersionsPanel";
 import { useGoogleFont } from "../utils/useGoogleFont";
 import { generateDirection } from "../utils/generate-brand";
@@ -115,8 +115,8 @@ export function DirectionPage({
   onVersionsChange,
   initialActiveVersionId,
 }: DirectionPageProps) {
-  const defaultVersionLabel =
-    (getActiveElementData(project.elements, "visual-concept") as string | null)?.trim() || "Generated direction";
+  const activeConceptData = getActiveElementData(project.elements, "visual-concept");
+  const defaultVersionLabel = activeConceptData?.concept?.trim() || "Generated direction";
 
   // ── Version management (use parent state when provided so versions persist for "all" view) ──
   const [internalVersions, setInternalVersions] = useState<DirectionVersion[]>(() => [
@@ -131,8 +131,6 @@ export function DirectionPage({
     setVersionsRef.current(updater);
   }, []);
   const [activeVersionId, setActiveVersionId] = useState(initialActiveVersionId ?? versions[0]?.id ?? "dv-default");
-  const [dropdownOpen, setDropdownOpen] = useState(false);
-  const dropdownRef = useRef<HTMLDivElement>(null);
 
   // ── Versions side panel ────────────────────────────────────────────────────
   const [showAllView, setShowAllView] = useState(false);
@@ -166,17 +164,20 @@ export function DirectionPage({
     ? resolveSnapshotData(project, activeVersion.boundSnapshotId)
     : null;
 
-  const brandSummary = resolved?.brandSummary ?? project.brandSummary.current;
-  const brief = { name: brandSummary.name, tagline: brandSummary.tagline, description: brandSummary.description };
+  const brandBrief = resolved?.brandBrief ?? project.brandBrief.current;
+  const brief = { name: brandBrief.name, tagline: brandBrief.tagline, description: brandBrief.description };
 
-  // For snapshot-bound directions, only use the concept frozen into that snapshot.
-  // If missing, allow direction generation to synthesize from the visual snapshot.
-  const concept = resolved
-    ? (resolved.elementData["visual-concept"] as string | undefined) ?? undefined
-    : (getActiveElementData(project.elements, "visual-concept") as string | null) ?? undefined;
+  // Same rule as App handleGenerateDirection: prefer live active visual concept, else snapshot-frozen, else API synthesizes from imagery.
+  const conceptData =
+    resolveVisualConceptForDirection(
+      project.elements,
+      resolved?.elementData["visual-concept"],
+    ) ?? null;
+  const concept = conceptData?.concept;
   const synthesizedConceptName = activeVersion?.cache?.synthesizedVisualConcept;
-  const visualConceptContent = activeVersion?.cache?.visualConceptContent;
-  const displayConceptName: string | undefined = concept ?? synthesizedConceptName;
+  const cachedConceptName = activeVersion?.cache?.visualConceptName;
+  const visualConceptContent = activeVersion?.cache?.visualConceptContent ?? conceptData?.description;
+  const displayConceptName: string | undefined = cachedConceptName ?? concept ?? synthesizedConceptName;
 
   const font = resolved
     ? (resolved.elementData["font"] as FontData | undefined) ?? undefined
@@ -186,7 +187,7 @@ export function DirectionPage({
     ? (resolved?.elementData["art-style"] as ImageElementData | undefined) ?? undefined
     : getActiveElementData(project.elements, "art-style") ?? undefined;
 
-  const keywords = brandSummary.keywords ?? [];
+  const keywords = brandBrief.keywords ?? [];
   const colorPalette = (resolved
     ? (resolved.elementData["color-palette"] as ColorPaletteData | undefined)
     : getActiveElementData(project.elements, "color-palette") as ColorPaletteData | null
@@ -216,6 +217,7 @@ export function DirectionPage({
 
   // ── AI-generated direction content ──────────────────────────────────────────
   const [directionLoading, setDirectionLoading] = useState(true);
+  const [contextLoading, setContextLoading] = useState(true);
   const [directionError, setDirectionError] = useState<string | null>(null);
   const [colorNames, setColorNames] = useState<DirectionColorName[]>([]);
   const [exporting, setExporting] = useState(false);
@@ -238,13 +240,14 @@ export function DirectionPage({
   const fetchDirectionAndContext = useCallback(
     async (versionId: string) => {
       setDirectionLoading(true);
+      setContextLoading(true);
       setDirectionError(null);
       try {
         const data = await generateDirection({
           brandBrief: brief,
           keywords,
           colorPalette,
-          visualConcept: concept,
+          visualConcept: conceptData,
           artStyle,
           font,
           logoImageUrl,
@@ -261,48 +264,51 @@ export function DirectionPage({
         const newContextDesc = data.brandInContextDescription ?? DEFAULT_CONTEXT_DESCRIPTION;
         const newSynthesizedConcept = data.synthesizedVisualConcept;
         const newVisualConceptContent = data.visualConceptContent;
+        const newVisualConceptName =
+          concept?.trim()
+          || (typeof newSynthesizedConcept === "string" ? newSynthesizedConcept.trim() : "")
+          || undefined;
 
         if (activeVersionIdRef.current === versionId) {
           setRationales(newRationales);
           if (newColorNames.length) setColorNames(newColorNames);
           setContextDescription(newContextDesc);
+          // Keep visual-element loading scoped to direction text generation only.
+          setDirectionLoading(false);
         }
 
         const applications =
-          project.brandSummary.current.applications && project.brandSummary.current.applications.length > 0
-            ? project.brandSummary.current.applications
+          project.brandBrief.current.applications && project.brandBrief.current.applications.length > 0
+            ? project.brandBrief.current.applications
             : DEFAULT_CONTEXT_APPLICATIONS;
 
-        // Reuse the active application variation from the board as the first context image,
-        // avoiding a redundant AI generation for that touchpoint.
-        const activeApplicationData = getActiveElementData(project.elements, "application") as ImageElementData | null;
-        const boardApplicationImageUrl = activeApplicationData?.imageUrl ?? null;
+        const imageSlots: (string | null)[] = Array(Math.min(applications.length, 4)).fill(null);
 
-        const appsToGenerate = boardApplicationImageUrl ? applications.slice(1) : applications;
-
-        // Generate remaining context mockups in parallel
-        const settled = await Promise.allSettled(
-          appsToGenerate.map((app) =>
-            generateBrandContextMockup({
-              application: app,
-              brandName: brief?.name,
-              visualSnapshotUrl,
-            }),
-          ),
+        // Generate all context mockups and reveal each one as it arrives.
+        await Promise.allSettled(
+          applications.map(async (app, i) => {
+            const slotIndex = i;
+            if (slotIndex >= 4) return;
+            try {
+              const result = await generateBrandContextMockup({
+                application: app,
+                brandName: brief?.name,
+                brandDescription: brief?.description,
+                visualSnapshotUrl,
+              });
+              if (result?.imageUrl) {
+                imageSlots[slotIndex] = result.imageUrl;
+                if (activeVersionIdRef.current === versionId) {
+                  setContextImages(imageSlots.filter((u): u is string => u !== null));
+                }
+              }
+            } catch (err) {
+              console.error("Brand in Context generation failed for application:", app, err);
+            }
+          }),
         );
-        const generatedResults: string[] = [];
-        settled.forEach((outcome, i) => {
-          if (outcome.status === "fulfilled" && outcome.value?.imageUrl) {
-            generatedResults.push(outcome.value.imageUrl);
-          } else if (outcome.status === "rejected") {
-            console.error("Brand in Context generation failed for application:", appsToGenerate[i], outcome.reason);
-          }
-        });
 
-        const results: string[] = boardApplicationImageUrl
-          ? [boardApplicationImageUrl, ...generatedResults]
-          : generatedResults;
-        const finalImages = results.slice(0, 4);
+        const finalImages = imageSlots.filter((u): u is string => u !== null).slice(0, 4);
         if (activeVersionIdRef.current === versionId) {
           setContextImages(finalImages);
         }
@@ -321,9 +327,11 @@ export function DirectionPage({
                   cache: {
                     rationales: newRationales,
                     colorNames: newColorNames,
+                    logoImageUrl,
                     brandInContextDescription: newContextDesc,
                     contextImageUrls: finalImages,
                     visualConceptContent: newVisualConceptContent,
+                    visualConceptName: newVisualConceptName,
                     synthesizedVisualConcept: newSynthesizedConcept,
                   },
                 }
@@ -334,10 +342,11 @@ export function DirectionPage({
         console.error("Direction generation failed:", err);
         if (activeVersionIdRef.current === versionId) {
           setDirectionError(String(err));
+          setDirectionLoading(false);
         }
       } finally {
         if (activeVersionIdRef.current === versionId) {
-          setDirectionLoading(false);
+          setContextLoading(false);
         }
       }
     },
@@ -361,6 +370,8 @@ export function DirectionPage({
       const cache = version.cache;
       const cacheContextImages = cache.contextImageUrls ?? [];
       const shouldRegenerateContext = cacheContextImages.length === 0;
+      setDirectionLoading(false);
+      setContextLoading(shouldRegenerateContext);
       setRationales({
         logo: cache.rationales.logo ?? "",
         color: cache.rationales.color ?? "",
@@ -379,8 +390,6 @@ export function DirectionPage({
         });
         return;
       }
-
-      setDirectionLoading(false);
       if (token === hydrationTokenRef.current) {
         suppressRationalePersistRef.current = false;
       }
@@ -412,8 +421,10 @@ export function DirectionPage({
                   artStyle: rationales.artStyle ?? "",
                 },
                 colorNames: v.cache?.colorNames ?? [],
+                logoImageUrl: v.cache?.logoImageUrl ?? logoImageUrl,
                 brandInContextDescription: v.cache?.brandInContextDescription ?? "",
                 contextImageUrls: v.cache?.contextImageUrls ?? [],
+                visualConceptName: v.cache?.visualConceptName,
                 synthesizedVisualConcept: v.cache?.synthesizedVisualConcept,
               },
             }
@@ -462,6 +473,11 @@ export function DirectionPage({
     const exportAccent = getMediumBrightColor(colorPalette) ?? "#6366f1";
     const exportGradient = buildGradientBg(colorPalette);
     const overlayRgba = hexToRgba(brandTextColor, 0.75);
+    const exportContextApplications =
+      project.brandBrief.current.applications?.length
+        ? project.brandBrief.current.applications
+        : [...DEFAULT_CONTEXT_APPLICATIONS];
+    const exportAppsToShow = exportContextApplications.slice(0, 4);
 
     const buildPaletteSwatchesHtml = () =>
       displayPalette
@@ -508,14 +524,20 @@ export function DirectionPage({
         ...contextImages.map((url) => toDataUrl(url)),
       ]);
 
-      const cssUrl = (u: string) => u.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-      const conceptBannerBg = exportSnapshot
-        ? `background-image:linear-gradient(${overlayRgba},${overlayRgba}),url("${cssUrl(exportSnapshot)}");background-size:cover;background-position:center;`
-        : `background:${escapeHtml(exportGradient)};`;
+      const hasConceptBgImage = Boolean(exportSnapshot);
+      const conceptBgImageStyle = hasConceptBgImage
+        ? `background-image:url(&quot;${escapeHtml(exportSnapshot)}&quot;);background-size:cover;background-position:center;background-repeat:no-repeat;`
+        : "";
 
       const conceptHtml = displayConceptName
         ? `
-    <section class="exp-concept" style="${conceptBannerBg}">
+    <section class="exp-concept${hasConceptBgImage ? " exp-concept--media" : ""}"${hasConceptBgImage ? "" : ` style="background:${escapeHtml(exportGradient)};"`}>
+      ${
+        hasConceptBgImage
+          ? `<div class="exp-concept-bg" style="${conceptBgImageStyle}" aria-hidden="true"></div>
+      <div class="exp-concept-scrim" style="background-color:${overlayRgba};" aria-hidden="true"></div>`
+          : ""
+      }
       <div class="exp-concept-inner">
         <p class="exp-concept-label">Visual Concept</p>
         <p class="exp-concept-phrase">${escapeHtml(displayConceptName)}</p>
@@ -531,8 +553,13 @@ export function DirectionPage({
           contextRows.push(
             `<div class="exp-context-row">${pair
               .map(
-                (img) =>
-                  `<div class="exp-context-cell"><div class="exp-context-aspect"><img src="${escapeHtml(img)}" alt="Brand in context mockup" /></div></div>`,
+                (img, pairIndex) => {
+                  const appLabel = exportAppsToShow[i + pairIndex] ?? "";
+                  return `<div class="exp-context-cell">
+                    <div class="exp-context-aspect"><img src="${escapeHtml(img)}" alt="Brand in context mockup" /></div>
+                    ${appLabel ? `<p class="exp-context-label">${escapeHtml(appLabel)}</p>` : ""}
+                  </div>`;
+                },
               )
               .join("")}</div>`,
           );
@@ -581,7 +608,7 @@ export function DirectionPage({
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>${escapeHtml(brief?.name ?? "Brand")} - Brand Direction</title>
+  <title>${escapeHtml(brief?.name ?? "Brand")} - ${escapeHtml(displayConceptName?.trim() || "Brand Direction")}</title>
   ${fontLinkTags}
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Roboto+Mono:wght@400;700&display=swap" />
   <style>
@@ -594,13 +621,14 @@ export function DirectionPage({
     .exp-hero .tagline { margin: 0; font-family: ${headingFamily}, Georgia, serif; font-size: clamp(20px, 3vw, 32px); font-weight: 700; line-height: 1.2; color: var(--text); }
     .exp-keywords { display: flex; flex-wrap: wrap; gap: 16px; justify-content: center; padding-top: 16px; }
     .exp-keyword { padding: 8px 16px; border: 1px solid var(--border); border-radius: 999px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.3px; color: #64748b; font-weight: 500; font-family: ${bodyFamily}, sans-serif; }
-    .exp-concept { width: 100%; padding: 80px clamp(40px, 8vw, 160px) 128px; }
-    .exp-concept-inner { max-width: 1200px; margin: 0 auto; position: relative; }
+    .exp-concept { width: 100%; padding: 80px clamp(40px, 8vw, 160px) 128px; position: relative; }
+    .exp-concept--media { overflow: hidden; }
+    .exp-concept-bg { position: absolute; inset: 0; z-index: 0; }
+    .exp-concept-scrim { position: absolute; inset: 0; z-index: 1; pointer-events: none; }
+    .exp-concept-inner { max-width: 1200px; margin: 0 auto; position: relative; z-index: 2; }
     .exp-concept-label { margin: 0 0 16px; font-size: 16px; line-height: 24px; color: rgba(255,255,255,0.95); font-family: ${bodyFamily}, sans-serif; font-weight: 400; }
-    .exp-concept-name { margin: 0 0 16px; font-family: ${headingFamily}, Georgia, serif; font-size: 36px; font-weight: 400; line-height: 1.4; color: rgba(255,255,255,0.9); }
-    .exp-concept-points { font-size: 18px; line-height: 1.5; color: rgba(255,255,255,0.9); font-family: ${bodyFamily}, sans-serif; font-weight: 400; }
-    .exp-concept-points p { margin: 0 0 0.5em; }
-    .exp-concept-points p:last-child { margin-bottom: 0; }
+    .exp-concept-phrase { margin: 0; font-family: ${headingFamily}, Georgia, serif; font-size: 36px; font-weight: 400; line-height: 48px; color: rgba(255,255,255,0.95); text-shadow: 0 1px 2px rgba(0,0,0,0.35); }
+    .exp-concept-content { margin: 8px 0 0; max-width: 640px; font-size: 16px; line-height: 26px; font-weight: 400; color: rgba(255,255,255,0.92); font-family: ${bodyFamily}, sans-serif; text-shadow: 0 1px 3px rgba(0,0,0,0.45); }
     .exp-ve-section { background: #f7f7f7; width: 100%; padding: 96px clamp(40px, 8vw, 80px); }
     .exp-ve-inner { max-width: 1200px; margin: 0 auto; display: flex; flex-direction: column; gap: 32px; }
     .exp-ve-header { text-align: center; padding-bottom: 32px; }
@@ -637,6 +665,7 @@ export function DirectionPage({
     .exp-context-cell { flex: 1; min-width: 0; }
     .exp-context-aspect { position: relative; width: 100%; padding-bottom: 56.25%; border-radius: 8px; overflow: hidden; }
     .exp-context-aspect img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; }
+    .exp-context-label { margin: 10px 0 0; font-size: 13px; line-height: 1.5; color: #64748b; text-align: center; font-family: ${bodyFamily}, sans-serif; text-transform: capitalize; }
     .exp-context-empty { text-align: center; font-size: 14px; color: #94a3b8; font-family: ${bodyFamily}, sans-serif; margin: 0; }
     .exp-summary { background: #f7f7f7; width: 100%; padding: 64px clamp(40px, 8vw, 80px); }
     .exp-summary-inner { max-width: 800px; margin: 0 auto; text-align: center; display: flex; flex-direction: column; gap: 24px; align-items: center; }
@@ -767,37 +796,6 @@ export function DirectionPage({
 
         {/* Right: Controls */}
         <div className="flex items-center gap-3">
-          {/* Version dropdown */}
-          <div className="relative" ref={dropdownRef}>
-            <button
-              onClick={() => setDropdownOpen((v) => !v)}
-              className="flex items-center gap-2 h-8 px-4 bg-white border border-[#d4d4d4] rounded text-[14px] text-[#374151] shadow-[0px_2px_4px_0px_rgba(0,0,0,0.02)] cursor-pointer"
-              style={{ fontWeight: 700 }}
-            >
-              {activeVersion?.label ?? "Generated direction"}
-              <ChevronDown size={14} className="text-[#64748b]" />
-            </button>
-            {dropdownOpen && (
-              <div className="absolute right-0 top-full mt-1 w-56 bg-white border border-[#e5e5e5] rounded-lg shadow-lg py-1 z-50">
-                {versions.map((v) => (
-                  <button
-                    key={v.id}
-                    onClick={() => {
-                      setActiveVersionId(v.id);
-                      setDropdownOpen(false);
-                    }}
-                    className="flex items-center justify-between w-full px-3 py-2 text-left text-[13px] text-[#374151] hover:bg-[#f7f7f7] transition-colors cursor-pointer"
-                  >
-                    <span className="flex-1 text-left pr-2" style={{ fontWeight: v.id === activeVersionId ? 700 : 400 }}>
-                      {v.label}
-                    </span>
-                    {v.id === activeVersionId && <Check size={14} className="text-[#374151] shrink-0" />}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-
           {/* Export */}
           <button
             onClick={handleExport}
@@ -808,17 +806,19 @@ export function DirectionPage({
             {exporting ? "Exporting..." : "Export"}
           </button>
 
-          {/* Versions toggle button */}
+          {/* Versions toggle */}
           <button
+            type="button"
             onClick={() => setShowAllView((v) => !v)}
-            className={`p-2 rounded-lg border shadow-sm transition-colors cursor-pointer ${
+            className={`flex items-center gap-1.5 px-2.5 py-2 rounded-lg border shadow-sm transition-colors cursor-pointer ${
               showAllView
                 ? "bg-blue-50 border-blue-200 text-blue-400"
-                : "bg-white border-[#d4d4d4] text-[#64748b] hover:text-[#374151]"
+                : "bg-white/90 border-border/60 text-muted-foreground hover:text-foreground"
             }`}
-            title={showAllView ? "Hide directions panel" : "All saved directions"}
+            title={showAllView ? "Hide direction panel" : "View brand direction"}
           >
-            <GalleryVerticalEnd size={15} />
+            <GalleryVerticalEnd size={16} />
+            <span className="text-[13px] font-medium">Direction</span>
           </button>
         </div>
       </nav>
@@ -1083,97 +1083,85 @@ export function DirectionPage({
               </div>
             </div>
 
-            {/* Gallery grid — 2x2: loading placeholders, images, or empty message */}
+            {/* Gallery grid — 2x2: each slot shows image immediately when ready, loading placeholder otherwise */}
             {(() => {
               const contextApplications =
-                project.brandSummary.current.applications?.length
-                  ? project.brandSummary.current.applications
+                project.brandBrief.current.applications?.length
+                  ? project.brandBrief.current.applications
                   : DEFAULT_CONTEXT_APPLICATIONS;
               const appsToShow = contextApplications.slice(0, 4);
 
-              if (contextImages.length === 0 && directionLoading) {
-                const placeholderColor = accentColor ?? "#94a3b8";
-                const placeholderBorder = accentColor ? { borderColor: placeholderColor } : { borderColor: "#e2e8f0" };
+              const placeholderColor = accentColor ?? "#94a3b8";
+              const placeholderBorder = accentColor ? { borderColor: placeholderColor } : { borderColor: "#e2e8f0" };
+
+              // Build a fixed 4-slot array: filled with image URL or null (= loading)
+              const slots: (string | null)[] = appsToShow.map((_, i) => contextImages[i] ?? null);
+              const hasAnyContextImage = slots.some((s) => s !== null);
+
+              if (!contextLoading && !hasAnyContextImage) {
+                const unavailableBody = directionError
+                  ? "Direction content failed to load, so context mockups were not generated."
+                  : !visualSnapshotUrl
+                    ? "Select or generate a visual snapshot on the board first; context mockups use it as reference."
+                    : "Mockups could not be generated. Try again later or switch the bound visual snapshot.";
+
                 return (
-                  <div className="flex flex-col gap-8">
-                    <div className="flex gap-8">
-                      {appsToShow.slice(0, 2).map((app, idx) => (
-                        <div
-                          key={idx}
-                          className="flex-1 min-w-0 rounded-lg border-2 aspect-[16/9] flex flex-col items-center justify-center gap-2 bg-white"
-                          style={{ fontFamily: bodyFamily, ...placeholderBorder }}
-                        >
-                          <div
-                            className="w-5 h-5 border-2 rounded-full animate-spin"
-                            style={{
-                              borderColor: accentColor ? `${accentColor}40` : "#e2e8f0",
-                              borderTopColor: placeholderColor,
-                            }}
-                          />
-                          <span className="text-[13px]" style={{ color: placeholderColor }}>
-                            Designing {app}...
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                    <div className="flex gap-8">
-                      {appsToShow.slice(2, 4).map((app, idx) => (
-                        <div
-                          key={idx}
-                          className="flex-1 min-w-0 rounded-lg border-2 aspect-[16/9] flex flex-col items-center justify-center gap-2 bg-white"
-                          style={{ fontFamily: bodyFamily, ...placeholderBorder }}
-                        >
-                          <div
-                            className="w-5 h-5 border-2 rounded-full animate-spin"
-                            style={{
-                              borderColor: accentColor ? `${accentColor}40` : "#e2e8f0",
-                              borderTopColor: placeholderColor,
-                            }}
-                          />
-                          <span className="text-[13px]" style={{ color: placeholderColor }}>
-                            Designing {app}...
-                          </span>
-                        </div>
-                      ))}
-                    </div>
+                  <div
+                    className="flex flex-col items-center justify-center gap-3 py-14 px-6 rounded-xl border border-dashed border-[#e2e8f0] bg-[#fafafa]"
+                    style={{ fontFamily: bodyFamily }}
+                  >
+                    <AlertCircle className="w-8 h-8 text-[#94a3b8]" strokeWidth={1.5} aria-hidden />
+                    <p className="text-center text-[15px] text-[#475569] m-0 max-w-md leading-relaxed">
+                      {unavailableBody}
+                    </p>
                   </div>
                 );
               }
 
-              if (contextImages.length > 0) {
-                return (
-                  <div className="flex flex-col gap-8">
-                    <div className="flex gap-8">
-                      {contextImages.slice(0, 2).map((url, idx) => (
-                        <div key={idx} className="flex-1 min-w-0 rounded-lg overflow-hidden relative aspect-[16/9]">
-                          <img
-                            alt="Brand in context mockup"
-                            className="absolute inset-0 w-full h-full object-cover"
-                            src={url}
-                          />
-                        </div>
-                      ))}
+              const renderSlot = (app: string, url: string | null, idx: number) =>
+                url ? (
+                  <div key={idx} className="flex-1 min-w-0 flex flex-col gap-2">
+                    <div className="rounded-lg overflow-hidden relative aspect-[16/9]">
+                      <img
+                        alt="Brand in context mockup"
+                        className="absolute inset-0 w-full h-full object-cover"
+                        src={url}
+                      />
                     </div>
-                    {contextImages.length > 2 && (
-                      <div className="flex gap-8">
-                        {contextImages.slice(2, 4).map((url, idx) => (
-                          <div key={idx} className="flex-1 min-w-0 rounded-lg overflow-hidden relative aspect-[16/9]">
-                            <img
-                              alt="Brand in context mockup"
-                              className="absolute inset-0 w-full h-full object-cover"
-                              src={url}
-                            />
-                          </div>
-                        ))}
-                      </div>
-                    )}
+                    <p
+                      className="text-[13px] text-[#64748b] text-center m-0 capitalize"
+                      style={{ fontFamily: bodyFamily, fontWeight: 400, lineHeight: "20px" }}
+                    >
+                      {app}
+                    </p>
+                  </div>
+                ) : (
+                  <div
+                    key={idx}
+                    className="flex-1 min-w-0 rounded-lg border-2 aspect-[16/9] flex flex-col items-center justify-center gap-2 bg-white"
+                    style={{ fontFamily: bodyFamily, ...placeholderBorder }}
+                  >
+                    <div
+                      className="w-5 h-5 border-2 rounded-full animate-spin"
+                      style={{
+                        borderColor: accentColor ? `${accentColor}40` : "#e2e8f0",
+                        borderTopColor: placeholderColor,
+                      }}
+                    />
+                    <span className="text-[13px]" style={{ color: placeholderColor }}>
+                      Designing {app}...
+                    </span>
                   </div>
                 );
-              }
 
               return (
-                <div className="text-center text-[14px] text-[#94a3b8]" style={{ fontFamily: bodyFamily }}>
-                  Contextual mockups will appear here once generated from the selected visual snapshot.
+                <div className="flex flex-col gap-8">
+                  <div className="flex gap-8">
+                    {appsToShow.slice(0, 2).map((app, idx) => renderSlot(app, slots[idx], idx))}
+                  </div>
+                  <div className="flex gap-8">
+                    {appsToShow.slice(2, 4).map((app, idx) => renderSlot(app, slots[idx + 2], idx + 2))}
+                  </div>
                 </div>
               );
             })()}

@@ -5,8 +5,8 @@ export interface VariationReorderResult {
   /**
    * Returns variations sorted by the custom `variationOrder` stored on the
    * element slot. Falls back to `createdAt` DESC when no custom order exists.
-   * New variations not yet in the order array are appended at the end (sorted
-   * by `createdAt` DESC). Stale IDs that no longer have a matching variation
+   * New variations not yet in the order array are prepended at the start
+   * (sorted by `createdAt` DESC) so they appear leftmost. Stale IDs that no longer have a matching variation
    * are silently dropped.
    */
   getOrderedVariations: <T extends { id: string; createdAt: Date }>(
@@ -52,12 +52,12 @@ export function useVariationReorder(
         if (item) ordered.push(item);
       }
 
-      // Append new variations not yet in customOrder
+      // Prepend new variations not yet in customOrder (newest first / leftmost)
       const newItems = variations
         .filter((v) => !inOrderSet.has(v.id))
         .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
 
-      return [...ordered, ...newItems];
+      return [...newItems, ...ordered];
     },
     [elements],
   );

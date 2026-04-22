@@ -1,6 +1,6 @@
 import React from "react";
 import { Plus } from "lucide-react";
-import { LAYOUT, TYPOGRAPHY, adaptiveSize } from "../../utils/design-tokens";
+import { LAYOUT, TYPE, adaptiveSize } from "../../utils/design-tokens";
 
 export interface QueueColors {
   bg: string;
@@ -20,7 +20,6 @@ interface QueueAffordanceSlotProps {
 }
 
 export function QueueAffordanceSlot({
-  isHovered,
   isMerge,
   hintText,
   colors,
@@ -29,34 +28,23 @@ export function QueueAffordanceSlot({
   onDragLeave,
   onDrop,
 }: QueueAffordanceSlotProps) {
-  const borderWidth = adaptiveSize(1.5, zoom, 1.5, 4);
   const iconSize = adaptiveSize(20, zoom, 16, 32);
   return (
     <div
       data-variation-slot
       style={{
         position: "absolute",
-        left: LAYOUT.ADD_SLOT_LEFT_OFFSET,
-        top: LAYOUT.FILMSTRIP_PADDING_TOP,
-        width: LAYOUT.ADD_SLOT_WIDTH,
-        height: LAYOUT.VARIATION_SLOT_SIZE,
+        left: LAYOUT.slot.addOffset,
+        top: LAYOUT.filmstrip.paddingTop,
+        width: LAYOUT.slot.addWidth,
+        height: LAYOUT.slot.size,
         zIndex: 15,
       }}
       onDragOver={onDragOver}
       onDragLeave={onDragLeave}
       onDrop={onDrop}
     >
-      {!isHovered ? (
-        <div
-          className="absolute inset-0 rounded-xl flex items-center justify-center transition-all duration-150"
-          style={{
-            background: "var(--bb-ai-affordance-bg)",
-            border: `${borderWidth}px dashed var(--bb-ai-affordance-border)`,
-          }}
-        >
-          <Plus size={iconSize} style={{ color: "var(--bb-ai-affordance-border)", opacity: 0.7 }} />
-        </div>
-      ) : isMerge ? (
+      {isMerge ? (
         <div
           className="absolute inset-0 z-30 rounded-xl transition-all duration-150 pointer-events-none"
           style={{
@@ -85,7 +73,7 @@ export function QueueAffordanceSlot({
           <span
             className="px-2 py-0.5 rounded-full bg-white/80 shadow-sm text-center"
             style={{
-              fontSize: TYPOGRAPHY.queueLabel.fontSize,
+              fontSize: TYPE.size.sm,
               fontWeight: 700,
               letterSpacing: "0.04em",
               color: colors.accent,

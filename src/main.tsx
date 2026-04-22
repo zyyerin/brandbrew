@@ -2,6 +2,10 @@ import { createRoot } from "react-dom/client";
 import App from "./app/App.tsx";
 import "./styles/index.css";
 import { supabase } from "./app/lib/supabase-client";
+import {
+  AccessGate,
+  useAccessGate,
+} from "./app/components/PassphraseGate";
 
 async function ensureAnonymousSession(): Promise<void> {
   const {
@@ -16,10 +20,19 @@ async function ensureAnonymousSession(): Promise<void> {
   }
 }
 
+function Root() {
+  const { granted, submit } = useAccessGate();
+  return (
+    <AccessGate granted={granted} submit={submit}>
+      <App />
+    </AccessGate>
+  );
+}
+
 async function bootstrap() {
   try {
     await ensureAnonymousSession();
-    createRoot(document.getElementById("root")!).render(<App />);
+    createRoot(document.getElementById("root")!).render(<Root />);
   } catch (err) {
     const root = document.getElementById("root")!;
     root.innerHTML = [

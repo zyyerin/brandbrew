@@ -1,6 +1,6 @@
 import React, { type ReactNode, useRef, useState, useLayoutEffect } from "react";
 import { Cpu, FileText, Sparkles, Upload, X, MessageSquare, Tag, Layers, Pencil, GitFork, BookOpen, Info } from "lucide-react";
-import { CANVAS, LAYOUT, TYPOGRAPHY } from "../utils/design-tokens";
+import { CANVAS, LAYOUT, TYPE } from "../utils/design-tokens";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -56,7 +56,7 @@ interface DetailRowProps {
 function DetailRow({ icon: Icon, label, children }: DetailRowProps) {
   return (
     <div className="flex items-start gap-2">
-      <Icon size={TYPOGRAPHY.toggleIconSize} className="text-muted-foreground/50 mt-0.5 shrink-0" />
+      <Icon size={TYPE.icon.sm} className="text-muted-foreground/50 mt-0.5 shrink-0" />
       <div className="min-w-0 flex-1">
         <p className="text-[9px] uppercase tracking-widest text-muted-foreground/50 mb-0.5">
           {label}
@@ -85,7 +85,7 @@ const AGENT_DISPLAY_NAMES: Record<string, string> = {
   "brand-strategist": "Brand Strategist",
   "art-director": "Art Director",
   "visual-designer": "Visual Designer",
-  "visual-designer-moodboard": "Visual Designer",
+  "visual-designer-visual-snapshot": "Visual Designer",
   "visual-designer-context": "Visual Designer",
 };
 
@@ -98,7 +98,7 @@ function getModelDisplayName(modelName: string): string {
 // Main component
 // ---------------------------------------------------------------------------
 
-const VIEWPORT_BOTTOM_GAP = LAYOUT.FILMSTRIP_GAP;
+const VIEWPORT_BOTTOM_GAP = LAYOUT.filmstrip.gap;
 
 function useViewportMaxBodyHeight(
   bodyRef: React.RefObject<HTMLDivElement | null>,
@@ -162,7 +162,7 @@ export function GenerationDetailsPanel({
       {/* Header */}
       <div className="flex items-center justify-between px-3 py-2 border-b border-border/30 bg-muted/20 shrink-0">
         <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider flex items-center gap-1.5">
-          <Sparkles size={TYPOGRAPHY.toggleIconSize} className="text-violet-500" />
+          <Sparkles size={TYPE.icon.sm} className="text-violet-500" />
           Generation details
         </span>
         {onClose && (
@@ -175,7 +175,7 @@ export function GenerationDetailsPanel({
             className="p-0.5 text-muted-foreground/50 hover:text-foreground transition-colors rounded"
             aria-label="Close"
           >
-            <X size={TYPOGRAPHY.toggleIconSize} />
+            <X size={TYPE.icon.sm} />
           </button>
         )}
       </div>
@@ -260,8 +260,8 @@ export function GenerationDetailsPanel({
             : <EmptyValue />}
         </DetailRow>
 
-        {/* 4. Brand context — ingredients */}
-        <DetailRow icon={Tag} label="Brand context">
+        {/* 4. Brand brief — ingredients */}
+        <DetailRow icon={Tag} label="Brand brief">
           {(() => {
             const items = (meta?.ingredients ?? []).filter(
               (ing) => ing && !ing.startsWith("http") && ing.length <= 120

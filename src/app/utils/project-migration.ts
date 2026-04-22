@@ -7,7 +7,7 @@ import type {
   ElementId,
   ElementsState,
   Variation,
-  BrandSummaryData,
+  BrandBriefData,
   VisualConceptData,
   FontData,
   ImageElementData,
@@ -41,9 +41,9 @@ interface LegacyBrandData {
   layout?: { imageUrl: string };
   styleReferences?: { id: string; imageUrl: string; label: string }[];
   generatedCards?: LegacyGeneratedCard[];
-  /** @deprecated Use brandSummary.current.applications. Kept for reading old persisted data. */
+  /** @deprecated Use brandBrief.current.applications. Kept for reading old persisted data. */
   guidelineApplications?: string[];
-  /** @deprecated Use brandSummary.current.applications. Kept for reading old persisted data. */
+  /** @deprecated Use brandBrief.current.applications. Kept for reading old persisted data. */
   directionApplications?: string[];
 }
 
@@ -123,12 +123,27 @@ function extractOriginalData(
       return originalCardData.font ?? brandData.font ?? null;
     case "logo":
       return originalCardData.logoInspiration ?? brandData.logoInspiration ?? null;
-    case "application":
-      // Read from legacy "layout" field for backward compat
-      return (originalCardData as any).layout ?? brandData.layout ?? null;
     default:
       return null;
   }
+}
+
+function normalizeVisualConceptToObject(data: any): VisualConceptData {
+  if (data && typeof data === "object" && "concept" in data) {
+    return { concept: data.concept ?? "", description: data.description ?? "" };
+  }
+  if (typeof data === "string") {
+    return { concept: data, description: "" };
+  }
+  if (Array.isArray(data)) {
+    const [first, ...rest] = data.filter((p: unknown) => typeof p === "string" && (p as string).trim());
+    return { concept: (first ?? "") as string, description: rest.join(". ") };
+  }
+  if (data && typeof data === "object" && "conceptName" in data) {
+    const points = Array.isArray(data.points) ? data.points.filter((p: unknown) => typeof p === "string" && (p as string).trim()) : [];
+    return { concept: (data.conceptName?.trim() ?? "") as string, description: points.join(". ") };
+  }
+  return { concept: "", description: "" };
 }
 
 function normalizeVariationData(elementId: ElementId, data: any): unknown {
@@ -138,52 +153,26 @@ function normalizeVariationData(elementId: ElementId, data: any): unknown {
     return [];
   }
   if (elementId === "visual-concept") {
-    // Current format: single string
-    if (typeof data === "string") return data;
-    // Previous format: string[] — take first phrase
-    if (Array.isArray(data)) return (data[0] ?? "") as string;
-    // Legacy format: { conceptName: string; points: string[] } — use conceptName
-    if (data && typeof data === "object" && "conceptName" in data) {
-      return (data.conceptName?.trim() ?? "") as string;
-    }
-    return "";
+    return normalizeVisualConceptToObject(data);
   }
   return data;
 }
 
 /**
- * For visual-concept: expand a variation whose data was string[] (previous format)
- * into multiple string variations, one per phrase. Returns the expanded variations list
- * and an updated activeVariationId. For all other element types returns the input unchanged.
+ * Normalize visual-concept variations: convert legacy formats (string, string[],
+ * {conceptName, points}) into the current {concept, description} structure.
  */
-function expandVisualConceptVariations(
+function normalizeVisualConceptVariations(
   variations: any[],
   activeVariationId: string | null,
 ): { variations: any[]; activeVariationId: string | null } {
-  const expanded: any[] = [];
-  let newActiveId = activeVariationId;
+  const normalized: any[] = [];
 
   for (const v of variations) {
-    if (Array.isArray(v.data)) {
-      // Split string[] into individual string variations
-      const phrases: string[] = (v.data as string[]).filter((p) => typeof p === "string" && p.trim());
-      if (phrases.length === 0) continue;
-
-      phrases.forEach((phrase, i) => {
-        const newId = i === 0 ? v.id : `${v.id}--kw-${i}`;
-        expanded.push({ ...v, id: newId, data: phrase });
-        // Remap active pointer: if original was active, keep it pointing at first phrase
-        if (v.id === activeVariationId && i === 0) {
-          newActiveId = newId;
-        }
-      });
-    } else {
-      // Already string or other normalised value
-      expanded.push({ ...v, data: normalizeVariationData("visual-concept", v.data) });
-    }
+    normalized.push({ ...v, data: normalizeVisualConceptToObject(v.data) });
   }
 
-  return { variations: expanded, activeVariationId: newActiveId };
+  return { variations: normalized, activeVariationId };
 }
 
 // ── Legacy → ProjectData ────────────────────────────────────────────────────
@@ -208,7 +197,7 @@ export function projectDataFromLegacy(raw: Record<string, unknown>): {
 
   const { phase, route } = mapLegacyPhase(d.phase ?? "empty");
 
-  const brandSummary: BrandSummaryData = {
+  const brandBrief: BrandBriefData = {
     name: brandData.brandBrief?.name ?? "",
     tagline: brandData.brandBrief?.tagline ?? "",
     description: brandData.brandBrief?.description ?? "",
@@ -223,7 +212,6 @@ export function projectDataFromLegacy(raw: Record<string, unknown>): {
     "color-palette": createEmptySlot<ColorPaletteData>(),
     "font": createEmptySlot<FontData>(),
     "logo": createEmptySlot<ImageElementData>(),
-    "application": createEmptySlot<ImageElementData>(),
   };
 
   for (const elementId of ALL_ELEMENT_IDS) {
@@ -234,37 +222,18 @@ export function projectDataFromLegacy(raw: Record<string, unknown>): {
       const ts = cardTimestamps[elementId];
 
       if (elementId === "visual-concept") {
-        // Expand array/object into individual string variations
-        let phrases: string[] = [];
-        if (typeof origData === "string" && origData.trim()) {
-          phrases = [origData.trim()];
-        } else if (Array.isArray(origData)) {
-          phrases = (origData as string[]).filter((p) => typeof p === "string" && p.trim()).map((p) => p.trim());
-        } else if (origData && typeof origData === "object" && "conceptName" in (origData as any)) {
-          const d2 = origData as any;
-          if (d2.conceptName?.trim()) phrases.push(d2.conceptName.trim());
-          if (Array.isArray(d2.points)) {
-            for (const p of d2.points) {
-              if (p?.trim()) phrases.push(p.trim());
-            }
-          }
-        }
-        if (phrases.length === 0) continue;
-        phrases.forEach((phrase, i) => {
-          const varId = i === 0 ? elementId : `${elementId}--kw-${i}`;
-          const variation: Variation<any> = {
-            id: varId,
-            data: phrase,
-            source: "initial",
-            createdAt: ts ? new Date(ts as string) : new Date(0),
-            meta: i === 0 ? originalVariationMeta[elementId] : undefined,
-          };
-          slot.variations.push(variation);
-          if (i === 0) {
-            slot.activeVariationId = varId;
-            if (checkedSet.has(elementId)) slot.checkedVariationId = varId;
-          }
-        });
+        const vcData = normalizeVisualConceptToObject(origData);
+        if (!vcData.concept && !vcData.description) continue;
+        const variation: Variation<any> = {
+          id: elementId,
+          data: vcData,
+          source: "initial",
+          createdAt: ts ? new Date(ts as string) : new Date(0),
+          meta: originalVariationMeta[elementId],
+        };
+        slot.variations.push(variation);
+        slot.activeVariationId = elementId;
+        if (checkedSet.has(elementId)) slot.checkedVariationId = elementId;
       } else {
         const variation: Variation<any> = {
           id: elementId,
@@ -287,31 +256,17 @@ export function projectDataFromLegacy(raw: Record<string, unknown>): {
     for (const card of relatedCards) {
       const genVarId = `gen-${card.id}`;
       if (elementId === "visual-concept") {
-        // Expand multi-phrase cards into individual string variations
-        let phrases: string[] = [];
-        if (typeof card.data === "string" && card.data.trim()) {
-          phrases = [card.data.trim()];
-        } else if (Array.isArray(card.data)) {
-          phrases = (card.data as string[]).filter((p) => typeof p === "string" && p.trim()).map((p) => p.trim());
-        } else if (card.data && typeof card.data === "object" && "conceptName" in card.data) {
-          const d2 = card.data as any;
-          if (d2.conceptName?.trim()) phrases.push(d2.conceptName.trim());
-          if (Array.isArray(d2.points)) {
-            for (const p of d2.points) if (p?.trim()) phrases.push(p.trim());
-          }
-        }
-        phrases.forEach((phrase, i) => {
-          const varId = i === 0 ? genVarId : `${genVarId}--kw-${i}`;
-          const variation: Variation<any> = {
-            id: varId,
-            data: phrase,
-            source: card.id.startsWith("merge-") ? "merge" : card.id.startsWith("edit-") ? "edit" : "add-variation",
-            createdAt: new Date(card.createdAt),
-            meta: i === 0 ? card.meta : undefined,
-          };
-          slot.variations.push(variation);
-          if (i === 0 && checkedSet.has(genVarId)) slot.checkedVariationId = varId;
-        });
+        const vcData = normalizeVisualConceptToObject(card.data);
+        if (!vcData.concept && !vcData.description) continue;
+        const variation: Variation<any> = {
+          id: genVarId,
+          data: vcData,
+          source: card.id.startsWith("merge-") ? "merge" : card.id.startsWith("edit-") ? "edit" : "add-variation",
+          createdAt: new Date(card.createdAt),
+          meta: card.meta,
+        };
+        slot.variations.push(variation);
+        if (checkedSet.has(genVarId)) slot.checkedVariationId = genVarId;
       } else {
         const variation: Variation<any> = {
           id: genVarId,
@@ -352,7 +307,7 @@ export function projectDataFromLegacy(raw: Record<string, unknown>): {
       imageUrl: s.imageUrl,
       createdAt: new Date(s.createdAt),
       sourceSelections,
-      sourceBrandSummaryVerId: null,
+      sourceBriefVerId: null,
       generationMeta: s.generationMeta,
     };
   });
@@ -360,8 +315,8 @@ export function projectDataFromLegacy(raw: Record<string, unknown>): {
   const project: ProjectData = {
     projectName: d.projectName ?? "Brand Brew Project",
     phase,
-    brandSummary: {
-      current: brandSummary,
+    brandBrief: {
+      current: brandBrief,
       versions: [],
     },
     elements,
@@ -412,9 +367,9 @@ export function serializeProjectData(project: ProjectData): Record<string, unkno
     _version: 2,
     projectName: project.projectName,
     phase: project.phase,
-    brandSummary: {
-      current: project.brandSummary.current,
-      versions: project.brandSummary.versions.map((v) => ({
+    brandBrief: {
+      current: project.brandBrief.current,
+      versions: project.brandBrief.versions.map((v) => ({
         ...v,
         createdAt: toISO(v.createdAt),
       })),
@@ -444,8 +399,8 @@ export function deserializeProjectData(raw: Record<string, unknown>): ProjectDat
 
   const elements: any = {};
   for (const id of ALL_ELEMENT_IDS) {
-    // Migrate v2 data that was saved with "layout" key before renaming to "application"
-    const slotRaw = d.elements?.[id] ?? (id === "application" ? d.elements?.["layout"] : undefined);
+    // Migrate v2 data that was saved with "layout" key before renaming to "application" (legacy, now ignored)
+    const slotRaw = d.elements?.[id];
     if (!slotRaw) {
       elements[id] = createEmptySlot();
       continue;
@@ -456,12 +411,12 @@ export function deserializeProjectData(raw: Record<string, unknown>): ProjectDat
         ...v,
         createdAt: new Date(v.createdAt),
       }));
-      const { variations: expandedVariations, activeVariationId } = expandVisualConceptVariations(
+      const { variations: normalizedVariations, activeVariationId } = normalizeVisualConceptVariations(
         rawVariations,
         slotRaw.activeVariationId ?? null,
       );
       elements[id] = {
-        variations: expandedVariations,
+        variations: normalizedVariations,
         activeVariationId,
         checkedVariationId: slotRaw.checkedVariationId ?? null,
       };
@@ -480,17 +435,17 @@ export function deserializeProjectData(raw: Record<string, unknown>): ProjectDat
   return {
     projectName: d.projectName ?? "Brand Brew Project",
     phase: d.phase === "generating" ? "curating" : (d.phase ?? "empty"),
-    brandSummary: {
+    brandBrief: {
       current: {
-        name: d.brandSummary?.current?.name ?? "",
-        tagline: d.brandSummary?.current?.tagline ?? "",
-        description: d.brandSummary?.current?.description ?? "",
-        targetAudience: d.brandSummary?.current?.targetAudience ?? "",
-        keywords: d.brandSummary?.current?.keywords ?? [],
+        name: d.brandBrief?.current?.name ?? d.brandSummary?.current?.name ?? "",
+        tagline: d.brandBrief?.current?.tagline ?? d.brandSummary?.current?.tagline ?? "",
+        description: d.brandBrief?.current?.description ?? d.brandSummary?.current?.description ?? "",
+        targetAudience: d.brandBrief?.current?.targetAudience ?? d.brandSummary?.current?.targetAudience ?? "",
+        keywords: d.brandBrief?.current?.keywords ?? d.brandSummary?.current?.keywords ?? [],
         // Backward-compat: old data stored applications at top-level as directionApplications.
-        applications: d.brandSummary?.current?.applications ?? d.directionApplications ?? d.guidelineApplications ?? [],
+        applications: d.brandBrief?.current?.applications ?? d.brandSummary?.current?.applications ?? d.directionApplications ?? d.guidelineApplications ?? [],
       },
-      versions: (d.brandSummary?.versions ?? []).map((v: any) => ({
+      versions: (d.brandBrief?.versions ?? d.brandSummary?.versions ?? []).map((v: any) => ({
         ...v,
         createdAt: new Date(v.createdAt),
       })),
@@ -498,6 +453,7 @@ export function deserializeProjectData(raw: Record<string, unknown>): ProjectDat
     elements,
     snapshots: (d.snapshots ?? []).map((s: any) => ({
       ...s,
+      sourceBriefVerId: s.sourceBriefVerId ?? s.sourceBrandSummaryVerId ?? null,
       createdAt: new Date(s.createdAt),
     })),
     selectedSnapshotId: d.selectedSnapshotId ?? null,

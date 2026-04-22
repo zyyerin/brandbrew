@@ -1,12 +1,12 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
-import { Pencil, FileText, GalleryVerticalEnd, Images } from "lucide-react";
+import { Pencil, GalleryVerticalEnd, GitCompare } from "lucide-react";
 import { toast } from "sonner";
 import { Toaster } from "./components/ui/sonner";
 import { CurationBoard } from "./components/curation-board";
 import { DirectionPage } from "./components/direction-page";
 import { DirectionVersionsPanel } from "./components/DirectionVersionsPanel";
-import type { BrandSummaryFields, BriefGeneratedKey } from "./components/brand-summary";
-import { BrandSummaryPanel } from "./components/brand-summary";
+import type { BrandBriefFields, BriefGeneratedKey } from "./components/brand-brief";
+import { BriefContextCard } from "./components/curation-board/BriefContextCard";
 import { ProjectSwitcher } from "./components/project-switcher";
 import { SUGGESTIONS } from "./constants/suggestions";
 import type {
@@ -14,7 +14,8 @@ import type {
   ElementId,
   AppRoute,
   Variation,
-  BrandSummaryData,
+  BrandBriefData,
+  PipelineStage,
 } from "./types/project";
 import {
   createEmptyProject,
@@ -23,16 +24,19 @@ import {
   getActiveElementData,
   getActiveVariation,
   resolveSnapshotData,
+  resolveVisualConceptForDirection,
 } from "./types/project";
 import { generateDirection } from "./utils/generate-brand";
-import { TIMING } from "./utils/design-tokens";
+import { TIMING, TYPE } from "./utils/design-tokens";
 import { useVariations } from "./hooks/useVariations";
 import { useSnapshotHistory } from "./hooks/useSnapshotHistory";
 import { useProjectPersistence } from "./hooks/useProjectPersistence";
 import { useBrandGeneration } from "./hooks/useBrandGeneration";
+import { usePipelineDebugger } from "./hooks/usePipelineDebugger";
+import { PipelineDebugPanel } from "./components/pipeline-debug-panel";
 
-function isBrandSummaryComplete(summary: BrandSummaryData): boolean {
-  return !!(summary.name?.trim() && summary.tagline?.trim() && summary.description?.trim());
+function isBriefComplete(brief: BrandBriefData): boolean {
+  return !!(brief.name?.trim() && brief.tagline?.trim() && brief.description?.trim());
 }
 
 export default function App() {
@@ -47,8 +51,9 @@ export default function App() {
   const [previousRoute, setPreviousRoute] = useState<AppRoute | null>(null);
   useEffect(() => { routeRef.current = route; }, [route]);
   const [isEditingName, setIsEditingName] = useState(false);
-  const [isPanelOpen, setIsPanelOpen] = useState(true);
+  const [briefExpanded, setBriefExpanded] = useState(true);
   const [vsPanelExpanded, setVsPanelExpanded] = useState(false);
+  const [vcPanelExpanded, setVcPanelExpanded] = useState(false);
   const initPanelRef = useRef(false);
   const [isPreparingDirection, setIsPreparingDirection] = useState(false);
   const [directionOverlayLabel, setDirectionOverlayLabel] = useState("working on the concept...");
@@ -56,7 +61,8 @@ export default function App() {
 
   const generationCounter = useRef(0);
   const uploadingVariationIdsRef = useRef<Set<string>>(new Set());
-  const pipelineStageRef = useRef<import("./types/project").PipelineStage>(null);
+  const pipelineStageRef = useRef<PipelineStage>(null);
+  const prevPipelineStageRef = useRef<PipelineStage>(null);
 
   // ── Variations ──────────────────────────────────────────────────────────────
   const {
@@ -70,6 +76,23 @@ export default function App() {
     generationCounterRef: generationCounter,
   });
 
+  // ── Pipeline debugger (dev-only) ────────────────────────────────────────────
+  const {
+    debugEnabled,
+    setDebugEnabled,
+    stageLogs,
+    activeStageId,
+    selectedStageId,
+    setSelectedStageId,
+    continueStage,
+    skipRemaining,
+    abortPipeline,
+    editStageRequest,
+    editStagePrompts,
+    clearLogs,
+    interceptor: debugInterceptor,
+  } = usePipelineDebugger();
+
   // ── Brand generation ────────────────────────────────────────────────────────
   const {
     isBrandGenerating,
@@ -79,19 +102,25 @@ export default function App() {
     setGeneratedBriefFields,
     loadingElements,
     setLoadingElements,
-    mergingElementIds,
+    mergingVariationIds,
+    mergingElementTypes,
     pipelineStage,
     setPipelineStage,
-    handleBrandSummarySubmit,
+    handleBriefSubmit,
     handleSuggestionClick,
     handleAutoComplete,
     handleFieldAutoFill,
     autoFillingFieldKey,
+    preEnhanceSnapshot,
+    revertField,
+    generatedTagsByField,
+    handleAddConceptWithPipeline,
     handleAddVariation,
     handleMerge,
     handleMoveVariationToQueue,
     handleCommentModify,
     handleUploadVariation,
+    handleExtractPaletteFromImage,
     uploadingVariationIds,
   } = useBrandGeneration({
     project,
@@ -99,14 +128,26 @@ export default function App() {
     projectRef,
     generationCounterRef: generationCounter,
     uploadingVariationIdsRef,
+    debugInterceptor,
   });
 
   // Keep pipelineStageRef in sync for persistence guard
   useEffect(() => { pipelineStageRef.current = pipelineStage; }, [pipelineStage]);
 
+  // After conceptualizing: collapse brief and show Visual Concept panel (VS opens at pipeline end)
+  useEffect(() => {
+    const prev = prevPipelineStageRef.current;
+    prevPipelineStageRef.current = pipelineStage;
+    if (prev === "conceptualizing" && pipelineStage === "styling") {
+      setBriefExpanded(false);
+      setVcPanelExpanded(true);
+    }
+  }, [pipelineStage]);
+
   // ── Snapshot history ────────────────────────────────────────────────────────
   const {
     generateVisualSnapshot,
+    regenerateWithOverride,
     handleSelectSnapshot,
     handleDeleteSnapshot,
   } = useSnapshotHistory({
@@ -114,7 +155,18 @@ export default function App() {
     setProject,
     projectRef,
     setLoadingElements,
+    debugInterceptor,
   });
+
+  // ── Pipeline finish handling (no auto snapshot) ─────────────────────────────
+  useEffect(() => {
+    if (pipelineStage !== "synthesizing") return;
+
+    setBriefExpanded(false);
+    setVsPanelExpanded(true);
+    setVcPanelExpanded(true);
+    setPipelineStage(null);
+  }, [pipelineStage, setPipelineStage]);
 
   // ── Snapshot validation before generation ──────────────────────────────────
   const handleGenerateSnapshotWithValidation = useCallback(() => {
@@ -122,7 +174,7 @@ export default function App() {
       "logo",
       "color-palette",
       "font",
-      "application",
+      "art-style",
     ];
 
     const missing = requiredIds.filter(
@@ -131,7 +183,7 @@ export default function App() {
 
     if (missing.length > 0) {
       toast.error(
-        "Visual Snapshot requirements not met: Logo, Color Palette, Typography, and Application must each have at least one selected card.",
+        "Visual Snapshot requirements not met: Logo, Color Palette, Typography, and Art Style must each have at least one selected card.",
         { duration: TIMING.DIRECTION_GENERATION_DELAY },
       );
       return;
@@ -189,8 +241,9 @@ export default function App() {
     setProject(createEmptyProject());
     setRoute("board");
     setIsEditingName(false);
-    setIsPanelOpen(true);
+    setBriefExpanded(true);
     setVsPanelExpanded(true);
+    setVcPanelExpanded(true);
     setIsBrandGenerating(false);
     setGeneratedBriefFields(new Set<BriefGeneratedKey>());
     setPipelineStage(null);
@@ -209,6 +262,7 @@ export default function App() {
     handleDeleteProject,
     handleSaveNow,
   } = useProjectPersistence({
+    project,
     projectRef,
     setProject,
     resetToEmpty,
@@ -216,19 +270,30 @@ export default function App() {
     pipelineStageRef,
   });
 
-  // Initial panel state: prefer Snapshot when Brand Summary is complete
+  const toggleBriefExpanded = useCallback(() => {
+    setBriefExpanded((prev) => {
+      const next = !prev;
+      if (next) {
+        setVsPanelExpanded(false);
+      } else if (project.phase === "curating") {
+        setVcPanelExpanded(true);
+      }
+      return next;
+    });
+  }, [project.phase]);
+
+  // Initial panel state: expand brief when brief is not yet complete; show VC/VS panels when it is
   useEffect(() => {
     if (!isLoaded || initPanelRef.current) return;
     initPanelRef.current = true;
-    const complete = isBrandSummaryComplete(project.brandSummary.current);
-    setIsPanelOpen(!complete);
+    const complete = isBriefComplete(project.brandBrief.current);
+    setBriefExpanded(!complete);
     setVsPanelExpanded(complete);
+    setVcPanelExpanded(complete);
   }, [isLoaded, project]);
 
   // ── Generate Brand Direction ──────────────────────────────────────────────
-  const handleGenerateDirection = useCallback(async () => {
-    const snapshotId = project.selectedSnapshotId;
-    if (!snapshotId) return;
+  const handleGenerateDirection = useCallback(async (snapshotId: string) => {
 
     setIsPreparingDirection(true);
     const currentProject = projectRef.current;
@@ -239,10 +304,11 @@ export default function App() {
       return;
     }
 
-    const snapshotConcept = resolvedFromCurrent.elementData["visual-concept"] as
-      | string
-      | undefined;
-    const hasConcept = typeof snapshotConcept === "string" && snapshotConcept.trim().length > 0;
+    const conceptDataForDirection = resolveVisualConceptForDirection(
+      currentProject.elements,
+      resolvedFromCurrent.elementData["visual-concept"],
+    );
+    const hasConcept = !!conceptDataForDirection;
     setDirectionOverlayLabel(
       hasConcept ? "writing the rationale..." : "working on the concept...",
     );
@@ -251,7 +317,7 @@ export default function App() {
       (v) => v.boundSnapshotId === snapshotId,
     );
     const nextVersionId = existingForSnapshot?.id ?? `gv-${Date.now()}`;
-    const generatedLabel = snapshotConcept?.trim() || "Generated direction";
+    const generatedLabel = conceptDataForDirection?.concept?.trim() || "Generated direction";
 
     setProject((prev) => {
       const prevExisting = prev.direction.versions.find((v) => v.boundSnapshotId === snapshotId);
@@ -286,11 +352,12 @@ export default function App() {
 
     try {
       {
-        const brief = resolvedFromCurrent.brandSummary;
-        const keywords = resolvedFromCurrent.brandSummary.keywords ?? [];
+        const brief = resolvedFromCurrent.brandBrief;
+        const keywords = resolvedFromCurrent.brandBrief.keywords ?? [];
         const colorPalette =
           (resolvedFromCurrent.elementData["color-palette"] as string[] | undefined) ?? [];
-        const concept = resolvedFromCurrent.elementData["visual-concept"] as string | undefined;
+        const conceptData = conceptDataForDirection;
+        const concept = conceptData?.concept;
         const artStyle = resolvedFromCurrent.elementData["art-style"] as { imageUrl: string } | undefined;
         const font = resolvedFromCurrent.elementData["font"] as
           | { titleFont: string; bodyFont: string }
@@ -304,7 +371,7 @@ export default function App() {
           brandBrief: brief,
           keywords,
           colorPalette,
-          visualConcept: concept,
+          visualConcept: conceptData,
           artStyle,
           font,
           logoImageUrl,
@@ -332,10 +399,12 @@ export default function App() {
                         artStyle: data.rationales?.artStyle ?? "",
                       },
                       colorNames: data.colorNames ?? [],
+                      logoImageUrl,
                       brandInContextDescription:
                         data.brandInContextDescription ??
                         "Real-world application of the identity system across digital and physical touchpoints.",
                       visualConceptContent: data.visualConceptContent,
+                      visualConceptName: concept?.trim() || data.synthesizedVisualConcept?.trim(),
                       synthesizedVisualConcept: data.synthesizedVisualConcept,
                     },
                   }
@@ -354,11 +423,9 @@ export default function App() {
     } finally {
       setIsPreparingDirection(false);
     }
-  }, [project.selectedSnapshotId, setProject, projectRef, setPreviousRoute, setRoute]);
+  }, [setProject, projectRef, setPreviousRoute, setRoute]);
 
-  const handleViewBrandDirection = useCallback(() => {
-    const snapshotId = project.selectedSnapshotId;
-    if (!snapshotId) return;
+  const handleViewBrandDirection = useCallback((snapshotId: string) => {
     const version = project.direction.versions.find((v) => v.boundSnapshotId === snapshotId);
     if (!version) return;
     setProject((prev) => ({
@@ -368,7 +435,7 @@ export default function App() {
     setPreviousRoute(routeRef.current);
     setIsDirectionPanelOpen(false);
     setRoute("direction");
-  }, [project.selectedSnapshotId, project.direction.versions, setProject, setPreviousRoute, setRoute]);
+  }, [project.direction.versions, setProject, setPreviousRoute, setRoute]);
 
   const handleBackFromDirection = useCallback(() => {
     setProject((prev) => ({
@@ -382,11 +449,11 @@ export default function App() {
   }, [setProject, previousRoute]);
 
   const handleFieldChange = useCallback(
-    (fields: BrandSummaryFields) => {
+    (fields: BrandBriefFields) => {
       setProject((prev) => ({
         ...prev,
-        brandSummary: {
-          ...prev.brandSummary,
+        brandBrief: {
+          ...prev.brandBrief,
           current: {
             name: fields.brandName,
             tagline: fields.tagline,
@@ -412,7 +479,6 @@ export default function App() {
       "color-palette": "color",
       "font": "font",
       "logo": "logo",
-      "application": "application",
     };
     const map: Record<string, Array<{
       id: string;
@@ -449,6 +515,7 @@ export default function App() {
   const checkedVariationIds = useMemo(() => {
     const set = new Set<string>();
     for (const id of ALL_ELEMENT_IDS) {
+      if (id === "visual-concept") continue;
       const checked = project.elements[id].checkedVariationId;
       if (checked) set.add(checked);
     }
@@ -456,6 +523,11 @@ export default function App() {
   }, [project.elements]);
 
   // Enrich direction versions with snapshotImageUrl derived from project.snapshots
+  const snapshotIdsWithDirection = useMemo(
+    () => new Set(project.direction.versions.map((v) => v.boundSnapshotId).filter(Boolean) as string[]),
+    [project.direction.versions],
+  );
+
   const directionsWithImageUrl = useMemo(() =>
     project.direction.versions.map((v) => ({
       ...v,
@@ -541,7 +613,7 @@ export default function App() {
       <div className="flex flex-1 overflow-hidden relative bg-muted/30">
         <div className="flex-1 relative overflow-hidden">
           <CurationBoard
-            brandSummary={project.brandSummary.current}
+            brandSummary={project.brandBrief.current}
             elements={project.elements}
             projectPhase={project.phase}
             pipelineStage={pipelineStage}
@@ -557,7 +629,11 @@ export default function App() {
               if (sourceVariationId && uploadingVariationIds.has(sourceVariationId)) return;
               handleAddVariation(elementType, sourceVariationId);
             }}
+            onAddConcept={handleAddConceptWithPipeline}
             onUploadVariation={handleUploadVariation}
+            onUploadImageForPalette={(elementType, file) => {
+              if (elementType === "color-palette") handleExtractPaletteFromImage(file);
+            }}
             loadingElementIds={loadingElements}
             onMerge={(sourceId, targetId, sourceVarId, targetVarId) => {
               if ((sourceVarId && uploadingVariationIds.has(sourceVarId)) || (targetVarId && uploadingVariationIds.has(targetVarId))) return;
@@ -568,7 +644,8 @@ export default function App() {
               handleMoveVariationToQueue(sourceId, targetId, variationId);
             }}
             onCommentModify={handleCommentModify}
-            mergingElementTypes={mergingElementIds}
+            mergingVariationIds={mergingVariationIds}
+            mergingElementTypes={mergingElementTypes}
             allVariationsByElementType={allVariationsByElementType}
             activeVariationByElementType={activeVariationByElementType}
             onSelectVariation={handleSelectVariation}
@@ -592,48 +669,60 @@ export default function App() {
             onGenerateSnapshot={handleGenerateSnapshotWithValidation}
             onGenerateBrandDirection={handleGenerateDirection}
             onViewBrandDirection={handleViewBrandDirection}
-            selectedSnapshotHasDirection={
-              !!project.selectedSnapshotId &&
-              project.direction.versions.some((v) => v.boundSnapshotId === project.selectedSnapshotId)
-            }
+            snapshotIdsWithDirection={snapshotIdsWithDirection}
             snapshotGenerating={loadingElements.has("visual-snapshot")}
             vsPanelExpanded={vsPanelExpanded}
+            vcPanelExpanded={vcPanelExpanded && !briefExpanded}
+            briefExpanded={briefExpanded}
+            leftPanelActive={briefExpanded || vcPanelExpanded}
             uploadingVariationIds={uploadingVariationIds}
             onUpdateVariationOrder={handleUpdateVariationOrder}
+            onSnapshotMerge={(sourceElementType, sourceVariationId, targetSnapshotId) => {
+              regenerateWithOverride(targetSnapshotId, sourceElementType as ElementId, sourceVariationId);
+            }}
+            briefContent={
+              <BriefContextCard
+                expanded={briefExpanded}
+                onToggleExpanded={toggleBriefExpanded}
+                projectPhase={project.phase}
+                brandBrief={project.brandBrief.current}
+                isGenerating={pipelineStage !== null}
+                isBrandGenerating={isBrandGenerating}
+                onBriefSubmit={handleBriefSubmit}
+                onAutoComplete={handleAutoComplete}
+                isAutoCompleting={isAutoCompleting}
+                generatedBriefFields={generatedBriefFields}
+                onClearGeneratedField={(key) =>
+                  setGeneratedBriefFields((prev) => {
+                    const next = new Set(prev);
+                    next.delete(key);
+                    return next;
+                  })
+                }
+                onFieldChange={handleFieldChange}
+                onFieldAutoFill={handleFieldAutoFill}
+                autoFillingFieldKey={autoFillingFieldKey}
+                preEnhanceSnapshot={preEnhanceSnapshot}
+                onRevertField={revertField}
+                generatedTagsByField={generatedTagsByField}
+                pipelineStage={pipelineStage}
+              />
+            }
           />
 
-          <div className="absolute top-3 right-3 z-20 flex flex-row items-center gap-2">
+          <div className="absolute top-3 right-3 z-30 flex flex-row items-center gap-2">
             <ProjectSwitcher
               currentProjectId={currentProjectId}
               projects={projectIndex}
               onSwitch={handleSwitchProject}
               onNew={() => {
-                setIsPanelOpen(true);
+                setBriefExpanded(true);
                 setVsPanelExpanded(false);
+                setVcPanelExpanded(false);
                 handleNewProjectBase();
               }}
               onDelete={handleDeleteProject}
-              onSaveNow={handleSaveNow}
             />
-            <button
-              onClick={() => {
-                if (isPanelOpen) {
-                  setIsPanelOpen(false);
-                } else {
-                  setIsPanelOpen(true);
-                  setVsPanelExpanded(false);
-                  setIsDirectionPanelOpen(false);
-                }
-              }}
-              className={`p-2 rounded-lg border shadow-sm transition-colors cursor-pointer ${
-                isPanelOpen
-                  ? "bg-blue-50 text-blue-400"
-                  : "bg-white/90 border-border/60 text-muted-foreground hover:text-foreground"
-              }`}
-              title={isPanelOpen ? "Close side panel" : "Open side panel"}
-            >
-              <FileText size={16} />
-            </button>
             {project.phase !== "empty" && (
               <button
                 onClick={() => {
@@ -641,13 +730,12 @@ export default function App() {
                     setVsPanelExpanded(false);
                   } else {
                     setVsPanelExpanded(true);
-                    setIsPanelOpen(false);
                     setIsDirectionPanelOpen(false);
                   }
                 }}
-                className={`p-2 rounded-lg border shadow-sm transition-colors cursor-pointer ${
+                className={`flex items-center gap-1.5 px-2.5 py-2 rounded-lg border shadow-sm transition-colors cursor-pointer ${
                   vsPanelExpanded
-                    ? "bg-blue-50 text-blue-400"
+                    ? "bg-blue-50 border-blue-200 text-blue-400"
                     : "bg-white/90 border-border/60 text-muted-foreground hover:text-foreground"
                 }`}
                 title={
@@ -656,7 +744,10 @@ export default function App() {
                     : "Show Visual Snapshot panel"
                 }
               >
-                <Images size={16} />
+                <GitCompare size={16} />
+                <span className="font-medium" style={{ fontSize: TYPE.size.base }}>
+                  Visual Snapshot
+                </span>
               </button>
             )}
             {project.direction.versions.length > 0 && (
@@ -666,7 +757,6 @@ export default function App() {
                     setIsDirectionPanelOpen(false);
                   } else {
                     setIsDirectionPanelOpen(true);
-                    setIsPanelOpen(false);
                     setVsPanelExpanded(false);
                   }
                 }}
@@ -675,38 +765,14 @@ export default function App() {
                     ? "bg-blue-50 border-blue-200 text-blue-400"
                     : "bg-white/90 border-border/60 text-muted-foreground hover:text-foreground"
                 }`}
-                title={isDirectionPanelOpen ? "Hide directions panel" : "View brand directions"}
+                title={isDirectionPanelOpen ? "Hide direction panel" : "View brand direction"}
               >
                 <GalleryVerticalEnd size={16} />
-                <span className="text-[13px] font-medium">Brand Direction</span>
+                <span className="text-[13px] font-medium">Direction</span>
               </button>
             )}
           </div>
         </div>
-
-        {isPanelOpen && (
-          <BrandSummaryPanel
-            onClose={() => setIsPanelOpen(false)}
-            brandSummary={project.brandSummary.current}
-            projectPhase={project.phase}
-            isGenerating={pipelineStage !== null}
-            onBrandSummarySubmit={handleBrandSummarySubmit}
-            isBrandGenerating={isBrandGenerating}
-            onAutoComplete={handleAutoComplete}
-            isAutoCompleting={isAutoCompleting}
-            generatedBriefFields={generatedBriefFields}
-            onClearGeneratedField={(key) =>
-              setGeneratedBriefFields((prev) => {
-                const next = new Set(prev);
-                next.delete(key);
-                return next;
-              })
-            }
-            onFieldChange={handleFieldChange}
-            onFieldAutoFill={handleFieldAutoFill}
-            autoFillingFieldKey={autoFillingFieldKey}
-          />
-        )}
 
         {isDirectionPanelOpen && project.direction.versions.length > 0 && (
           <DirectionVersionsPanel
@@ -754,6 +820,22 @@ export default function App() {
         </div>
       )}
       <Toaster position="bottom-center" richColors toastOptions={{ style: { zIndex: 99999 } }} />
+      {import.meta.env.DEV && (
+        <PipelineDebugPanel
+          debugEnabled={debugEnabled}
+          setDebugEnabled={setDebugEnabled}
+          stageLogs={stageLogs}
+          activeStageId={activeStageId}
+          selectedStageId={selectedStageId}
+          setSelectedStageId={setSelectedStageId}
+          continueStage={continueStage}
+          skipRemaining={skipRemaining}
+          abortPipeline={abortPipeline}
+          editStageRequest={editStageRequest}
+          editStagePrompts={editStagePrompts}
+          clearLogs={clearLogs}
+        />
+      )}
     </div>
   );
 }

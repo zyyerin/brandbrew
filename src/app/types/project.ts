@@ -6,7 +6,7 @@
  * SnapshotBvi, and GeneratedCardItem with a layered architecture:
  *
  *   ProjectData
- *   ├── brandSummary   (strategic layer — versioned text)
+ *   ├── brandBrief     (strategic layer — versioned text)
  *   ├── elements        (visual layer — per-element variation slots)
  *   ├── snapshots       (composition layer — frozen element selections → image)
  *   └── direction       (output layer — bound to a snapshot)
@@ -19,8 +19,7 @@ export type ElementId =
   | "art-style"
   | "color-palette"
   | "font"
-  | "logo"
-  | "application";
+  | "logo";
 
 export const ALL_ELEMENT_IDS: readonly ElementId[] = [
   "visual-concept",
@@ -28,12 +27,10 @@ export const ALL_ELEMENT_IDS: readonly ElementId[] = [
   "color-palette",
   "font",
   "logo",
-  "application",
 ] as const;
 
 export const IMAGE_ELEMENT_IDS: ReadonlySet<ElementId> = new Set([
   "logo",
-  "application",
   "art-style",
 ]);
 
@@ -49,12 +46,11 @@ export const ELEMENT_LABELS: Record<ElementId, string> = {
   "color-palette": "Color Palette",
   "font": "Typography",
   "logo": "Logo",
-  "application": "Application",
 };
 
-// ── Brand Summary ───────────────────────────────────────────────────────────
+// ── Brand Brief ─────────────────────────────────────────────────────────────
 
-export interface BrandSummaryData {
+export interface BrandBriefData {
   name: string;
   tagline: string;
   description: string;
@@ -64,18 +60,18 @@ export interface BrandSummaryData {
   applications: string[];
 }
 
-export interface BrandSummaryVersion {
+export interface BrandBriefVersion {
   id: string;
-  data: BrandSummaryData;
+  data: BrandBriefData;
   createdAt: Date;
 }
 
-export interface BrandSummaryState {
-  current: BrandSummaryData;
-  versions: BrandSummaryVersion[];
+export interface BrandBriefState {
+  current: BrandBriefData;
+  versions: BrandBriefVersion[];
 }
 
-export const EMPTY_BRAND_SUMMARY: BrandSummaryData = {
+export const EMPTY_BRAND_BRIEF: BrandBriefData = {
   name: "",
   tagline: "",
   description: "",
@@ -86,8 +82,10 @@ export const EMPTY_BRAND_SUMMARY: BrandSummaryData = {
 
 // ── Per-element data shapes ─────────────────────────────────────────────────
 
-export type VisualConceptData = string;
-// e.g. "crystalline geometry" — a single evocative concept phrase per variation.
+export interface VisualConceptData {
+  concept: string;
+  description: string;
+}
 
 export interface FontData {
   titleFont: string;
@@ -106,7 +104,17 @@ export type ElementDataMap = {
   "color-palette": ColorPaletteData;
   "font": FontData;
   "logo": ImageElementData;
-  "application": ImageElementData;
+};
+
+/** Slots covered by ActiveElementData (board visuals only; excludes visual-concept). */
+export type ActiveElementDataElementId = Exclude<ElementId, "visual-concept">;
+
+/**
+ * Active variation payloads for those slots except `Self` (sparse).
+ * `Self = never` → all four: art-style, color-palette, font, logo.
+ */
+export type ActiveElementData<Self extends ActiveElementDataElementId | never = never> = {
+  [K in Exclude<ActiveElementDataElementId, Self>]?: ElementDataMap[K];
 };
 
 // ── Variation ID (semantic alias) ───────────────────────────────────────────
@@ -138,6 +146,15 @@ export interface VariationMeta {
   addVariationSource?: "from-variation" | "original-brand";
   /** 当 addVariationSource 为 from-variation 时，来源 variation 的 id */
   sourceVariationId?: string;
+  /** The visual-concept variation that drove this element's generation (for noodle connections). */
+  sourceConceptVariationId?: string;
+  /** Cached structured inputs from pipeline stages for reuse in no-target merges. */
+  pipelineSeed?: {
+    visualConcept?: VisualConceptData;
+    colorPalette?: ColorPaletteData;
+    font?: FontData;
+    application?: string;
+  };
 }
 
 // ── Variation ───────────────────────────────────────────────────────────────
@@ -177,7 +194,6 @@ export function createEmptyElements(): ElementsState {
     "color-palette": createEmptySlot<ColorPaletteData>(),
     "font": createEmptySlot<FontData>(),
     "logo": createEmptySlot<ImageElementData>(),
-    "application": createEmptySlot<ImageElementData>(),
   };
 }
 
@@ -197,7 +213,7 @@ export interface SnapshotItem {
   imageUrl: string;
   createdAt: Date;
   sourceSelections: Partial<Record<ElementId, string>>;
-  sourceBrandSummaryVerId: string | null;
+  sourceBriefVerId: string | null;
   generationMeta?: SnapshotGenerationMeta;
 }
 
@@ -211,10 +227,13 @@ export interface DirectionCache {
     artStyle: string;
   };
   colorNames: { hex: string; name: string }[];
+  logoImageUrl?: string;
   brandInContextDescription: string;
   contextImageUrls?: string[];
   /** AI-generated paragraph expanding on the visual concept. Always present after direction generation. */
   visualConceptContent?: string;
+  /** Frozen concept name used by direction page to avoid live variation drift. */
+  visualConceptName?: string;
   /** Synthesized concept name when direction is generated without an active visual concept. */
   synthesizedVisualConcept?: string;
 }
@@ -243,7 +262,6 @@ export type PipelineStage =
   | "conceptualizing"
   | "styling"
   | "drawing"
-  | "visualizing"
   | "synthesizing"
   | null;
 
@@ -252,7 +270,7 @@ export type PipelineStage =
 export interface ProjectData {
   projectName: string;
   phase: ProjectPhase;
-  brandSummary: BrandSummaryState;
+  brandBrief: BrandBriefState;
   elements: ElementsState;
   snapshots: SnapshotItem[];
   selectedSnapshotId: string | null;
@@ -263,8 +281,8 @@ export function createEmptyProject(name = "Brand Brew Project"): ProjectData {
   return {
     projectName: name,
     phase: "empty",
-    brandSummary: {
-      current: { ...EMPTY_BRAND_SUMMARY },
+    brandBrief: {
+      current: { ...EMPTY_BRAND_BRIEF },
       versions: [],
     },
     elements: createEmptyElements(),
@@ -292,6 +310,43 @@ export function getActiveElementData<K extends ElementId>(
   return getActiveVariation(elements, elementId)?.data ?? null;
 }
 
+/** Parse visual-concept slot data from a snapshot or legacy string shape. */
+function parseVisualConceptRaw(raw: unknown): VisualConceptData | undefined {
+  if (raw && typeof raw === "object" && "concept" in (raw as Record<string, unknown>)) {
+    const o = raw as { concept?: unknown; description?: unknown };
+    const c = typeof o.concept === "string" ? o.concept.trim() : "";
+    if (!c) return undefined;
+    const d = typeof o.description === "string" ? o.description : "";
+    return { concept: c, description: d };
+  }
+  if (typeof raw === "string") {
+    const c = raw.trim();
+    if (!c) return undefined;
+    return { concept: c, description: "" };
+  }
+  return undefined;
+}
+
+/**
+ * For brand-direction generation: prefer the live active visual concept on the board;
+ * if none (or empty concept), use the snapshot-frozen variation; otherwise undefined so the API can synthesize from imagery.
+ */
+export function resolveVisualConceptForDirection(
+  elements: ElementsState,
+  snapshotConceptRaw: unknown | undefined,
+): VisualConceptData | undefined {
+  const active = getActiveElementData(elements, "visual-concept");
+  const activeConcept =
+    active && typeof active.concept === "string" ? active.concept.trim() : "";
+  if (activeConcept) {
+    return {
+      concept: activeConcept,
+      description: active && typeof active.description === "string" ? active.description : "",
+    };
+  }
+  return parseVisualConceptRaw(snapshotConceptRaw);
+}
+
 export function getVariationDataById<K extends ElementId>(
   elements: ElementsState,
   elementId: K,
@@ -311,23 +366,31 @@ export function getCheckedVariation<K extends ElementId>(
   return slot.variations.find((v) => v.id === slot.checkedVariationId) ?? null;
 }
 
+/** Checked card payload for snapshot selection; null if the slot has no checked variation. */
+export function getCheckedElementData<K extends ElementId>(
+  elements: ElementsState,
+  elementId: K,
+): ElementDataMap[K] | null {
+  return getCheckedVariation(elements, elementId)?.data ?? null;
+}
+
 export function resolveSnapshotData(
   project: ProjectData,
   snapshotId: string,
 ): {
   snapshot: SnapshotItem;
-  brandSummary: BrandSummaryData;
+  brandBrief: BrandBriefData;
   elementData: Partial<Record<ElementId, unknown>>;
 } | null {
   const snapshot = project.snapshots.find((s) => s.id === snapshotId);
   if (!snapshot) return null;
 
-  const bsVer = snapshot.sourceBrandSummaryVerId
-    ? project.brandSummary.versions.find(
-        (v) => v.id === snapshot.sourceBrandSummaryVerId,
+  const briefVer = snapshot.sourceBriefVerId
+    ? project.brandBrief.versions.find(
+        (v) => v.id === snapshot.sourceBriefVerId,
       )
     : null;
-  const brandSummary = bsVer?.data ?? project.brandSummary.current;
+  const brandBrief = briefVer?.data ?? project.brandBrief.current;
 
   const elementData: Partial<Record<ElementId, unknown>> = {};
   for (const [elemId, varId] of Object.entries(snapshot.sourceSelections)) {
@@ -337,5 +400,5 @@ export function resolveSnapshotData(
     if (variation) elementData[elemId as ElementId] = variation.data;
   }
 
-  return { snapshot, brandSummary, elementData };
+  return { snapshot, brandBrief, elementData };
 }

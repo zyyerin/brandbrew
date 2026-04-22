@@ -15,7 +15,7 @@ The project uses a layered `ProjectData` architecture. The legacy `BrandData` an
 - `ElementsState` / `ElementSlot<T>` — per-element variation slots
 - `Variation<T>` — a single variation with data, source, and metadata
 - `SnapshotItem` — a frozen composition snapshot
-- `BrandSummaryData` — brand brief + target audience + keywords
+- `BrandBriefData` — brand brief + target audience + keywords
 - `DirectionVersion` / `DirectionState` — output direction layer
 - `ElementDataMap` — maps `ElementId` → concrete data type
 - `MergeBrandContext` — API payload shape for merge/comment endpoints (from `utils/merge-logic.ts`)
@@ -35,7 +35,7 @@ import { BrandData } from "../types/brand";
 import { SnapshotHistoryItem } from "../types/app";
 
 // ✅ GOOD — uses new model with typed accessor
-import { getActiveElementData, type BrandSummaryData } from "../types/project";
+import { getActiveElementData, type BrandBriefData } from "../types/project";
 import type { MergeBrandContext } from "../utils/merge-logic";
 const color = getActiveElementData(project.elements, "color-palette");
 ```

@@ -1,13 +1,19 @@
 import { callApi } from "./apiClient";
 import type { VariationMeta } from "../types/project";
+import type { BrandContextFull } from "@server-shared/types.tsx";
 
 // ─── 类型定义 ─────────────────────────────────────────────────────────────────
+
+export interface VisualConceptData {
+  concept: string;
+  description: string;
+}
 
 export interface AiBrandData {
   brandBrief: { name: string; tagline: string; description: string };
   keywords: string[];
   colorPalette: string[];
-  visualConcept: string[];
+  visualConcept: VisualConceptData;
   artStyle: { imageUrl: string };
   font: { titleFont: string; bodyFont: string };
 }
@@ -24,9 +30,12 @@ export interface CardVariationContext {
   brandName?: string;
   tagline?: string;
   description?: string;
+  targetAudience?: string;
   keywords?: string[];
-  concept?: string;
+  visualConcept?: { concept: string; description?: string };
   existingContent?: unknown;
+  /** Font names already used across existing variations — the AI should not reuse them. */
+  excludedFonts?: string[];
 }
 
 export interface CardVariationResult<T = unknown> {
@@ -53,17 +62,28 @@ export interface VisualConceptInput {
   description?: string;
   targetAudience?: string;
   keywords?: string[];
+  existingConcepts?: Array<{ concept: string; description: string }>;
 }
 
 export interface VisualConceptResult {
-  visualConcept: string[];
+  visualConcept: VisualConceptData;
   _meta?: VariationMeta;
 }
 
-export async function generateVisualConcept(input: VisualConceptInput): Promise<VisualConceptResult> {
-  const raw = await callApi<{ visualConcept: string[]; _meta?: VariationMeta }>(
+export async function generateVisualConcept(
+  input: VisualConceptInput,
+  opts?: { signal?: AbortSignal },
+): Promise<VisualConceptResult> {
+  const brandContext: BrandContextFull = {
+    name: input.brandName,
+    tagline: input.tagline,
+    keywords: input.keywords,
+    description: input.description,
+    targetAudience: input.targetAudience,
+  };
+  const raw = await callApi<{ visualConcept: VisualConceptData; _meta?: VariationMeta }>(
     "strategist/generate-visual-concept",
-    { body: input },
+    { body: { ...input, brandContext }, signal: opts?.signal },
   );
   return { visualConcept: raw.visualConcept, _meta: raw._meta };
 }
@@ -72,11 +92,7 @@ export interface AutoCompleteInput {
   partialBrief?: { name?: string; tagline?: string; description?: string };
   targetAudience?: string;
   keywords?: string;
-  /** When auto-filling a single field that already has content, pass the current
-   *  value here so the model enhances/improves it rather than generating from scratch. */
-  enhanceHint?: string;
-  /** The field key being enhanced (e.g. "name", "tagline"). Helps the model focus. */
-  targetField?: string;
+  applications?: string[];
 }
 
 export interface AutoCompleteResult {
@@ -87,7 +103,7 @@ export interface AutoCompleteResult {
 }
 
 /**
- * Ask brand strategist to fill only empty brief fields; preserves user-filled values.
+ * Batch-fill all empty Brand Brief fields; preserves user-filled values.
  */
 export async function autoCompleteBrief(input: AutoCompleteInput): Promise<AutoCompleteResult> {
   const raw = await callApi<AutoCompleteResult & { _meta?: unknown }>("auto-complete", {
@@ -95,12 +111,52 @@ export async function autoCompleteBrief(input: AutoCompleteInput): Promise<AutoC
       partialBrief: input.partialBrief ?? {},
       targetAudience: input.targetAudience ?? "",
       keywords: input.keywords ?? "",
-      enhanceHint: input.enhanceHint,
-      targetField: input.targetField,
+      applications: input.applications,
     },
   });
   const { _meta, ...result } = raw as any;
   return result as AutoCompleteResult;
+}
+
+// ─── Auto Fill (single field) ────────────────────────────────────────────────
+
+export type AutoFillFieldName =
+  | "name"
+  | "tagline"
+  | "description"
+  | "targetAudience"
+  | "keywords"
+  | "applications";
+
+export interface AutoFillInput {
+  targetField: AutoFillFieldName;
+  existingValue?: string;
+  mode?: "fill" | "enhance";
+  brandBrief: {
+    name?: string;
+    tagline?: string;
+    description?: string;
+    targetAudience?: string;
+    keywords?: string;
+    applications?: string[];
+  };
+}
+
+export interface AutoFillResult {
+  targetField: AutoFillFieldName;
+  value: unknown;
+}
+
+/**
+ * Generate or refine a single Brand Brief field.
+ */
+export async function autoFillField(input: AutoFillInput): Promise<AutoFillResult> {
+  const raw = await callApi<AutoFillResult & { _meta?: unknown }>(
+    "strategist/auto-fill",
+    { body: input },
+  );
+  const { _meta, ...result } = raw as any;
+  return result as AutoFillResult;
 }
 
 /**
@@ -108,9 +164,25 @@ export async function autoCompleteBrief(input: AutoCompleteInput): Promise<AutoC
  */
 export async function generateCardVariation<T = unknown>(
   cardType: string,
-  brandContext: CardVariationContext
+  brandBrief: CardVariationContext
 ): Promise<CardVariationResult<T>> {
-  const raw = await callApi<T & { _meta?: CardVariationResult["_meta"] }>("generate-card-variation", { body: { cardType, brandContext }, timeoutMs: 60_000 });
+  const brandContext: BrandContextFull = {
+    name: brandBrief.brandName,
+    tagline: brandBrief.tagline,
+    keywords: brandBrief.keywords,
+    description: brandBrief.description,
+    targetAudience: brandBrief.targetAudience,
+    visualConcept: brandBrief.visualConcept
+      ? {
+          concept: brandBrief.visualConcept.concept,
+          description: brandBrief.visualConcept.description ?? "",
+        }
+      : undefined,
+  };
+  const raw = await callApi<T & { _meta?: CardVariationResult["_meta"] }>(
+    "generate-card-variation",
+    { body: { cardType, brandBrief, brandContext }, timeoutMs: 60_000 },
+  );
   const { _meta, ...data } = raw as any;
   return { data: data as T, _meta };
 }

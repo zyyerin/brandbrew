@@ -1,69 +1,59 @@
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useEffect, useRef } from "react";
 import type { VariationMeta, VariationState } from "./types";
+import type { VisualConceptData } from "../../types/project";
 import { ElementWrapper } from "./ElementWrapper";
-import { TYPOGRAPHY, adaptiveSize } from "../../utils/design-tokens";
+import { TYPE, LAYOUT, adaptiveSize } from "../../utils/design-tokens";
 import { useCanvasZoom } from "../../contexts/CanvasZoomContext";
+import { useCardEditing } from "./useCardEditing";
 
 interface VisualConceptProps {
-  phrase: string;
+  data: VisualConceptData;
   state?: VariationState;
   onToggleActive?: () => void;
-  onChange?: (phrase: string) => void;
-  onAddVariation?: () => void;
+  onChange?: (data: VisualConceptData) => void;
   onDelete?: () => void;
   meta?: VariationMeta;
 }
 
 export function VisualConceptCard({
-  phrase,
+  data,
   state,
   onToggleActive,
   onChange,
-  onAddVariation,
   onDelete,
   meta,
 }: VisualConceptProps) {
-  const [isEditing, setIsEditing] = useState(false);
-  const [localPhrase, setLocalPhrase] = useState(phrase);
-  const originalRef = useRef(phrase);
+  const { isEditing, local, updateField, editingProps } = useCardEditing<VisualConceptData>(
+    data,
+    {
+      onChange,
+      transformOnSave: (d) => ({ ...d, concept: d.concept.trim() }),
+    },
+  );
+  const conceptRef = useRef<HTMLTextAreaElement>(null);
 
   const zoom = useCanvasZoom();
-  const adaptiveFontSize = Math.round(adaptiveSize(
-    TYPOGRAPHY.cardHeadingMd.fontSize,
+  const conceptFontSize = Math.round(adaptiveSize(
+    TYPE.size.xl,
     zoom,
-    TYPOGRAPHY.cardBodySm.fontSize,
+    TYPE.size.baseSm,
   ));
+  const isActive = state === "active";
+  const conceptDotSize = Math.round(
+    adaptiveSize(LAYOUT.connection.portRadius * 2, zoom),
+  );
 
   useEffect(() => {
-    if (!isEditing) {
-      setLocalPhrase(phrase);
-      originalRef.current = phrase;
+    if (isEditing && conceptRef.current) {
+      const el = conceptRef.current;
+      el.style.height = "auto";
+      el.style.height = `${el.scrollHeight}px`;
     }
-  }, [phrase, isEditing]);
+  }, [isEditing, local.concept]);
 
-  const handleEditEnter = useCallback(() => setIsEditing(true), []);
-
-  const handleEditSave = useCallback(() => {
-    const next = localPhrase.trim();
-    setIsEditing(false);
-    if (next !== originalRef.current) {
-      onChange?.(next || originalRef.current);
-    }
-  }, [localPhrase, onChange]);
-
-  const handleEditCancel = useCallback(() => {
-    setIsEditing(false);
-    setLocalPhrase(originalRef.current);
-  }, []);
-
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      handleEditSave();
-    } else if (e.key === "Escape") {
-      e.preventDefault();
-      handleEditCancel();
-    }
+  const handleConceptKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter") { e.preventDefault(); editingProps.onEditSave(); }
+    else if (e.key === "Escape") { e.preventDefault(); editingProps.onEditCancel(); }
   };
 
   return (
@@ -71,36 +61,47 @@ export function VisualConceptCard({
       label="Visual Concept"
       state={state}
       editVariant="text"
-      isEditing={isEditing}
-      onEditEnter={handleEditEnter}
-      onEditSave={handleEditSave}
-      onEditCancel={handleEditCancel}
-      onAddVariation={onAddVariation}
+      {...editingProps}
       onDelete={onDelete}
       onToggleActive={isEditing ? undefined : onToggleActive}
       meta={meta}
     >
       <div
-        className="flex-1 flex items-center justify-center"
+        className="flex-1 flex flex-row items-center justify-center gap-2 px-2 min-w-0"
         onClick={(e) => isEditing && e.stopPropagation()}
       >
         {isEditing ? (
-          <input
+          <textarea
+            ref={conceptRef}
             autoFocus
-            value={localPhrase}
-            onChange={(e) => setLocalPhrase(e.target.value)}
-            onKeyDown={handleKeyDown}
-            className="w-full italic bg-transparent border-b border-blue-300 focus:border-blue-500 outline-none text-foreground"
-            style={{ fontSize: adaptiveFontSize }}
-            placeholder="Concept phrase"
+            value={local.concept}
+            onChange={(e) => updateField("concept", e.target.value)}
+            onKeyDown={handleConceptKeyDown}
+            className="w-full italic bg-transparent border-b border-bb-user-active-border focus:border-bb-user-active-accent outline-none text-foreground resize-none overflow-hidden leading-snug text-center"
+            style={{ fontSize: conceptFontSize }}
+            placeholder="Concept name"
+            rows={1}
           />
         ) : (
-          <span
-            className="italic text-foreground/80 leading-snug"
-            style={{ fontSize: adaptiveFontSize }}
-          >
-            {phrase}
-          </span>
+          <>
+            {isActive && (
+              <span
+                aria-hidden
+                className="shrink-0 rounded-full"
+                style={{
+                  width: conceptDotSize,
+                  height: conceptDotSize,
+                  background: "var(--bb-ai-active-ring)",
+                }}
+              />
+            )}
+            <span
+              className="italic text-foreground/80 leading-snug text-center min-w-0"
+              style={{ fontSize: conceptFontSize }}
+            >
+              {data.concept}
+            </span>
+          </>
         )}
       </div>
     </ElementWrapper>

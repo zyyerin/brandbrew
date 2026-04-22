@@ -1,6 +1,6 @@
-import { Trash2, X } from "lucide-react";
+import { Trash2 } from "lucide-react";
 import type { DirectionVersion } from "../types/project";
-import { LAYOUT, TYPOGRAPHY } from "../utils/design-tokens";
+import { LAYOUT, TYPE } from "../utils/design-tokens";
 import { formatDateTime } from "../utils/helpers";
 
 interface DirectionVersionsPanelProps {
@@ -12,19 +12,44 @@ interface DirectionVersionsPanelProps {
   onClose: () => void;
 }
 
-function VersionCardPlaceholder() {
+interface VersionPreviewTileProps {
+  imageUrl?: string;
+  label: string;
+  alt: string;
+  fit?: "cover" | "contain";
+  background?: string;
+  /** When set, shown instead of `No {label}` when there is no image */
+  emptyText?: string;
+}
+
+function VersionPreviewTile({ imageUrl, label, alt, fit = "cover", background, emptyText }: VersionPreviewTileProps) {
   return (
     <div
-      className="w-full rounded-lg flex items-center justify-center"
+      className="w-full h-full rounded-lg overflow-hidden relative"
       style={{
-        aspectRatio: `${LAYOUT.VS_SNAPSHOT_ASPECT_RATIO}`,
-        background: "var(--bb-user-inactive-bg)",
+        background: background ?? "var(--bb-user-inactive-bg)",
         border: "1px dashed var(--bb-user-inactive-border)",
       }}
     >
-      <span style={{ fontSize: TYPOGRAPHY.microLabel.fontSize, color: "var(--bb-user-inactive-accent)", opacity: 0.5 }}>
-        No preview
-      </span>
+      {imageUrl ? (
+        <img
+          alt={alt}
+          src={imageUrl}
+          className={`absolute inset-0 w-full h-full pointer-events-none ${
+            fit === "contain" ? "object-contain" : "object-cover"
+          }`}
+          draggable={false}
+        />
+      ) : (
+        <div className="absolute inset-0 flex items-center justify-center px-2 text-center">
+          <span
+            className="leading-tight"
+            style={{ fontSize: TYPE.size.xs, color: "var(--bb-user-inactive-accent)", opacity: 0.6 }}
+          >
+            {emptyText ?? `No ${label}`}
+          </span>
+        </div>
+      )}
     </div>
   );
 }
@@ -35,30 +60,17 @@ export function DirectionVersionsPanel({
   visualSnapshotUrl,
   onSelectVersion,
   onDeleteVersion,
-  onClose,
 }: DirectionVersionsPanelProps) {
   return (
     <div
-      className="absolute right-3 bottom-3 z-30 flex flex-col bg-white rounded-2xl shadow-xl border border-border/60 overflow-hidden"
-      style={{ width: LAYOUT.SIDE_PANEL_WIDTH, top: LAYOUT.BOARD_PANEL_TOP }}
+      className="absolute z-20 flex flex-col bg-white rounded-2xl shadow-xl border border-border/60 overflow-hidden"
+      style={{
+        width: LAYOUT.panel.sideWidth,
+        top: LAYOUT.overlay.rightMarginTop,
+        bottom: LAYOUT.overlay.rightMarginBottom,
+        right: LAYOUT.overlay.rightMarginRight,
+      }}
     >
-      {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3 border-b border-border/40 shrink-0">
-        <h1
-          className="text-foreground cursor-default truncate"
-          style={{ fontSize: TYPOGRAPHY.panelHeading.fontSize, fontWeight: TYPOGRAPHY.panelHeading.fontWeight }}
-        >
-          Brand Direction
-        </h1>
-        <button
-          onClick={onClose}
-          className="p-1 rounded-md text-muted-foreground/50 hover:text-foreground hover:bg-muted/40 transition-colors cursor-pointer shrink-0"
-          aria-label="Close panel"
-        >
-          <X size={15} />
-        </button>
-      </div>
-
       {/* Content */}
       <div className="flex-1 min-h-0 overflow-y-auto">
         {versions.length === 0 ? (
@@ -67,7 +79,7 @@ export function DirectionVersionsPanel({
               <span className="text-3xl">☕️</span>
               <p
                 className="text-muted-foreground/60 leading-relaxed"
-                style={{ fontSize: TYPOGRAPHY.cardBody.fontSize }}
+                style={{ fontSize: TYPE.size.base }}
               >
                 No saved directions yet.
                 <br />
@@ -80,6 +92,8 @@ export function DirectionVersionsPanel({
             {versions.map((version) => {
               const isActive = version.id === activeVersionId;
               const previewUrl = version.snapshotImageUrl ?? visualSnapshotUrl;
+              const logoUrl = version.cache?.logoImageUrl;
+              const applicationUrl = version.cache?.contextImageUrls?.[0];
               const createdAt = version.createdAt instanceof Date
                 ? version.createdAt
                 : new Date(version.createdAt);
@@ -93,7 +107,7 @@ export function DirectionVersionsPanel({
                   onKeyDown={(e) => e.key === "Enter" && onSelectVersion(version)}
                   className={`group flex flex-col gap-1.5 p-2 rounded-xl border cursor-pointer transition-all ${
                     isActive
-                      ? "border-foreground/20 bg-muted/30 shadow-sm"
+                      ? "border-foreground/20 bg-muted/30 shadow-sm ring-2 ring-[var(--bb-user-active-accent)] ring-offset-1 ring-offset-white"
                       : "border-border/50 bg-white hover:border-border hover:shadow-sm"
                   }`}
                 >
@@ -101,7 +115,7 @@ export function DirectionVersionsPanel({
                   <div className="flex items-center justify-between gap-2 px-1 pt-0.5">
                     <span
                       className="text-foreground leading-tight truncate flex-1"
-                      style={{ fontSize: TYPOGRAPHY.cardBodySm.fontSize, fontWeight: 600 }}
+                      style={{ fontSize: TYPE.size.baseSm, fontWeight: 600 }}
                     >
                       {version.label}
                     </span>
@@ -121,35 +135,43 @@ export function DirectionVersionsPanel({
                       )}
                       <span
                         className="text-muted-foreground/50"
-                        style={{ fontSize: TYPOGRAPHY.queueLabel.fontSize }}
+                        style={{ fontSize: TYPE.size.sm }}
                       >
                         {formatDateTime(createdAt)}
                       </span>
                     </div>
                   </div>
 
-                  {/* Snapshot preview */}
-                  {previewUrl ? (
-                    <div
-                      className="w-full rounded-lg overflow-hidden relative"
-                      style={{ aspectRatio: `${LAYOUT.VS_SNAPSHOT_ASPECT_RATIO}` }}
-                    >
-                      <img
-                        alt={version.label}
-                        src={previewUrl}
-                        className="absolute inset-0 w-full h-full object-cover pointer-events-none"
-                        draggable={false}
-                      />
-                      {isActive && (
-                        <div
-                          className="absolute inset-0 rounded-lg"
-                          style={{ boxShadow: "inset 0 0 0 2px var(--bb-user-active-accent)" }}
+                  {/* Split preview: left logo (50%), right snapshot + application */}
+                  <div
+                    className="relative w-full rounded-lg overflow-hidden"
+                    style={{ aspectRatio: `${LAYOUT.card.snapshotAspectRatio}` }}
+                  >
+                    <div className="absolute inset-0 grid grid-cols-2 gap-1">
+                      <div className="h-full">
+                        <VersionPreviewTile
+                          imageUrl={logoUrl}
+                          label="logo"
+                          alt={`${version.label} logo`}
+                          fit="contain"
+                          background="#ffffff"
                         />
-                      )}
+                      </div>
+                      <div className="h-full grid grid-rows-2 gap-1">
+                        <VersionPreviewTile
+                          imageUrl={previewUrl}
+                          label="snapshot"
+                          alt={`${version.label} snapshot`}
+                        />
+                        <VersionPreviewTile
+                          imageUrl={applicationUrl}
+                          label="application"
+                          alt={`${version.label} application`}
+                          emptyText="Not Available Yet"
+                        />
+                      </div>
                     </div>
-                  ) : (
-                    <VersionCardPlaceholder />
-                  )}
+                  </div>
                 </div>
               );
             })}

@@ -25,16 +25,18 @@ Key constants: `LAYOUT.SIDE_PANEL_WIDTH` (400), `LAYOUT.VARIATIONS_PANEL_WIDTH` 
 
 ## Typography
 
-Use `TYPOGRAPHY` presets from `design-tokens.ts` — do not invent font sizes:
+Use `TYPE` scale from `design-tokens.ts` — do not invent font sizes:
 
 ```typescript
 // ❌ BAD
 <h2 style={{ fontSize: 22 }}>
 
 // ✅ GOOD
-import { TYPOGRAPHY } from "../utils/design-tokens";
-<h2 style={TYPOGRAPHY.cardHeadingMd}>
+import { TYPE } from "../utils/design-tokens";
+<h2 style={{ fontSize: TYPE.size.xl }}>
 ```
+
+Scale: `TYPE.size` (micro→xxl), `TYPE.weight` (normal/semibold/bold), `TYPE.leading` (tight→loose), `TYPE.icon` (sm/base).
 
 ## Color Semantics
 

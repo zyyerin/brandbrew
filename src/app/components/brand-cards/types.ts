@@ -8,7 +8,6 @@ export type GeneratedCardType =
   | "style-reference"
   | "logo"
   | "visual-snapshot"
-  | "brand-brief"
   | "art-style";
 
 export interface GeneratedCardItem {
@@ -21,6 +20,6 @@ export interface GeneratedCardItem {
   meta?: VariationMeta;
 }
 
-export type VariationState = "inactive" | "active" | "waiting" | "merging" | "available" | "uploading";
+export type VariationState = "inactive" | "active" | "waiting" | "queued" | "merging" | "available" | "uploading";
 
 export type EditVariant = "text" | "image" | "color" | "font";

@@ -30,7 +30,7 @@ export function NoodleConnections({ cardEndpoints, portX, portY }: NoodleConnect
             <circle
               cx={ep.x}
               cy={ep.y}
-              r={LAYOUT.PORT_RADIUS}
+              r={LAYOUT.connection.portRadius}
               fill="var(--bb-user-active-accent)"
             />
           </g>
@@ -39,7 +39,7 @@ export function NoodleConnections({ cardEndpoints, portX, portY }: NoodleConnect
       <circle
         cx={portX}
         cy={portY}
-        r={LAYOUT.PORT_RADIUS + 1}
+        r={LAYOUT.connection.portRadius + 1}
         fill="var(--bb-user-active-accent)"
       />
     </svg>

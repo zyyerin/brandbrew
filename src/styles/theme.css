@@ -149,6 +149,26 @@
   display: none;
 }
 
+/* Visual Concept panel — selected row indicator dot (active concept) */
+@keyframes bb-vc-active-dot-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(139, 92, 246, 0.5);
+  }
+  100% {
+    box-shadow: 0 0 0 8px rgba(139, 92, 246, 0);
+  }
+}
+
+.bb-vc-active-dot {
+  animation: bb-vc-active-dot-pulse 1.5s ease-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bb-vc-active-dot {
+    animation: none;
+  }
+}
+
 /* ── Comment mode card hover ring ──────────────────────────────────────────── */
 
 @property --bb-ring-angle {
@@ -182,15 +202,24 @@
   -webkit-mask-composite: destination-out;
   mask-composite: exclude;
   pointer-events: none;
-  opacity: 0;
+  opacity: 0.45;
   transition: opacity 0.15s ease;
-  animation: bb-comment-ring-spin 2s linear infinite paused;
+  animation: bb-comment-ring-spin 3.2s linear infinite running;
   z-index: 40;
+}
+
+.comment-mode-variation {
+  opacity: 0.72;
+  transition: opacity 0.15s ease, transform 0.15s ease;
 }
 
 .comment-mode-variation:hover::after {
   opacity: 1;
-  animation-play-state: running;
+}
+
+.comment-mode-variation:hover {
+  opacity: 1;
+  transform: translateY(-1px);
 }
 
 .comment-mode-variation,
@@ -266,4 +295,21 @@
     font-weight: var(--font-weight-normal);
     line-height: 1.5;
   }
+}
+
+/* ── react-colorful overrides ────────────────────────────────── */
+.react-colorful {
+  border-radius: var(--radius) !important;
+}
+.react-colorful__saturation {
+  border-radius: var(--radius) var(--radius) 0 0 !important;
+}
+.react-colorful__hue {
+  border-radius: 0 0 var(--radius) var(--radius) !important;
+  height: 14px !important;
+}
+.react-colorful__pointer {
+  width: 18px !important;
+  height: 18px !important;
+  border-width: 2.5px !important;
 }

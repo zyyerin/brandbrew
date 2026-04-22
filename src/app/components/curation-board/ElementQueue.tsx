@@ -1,10 +1,14 @@
-import React, { useState, useCallback, useRef, useEffect } from "react";
+import React, { useState, useCallback, useRef, useEffect, useLayoutEffect, useMemo } from "react";
 import { GripVertical, Upload } from "lucide-react";
-import { LAYOUT, CANVAS, TYPOGRAPHY, ELEMENT_TYPE_LABELS as LABELS, adaptiveSize } from "../../utils/design-tokens";
+import { LAYOUT, CANVAS, TYPE, ELEMENT_TYPE_LABELS as LABELS, adaptiveSize } from "../../utils/design-tokens";
 import type { SlotPosition } from "../curation-board";
-import { getMergeHint, isMergeSupported } from "../../utils/merge-logic";
+import { isMergeSupported, resolveMergeUiHint } from "@server-shared/merge-specs.tsx";
 import { IMAGE_ELEMENT_IDS } from "../../types/project";
+import { useVSPanel } from "../../contexts/VSPanelContext";
+import { useVCPanel } from "../../contexts/VCPanelContext";
 import type { ElementId } from "../../types/project";
+import type { DropTarget, MergeUiHintContext } from "../../hooks/useDirectMerge";
+import type { MergeHintTemplateVars } from "@server-shared/merge-specs.tsx";
 import { ElementWrapper } from "../brand-cards";
 import type { VariationState } from "../brand-cards";
 import type { VariationItem } from "../variations-panel";
@@ -23,13 +27,15 @@ interface ElementQueueProps {
   variations: VariationItem[];
   activeVariationId: string;
   isQueueActive: boolean;
-  isMerging: boolean;
+  mergingVariationIds?: Set<string>;
   isDragSource: boolean;
   isQueueReorderDragging: boolean;
   isQueueReorderDropTarget: boolean;
+  isQueueReorderEnabled: boolean;
   draggedId: string | null;
-  mergeTarget: { elementType: string; variationId: string } | null;
-  queueMergeTarget: string | null;
+  draggedVariationId: string | null;
+  getMergeHintVars?: (ctx: MergeUiHintContext) => MergeHintTemplateVars | undefined;
+  dropTarget: DropTarget | null;
   checkedVariationIds: Set<string>;
   brandBrief?: { name?: string; tagline?: string; description?: string };
   variationElMapRef: React.RefObject<Map<string, HTMLDivElement>>;
@@ -39,18 +45,17 @@ interface ElementQueueProps {
   // Drag merge handlers
   onDragStart: (e: React.DragEvent<HTMLDivElement>, elementType: string, variationId: string) => void;
   onDragEnd: () => void;
-  onDragOver: (e: React.DragEvent<HTMLDivElement>, targetElementType: string, targetVariationId: string) => void;
-  onDragLeave: (e: React.DragEvent<HTMLDivElement>, targetElementType: string, targetVariationId: string) => void;
-  onDrop: (e: React.DragEvent<HTMLDivElement>) => void;
-  isQueueSlotDropValid: (dragSourceElementType: string, targetElementType: string) => boolean;
-  onQueueSlotDragOver: (e: React.DragEvent<HTMLDivElement>, targetElementType: string) => void;
-  onQueueSlotDragLeave: (e: React.DragEvent<HTMLDivElement>, targetElementType: string) => void;
-  onQueueSlotDrop: (e: React.DragEvent<HTMLDivElement>, targetElementType: string) => void;
-  queueBodyDropTarget?: string | null;
-  isQueueBodyDropValid?: (source: string, target: string) => boolean;
-  onQueueBodyDragOver?: (e: React.DragEvent<HTMLDivElement>, targetElementType: string) => void;
-  onQueueBodyDragLeave?: (e: React.DragEvent<HTMLDivElement>, targetElementType: string) => void;
-  onQueueBodyDrop?: (e: React.DragEvent<HTMLDivElement>, targetElementType: string) => void;
+  onCardDragOver: (e: React.DragEvent<HTMLDivElement>, targetElementType: string, targetVariationId: string) => void;
+  onCardDragLeave: (e: React.DragEvent<HTMLDivElement>, targetElementType: string, targetVariationId: string) => void;
+  onCardDrop: (e: React.DragEvent<HTMLDivElement>) => void;
+  isSlotDropValid: (dragSourceElementType: string, targetElementType: string) => boolean;
+  onSlotDragOver: (e: React.DragEvent<HTMLDivElement>, targetElementType: string) => void;
+  onSlotDragLeave: (e: React.DragEvent<HTMLDivElement>, targetElementType: string) => void;
+  onSlotDrop: (e: React.DragEvent<HTMLDivElement>, targetElementType: string) => void;
+  isBodyDropValid: (source: string, target: string) => boolean;
+  onBodyDragOver: (e: React.DragEvent<HTMLDivElement>, targetElementType: string) => void;
+  onBodyDragLeave: (e: React.DragEvent<HTMLDivElement>, targetElementType: string) => void;
+  onBodyDrop: (e: React.DragEvent<HTMLDivElement>, targetElementType: string) => void;
   // Queue reorder handlers
   onQueueReorderDragStart: (e: React.DragEvent<HTMLDivElement>, elementType: string) => void;
   onQueueReorderDragEnd: () => void;
@@ -63,17 +68,27 @@ interface ElementQueueProps {
   onToggleVariationChecked?: (variationId: string, peerVariationIds: string[]) => void;
   onDeleteVariation?: (elementType: string, variationId: string) => void;
   isAddingVariation?: boolean;
-  /** True when initial brand generation is in progress (empty queues show "Brewing…") */
+  /** True when this element's variation is pending in the current pipeline run. */
   isGeneratingPhase?: boolean;
+  /** True when this element is actively being generated right now (vs queued). */
+  isBrewing?: boolean;
+  /** True when a queue-slot merge is in flight for this element type. */
+  isQueueMerging?: boolean;
   // Upload variation (image element types only)
   onUploadVariation?: (file: File) => void;
   uploadingVariationIds?: Set<string>;
+  // Upload image to extract color palette (color-palette element type only)
+  onUploadImageForPalette?: (file: File) => void;
   // Comment mode
   commentMode?: boolean;
   commentTarget?: { elementType: string; variationId: string } | null;
   onCommentClick?: (elementType: string, variationId: string) => void;
   // Keyboard variation reorder
   onMoveVariation?: (elementType: string, variationId: string, direction: "left" | "right") => void;
+  /** Selected visual concept id for cross-queue relation highlight. */
+  activeConceptId?: string | null;
+  /** After slot widths change (e.g. image intrinsic aspect), bump parent layout so VS noodles recompute. */
+  onNoodleLayoutChange?: () => void;
 }
 
 const EQ_ACTIVE_COLOR: QueueColors & { bgHover: string } = {
@@ -105,13 +120,15 @@ export const ElementQueue = React.memo(function ElementQueue({
   variations,
   activeVariationId,
   isQueueActive,
-  isMerging,
+  mergingVariationIds,
   isDragSource,
   isQueueReorderDragging,
   isQueueReorderDropTarget,
+  isQueueReorderEnabled,
   draggedId,
-  mergeTarget,
-  queueMergeTarget,
+  draggedVariationId,
+  getMergeHintVars,
+  dropTarget,
   checkedVariationIds,
   brandBrief,
   variationElMapRef,
@@ -120,18 +137,17 @@ export const ElementQueue = React.memo(function ElementQueue({
   onFilmstripScroll,
   onDragStart,
   onDragEnd,
-  onDragOver,
-  onDragLeave,
-  onDrop,
-  isQueueSlotDropValid,
-  onQueueSlotDragOver,
-  onQueueSlotDragLeave,
-  onQueueSlotDrop,
-  queueBodyDropTarget,
-  isQueueBodyDropValid,
-  onQueueBodyDragOver,
-  onQueueBodyDragLeave,
-  onQueueBodyDrop,
+  onCardDragOver,
+  onCardDragLeave,
+  onCardDrop,
+  isSlotDropValid,
+  onSlotDragOver,
+  onSlotDragLeave,
+  onSlotDrop,
+  isBodyDropValid,
+  onBodyDragOver,
+  onBodyDragLeave,
+  onBodyDrop,
   onQueueReorderDragStart,
   onQueueReorderDragEnd,
   onQueueReorderDragOver,
@@ -143,21 +159,30 @@ export const ElementQueue = React.memo(function ElementQueue({
   onDeleteVariation,
   isAddingVariation,
   isGeneratingPhase,
+  isBrewing,
+  isQueueMerging,
   onUploadVariation,
   uploadingVariationIds,
   commentMode,
   commentTarget,
   onCommentClick,
   onMoveVariation,
+  onUploadImageForPalette,
+  activeConceptId,
+  onNoodleLayoutChange,
 }: ElementQueueProps) {
-  const [isLeftAreaHovered, setIsLeftAreaHovered] = useState(false);
   const [isFileDragOver, setIsFileDragOver] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
   const [imageAspectRatios, setImageAspectRatios] = useState<Record<string, number>>({});
   const addSlotFileInputRef = useRef<HTMLInputElement>(null);
+  const addSlotExtractInputRef = useRef<HTMLInputElement>(null);
   const filmstripRef = useRef<HTMLDivElement>(null);
+  const prevActiveVariationIdRef = useRef<string | null>(null);
+  const prevVariationCountRef = useRef<number>(0);
 
   const isImageElementType = IMAGE_ELEMENT_IDS.has(elementType as ElementId);
+  const vsPanelExpanded = useVSPanel();
+  const leftPanelFraction = useVCPanel();
 
   const handleAddSlotFileChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -168,24 +193,47 @@ export const ElementQueue = React.memo(function ElementQueue({
     [onUploadVariation],
   );
 
+  const handleAddSlotExtractChange = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (file) onUploadImageForPalette?.(file);
+      e.target.value = "";
+    },
+    [onUploadImageForPalette],
+  );
+
   // variations are pre-sorted by the parent via useVariationReorder
   const sortedVersions = variations;
   const label = LABELS[elementType] ?? elementType;
-  const slotW = (elementType === "application" || elementType === "art-style") ? Math.round(LAYOUT.VARIATION_SLOT_SIZE * (16 / 9)) : LAYOUT.VARIATION_SLOT_SIZE;
-  const slotH = LAYOUT.VARIATION_SLOT_SIZE;
-  const count = sortedVersions.length;
+  const slotW = elementType === "art-style" ? Math.round(LAYOUT.slot.size * (16 / 9)) : LAYOUT.slot.size;
+  const slotH = LAYOUT.slot.size;
   const colors = isQueueActive ? EQ_ACTIVE_COLOR : EQ_INACTIVE_COLOR;
   const labelScale = adaptiveSize(1, zoom, CANVAS.ACTION_BAR_SCALE_MIN, CANVAS.ACTION_BAR_SCALE_MAX);
 
   const vpLeftCanvas = -pan.x / zoom;
   const vpWidthCanvas = containerWidth > 0 ? containerWidth / zoom : 4000;
-  const queueStripeLeft = vpLeftCanvas - LAYOUT.QUEUE_STRIPE_OVERHANG;
-  const queueStripeWidth = vpWidthCanvas + 2 * LAYOUT.QUEUE_STRIPE_OVERHANG;
-  const labelPinX = (8 - pan.x) / zoom;
-  // Filmstrip starts at the accent-bar x so overflow-x:auto clips cards there,
-  // preventing them from visually passing through the left queue boundary.
-  const filmstripMarginLeft = labelPinX - queueStripeLeft; // = 8/zoom + QUEUE_STRIPE_OVERHANG
-  const filmstripWidth = vpWidthCanvas - (filmstripMarginLeft - LAYOUT.QUEUE_STRIPE_OVERHANG); // = vpWidthCanvas - 8/zoom
+  const queueStripeLeft = vpLeftCanvas - LAYOUT.queue.stripeOverhang;
+  const queueStripeWidth = vpWidthCanvas + 2 * LAYOUT.queue.stripeOverhang;
+  const vcPanelScreenW = leftPanelFraction > 0
+    ? containerWidth * leftPanelFraction + LAYOUT.overlay.leftMarginLeft + 8
+    : 0;
+  const labelPinX = (vcPanelScreenW + 8 - pan.x) / zoom;
+  const filmstripMarginLeft = labelPinX - queueStripeLeft;
+  const vsOcclusionScreenPx = Math.min(
+    Math.max(0, containerWidth),
+    LAYOUT.overlay.rightFilmstripOcclusionScreenPx + LAYOUT.overlay.rightMarginRight,
+  );
+  const vsPanelCanvasW = vsPanelExpanded ? vsOcclusionScreenPx / zoom : 0;
+  const filmstripWidth = vpWidthCanvas - vsPanelCanvasW - (filmstripMarginLeft - LAYOUT.queue.stripeOverhang);
+  const softClipCanvasWidth = Math.max(1, Math.min(filmstripWidth * 0.18, 28 / zoom));
+  const leftClipWidth = leftPanelFraction > 0 ? Math.max(1, Math.min(filmstripWidth * 0.08, 20 / zoom)) : 0;
+  const filmstripMaskImage = leftPanelFraction > 0 && vsPanelExpanded
+    ? `linear-gradient(to right, transparent 0, black ${leftClipWidth}px, black calc(100% - ${softClipCanvasWidth}px), transparent 100%)`
+    : leftPanelFraction > 0
+      ? `linear-gradient(to right, transparent 0, black ${leftClipWidth}px, black 100%)`
+      : vsPanelExpanded
+        ? `linear-gradient(to right, black 0, black calc(100% - ${softClipCanvasWidth}px), transparent 100%)`
+        : "none";
 
   const handleImageAspectRatioChange = useCallback((variationId: string, aspectRatio: number) => {
     if (!Number.isFinite(aspectRatio) || aspectRatio <= 0) return;
@@ -194,6 +242,25 @@ export const ElementQueue = React.memo(function ElementQueue({
       return { ...prev, [variationId]: aspectRatio };
     });
   }, []);
+
+  const aspectLayoutSignal = useMemo(
+    () =>
+      Object.entries(imageAspectRatios)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([k, v]) => `${k}:${v}`)
+        .join("|"),
+    [imageAspectRatios],
+  );
+  const prevAspectSignalRef = useRef<string | null>(null);
+  useLayoutEffect(() => {
+    if (prevAspectSignalRef.current === null) {
+      prevAspectSignalRef.current = aspectLayoutSignal;
+      return;
+    }
+    if (prevAspectSignalRef.current === aspectLayoutSignal) return;
+    prevAspectSignalRef.current = aspectLayoutSignal;
+    onNoodleLayoutChange?.();
+  }, [aspectLayoutSignal, onNoodleLayoutChange]);
 
   const handleFileDragOver = useCallback(
     (e: React.DragEvent<HTMLDivElement>) => {
@@ -235,14 +302,14 @@ export const ElementQueue = React.memo(function ElementQueue({
   // ── Populate slot position registry (synchronous ref write) ──
   // Runs every render so the noodle math always has fresh layout data.
   {
-    const gap = LAYOUT.FILMSTRIP_GAP;
+    const gap = LAYOUT.filmstrip.gap;
     let acc = 0;
     for (const variation of sortedVersions) {
       const hasImage = Boolean((variation.data as { imageUrl?: string } | null)?.imageUrl);
       const ar = imageAspectRatios[variation.id] ?? 1;
       const dynW = Math.max(
         Math.round(slotH * 0.5),
-        Math.round((slotH - LAYOUT.VARIATION_SLOT_PADDING_X) * ar + LAYOUT.VARIATION_SLOT_PADDING_X),
+        Math.round((slotH - LAYOUT.slot.paddingX) * ar + LAYOUT.slot.paddingX),
       );
       const w = hasImage ? dynW : slotW;
       slotPositionMapRef.current.set(variation.id, { queueIndex, offsetInFilmstrip: acc, slotWidth: w });
@@ -262,9 +329,59 @@ export const ElementQueue = React.memo(function ElementQueue({
     return () => el.removeEventListener("scroll", handler);
   }, [elementType, filmstripScrollMapRef, onFilmstripScroll]);
 
+  // ── Auto-scroll filmstrip to newly active variation ──
+  // Skip one auto-scroll when active card changes because of deletion.
+  useEffect(() => {
+    const prevActiveId = prevActiveVariationIdRef.current;
+    const prevCount = prevVariationCountRef.current;
+    const currentCount = sortedVersions.length;
+    const activeChanged = activeVariationId !== prevActiveId;
+    const removedVariation = currentCount < prevCount;
+
+    if (!activeChanged) {
+      prevVariationCountRef.current = currentCount;
+      return;
+    }
+
+    if (removedVariation) {
+      prevActiveVariationIdRef.current = activeVariationId ?? null;
+      prevVariationCountRef.current = currentCount;
+      return;
+    }
+
+    if (!activeVariationId) {
+      prevActiveVariationIdRef.current = null;
+      prevVariationCountRef.current = currentCount;
+      return;
+    }
+
+    const el = variationElMapRef.current.get(activeVariationId);
+    const strip = filmstripRef.current;
+    if (el && strip) {
+      const stripRect = strip.getBoundingClientRect();
+      const cardRect = el.getBoundingClientRect();
+      if (cardRect.right > stripRect.right || cardRect.left < stripRect.left) {
+        el.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
+      }
+    }
+
+    prevActiveVariationIdRef.current = activeVariationId;
+    prevVariationCountRef.current = currentCount;
+  }, [activeVariationId, sortedVersions.length, variationElMapRef]);
+
   // ── Keyboard variation reorder ──
   useEffect(() => {
-    if (!isHovered || !activeVariationId || !onMoveVariation || draggedId !== null || commentMode) return;
+    if (
+      !isHovered ||
+      !activeVariationId ||
+      !onMoveVariation ||
+      draggedId !== null ||
+      commentMode ||
+      checkedVariationIds.size === 0 ||
+      !checkedVariationIds.has(activeVariationId)
+    ) {
+      return;
+    }
 
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
@@ -278,7 +395,7 @@ export const ElementQueue = React.memo(function ElementQueue({
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isHovered, activeVariationId, onMoveVariation, elementType, draggedId, commentMode]);
+  }, [isHovered, activeVariationId, onMoveVariation, elementType, draggedId, commentMode, checkedVariationIds]);
 
   return (
     <div
@@ -293,8 +410,8 @@ export const ElementQueue = React.memo(function ElementQueue({
       onDragOver={(e) => {
         if (e.dataTransfer.types.includes("Files")) {
           handleFileDragOver(e);
-        } else if (draggedId && draggedId !== elementType && isImageElementType && isQueueBodyDropValid?.(draggedId, elementType)) {
-          onQueueBodyDragOver?.(e, elementType);
+        } else if (draggedId && draggedId !== elementType && isImageElementType && isBodyDropValid(draggedId, elementType)) {
+          onBodyDragOver(e, elementType);
         } else {
           onQueueReorderDragOver(e, elementType);
         }
@@ -302,8 +419,8 @@ export const ElementQueue = React.memo(function ElementQueue({
       onDragLeave={(e) => {
         if (isFileDragOver) {
           handleFileDragLeave(e);
-        } else if (queueBodyDropTarget === elementType) {
-          onQueueBodyDragLeave?.(e, elementType);
+        } else if (dropTarget?.type === "body" && dropTarget.elementType === elementType) {
+          onBodyDragLeave(e, elementType);
         } else {
           onQueueReorderDragLeave(e, elementType);
         }
@@ -311,8 +428,8 @@ export const ElementQueue = React.memo(function ElementQueue({
       onDrop={(e) => {
         if (e.dataTransfer.types.includes("Files")) {
           handleFileDrop(e);
-        } else if (queueBodyDropTarget === elementType) {
-          onQueueBodyDrop?.(e, elementType);
+        } else if (dropTarget?.type === "body" && dropTarget.elementType === elementType) {
+          onBodyDrop(e, elementType);
         } else {
           onQueueReorderDrop(e, elementType);
         }
@@ -330,7 +447,7 @@ export const ElementQueue = React.memo(function ElementQueue({
       )}
 
       {/* Variation move overlay */}
-      {queueBodyDropTarget === elementType && (
+      {dropTarget?.type === "body" && dropTarget.elementType === elementType && (
         <div
           className="absolute inset-0 z-40 flex items-center justify-center pointer-events-none"
           style={{
@@ -380,15 +497,22 @@ export const ElementQueue = React.memo(function ElementQueue({
           style={{ left: labelPinX - queueStripeLeft + 6 }}
         >
           <div
-            className="flex items-center gap-1.5 pointer-events-auto"
+            className={`flex items-center gap-1.5 pointer-events-auto ${
+              isQueueReorderEnabled ? "cursor-grab active:cursor-grabbing" : "cursor-not-allowed"
+            }`}
             style={{ transform: `scale(${labelScale})`, transformOrigin: "left center" }}
+            draggable={isQueueReorderEnabled}
+            onDragStart={isQueueReorderEnabled ? (e) => onQueueReorderDragStart(e, elementType) : undefined}
+            onDragEnd={onQueueReorderDragEnd}
+            title={isQueueReorderEnabled ? "Drag label to reorder" : "Select one variation to enable reorder"}
+            data-variation-slot
           >
             <div
-              draggable
-              onDragStart={(e) => onQueueReorderDragStart(e, elementType)}
-              onDragEnd={onQueueReorderDragEnd}
-              className="flex-shrink-0 flex items-center justify-center w-5 h-5 rounded cursor-grab active:cursor-grabbing hover:bg-black/[0.06] transition-colors group"
-              title="Drag to reorder"
+              className={`flex-shrink-0 flex items-center justify-center w-5 h-5 rounded transition-colors group ${
+                isQueueReorderEnabled
+                  ? "cursor-grab active:cursor-grabbing hover:bg-black/[0.06]"
+                  : "cursor-not-allowed opacity-40"
+              }`}
               data-variation-slot
             >
               <GripVertical size={11} className="text-muted-foreground/40 group-hover:text-muted-foreground/70 transition-colors" />
@@ -396,25 +520,10 @@ export const ElementQueue = React.memo(function ElementQueue({
 
             <span
               className="select-none whitespace-nowrap"
-              style={{ fontSize: TYPOGRAPHY.cardTagline.fontSize, fontWeight: 600, color: colors.accent }}
+              style={{ fontSize: TYPE.size.baseLg, fontWeight: 600, color: colors.accent }}
             >
               {label}
             </span>
-
-            {count > 1 && (
-              <span
-                className="px-1.5 py-0.5 rounded-full select-none whitespace-nowrap"
-                style={{
-                  fontSize: TYPOGRAPHY.badge.fontSize,
-                  fontWeight: 600,
-                  color: colors.accent,
-                  background: `${colors.accent}14`,
-                  border: `1px solid ${colors.accent}22`,
-                }}
-              >
-                {count}v
-              </span>
-            )}
           </div>
         </div>
 
@@ -427,25 +536,25 @@ export const ElementQueue = React.memo(function ElementQueue({
             marginLeft: filmstripMarginLeft,
             width: filmstripWidth,
             boxSizing: "border-box",
-            paddingLeft: LAYOUT.FILMSTRIP_PADDING_LEFT,
-            paddingRight: LAYOUT.VARIATION_SLOT_PADDING_X,
-            paddingTop: LAYOUT.FILMSTRIP_PADDING_TOP,
-            paddingBottom: LAYOUT.FILMSTRIP_PADDING_BOTTOM,
+            paddingLeft: LAYOUT.filmstrip.paddingLeft,
+            paddingRight: LAYOUT.slot.paddingX,
+            paddingTop: LAYOUT.filmstrip.paddingTop,
+            paddingBottom: LAYOUT.filmstrip.paddingBottom,
+            ...(filmstripMaskImage !== "none" ? { WebkitMaskImage: filmstripMaskImage, maskImage: filmstripMaskImage } : {}),
           }}
         >
-          {/* Add variation hover zone — sized exactly to the card footprint to prevent premature trigger */}
+          {/* Add variation slot */}
           {draggedId === null && onAddVariation && (
             <div
               style={{
                 position: "absolute",
-                left: LAYOUT.ADD_SLOT_LEFT_OFFSET,
-                top: LAYOUT.FILMSTRIP_PADDING_TOP,
-                width: LAYOUT.ADD_SLOT_WIDTH,
-                height: LAYOUT.VARIATION_SLOT_SIZE,
+                left: LAYOUT.slot.addOffset,
+                top: LAYOUT.filmstrip.paddingTop,
+                width: LAYOUT.slot.addWidth,
+                height: LAYOUT.slot.size,
                 zIndex: 14,
+                cursor: "pointer",
               }}
-              onMouseEnter={() => setIsLeftAreaHovered(true)}
-              onMouseLeave={() => setIsLeftAreaHovered(false)}
             >
               {isImageElementType && onUploadVariation && (
                 <input
@@ -457,52 +566,72 @@ export const ElementQueue = React.memo(function ElementQueue({
                   aria-hidden
                 />
               )}
-              {(isLeftAreaHovered || isAddingVariation) && (
-                <AddVariationSlot
-                  label={label}
-                  colors={colors}
-                  isLoading={isAddingVariation ?? false}
-                  onClick={() => onAddVariation?.(elementType)}
-                  isImageElementType={isImageElementType}
-                  onUploadImage={onUploadVariation}
-                  onTriggerUpload={
-                    isImageElementType && onUploadVariation
-                      ? () => addSlotFileInputRef.current?.click()
-                      : undefined
-                  }
+              {elementType === "color-palette" && onUploadImageForPalette && (
+                <input
+                  ref={addSlotExtractInputRef}
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={handleAddSlotExtractChange}
+                  aria-hidden
                 />
               )}
+              <AddVariationSlot
+                label={label}
+                colors={colors}
+                isLoading={isAddingVariation ?? false}
+                onClick={() => onAddVariation?.(elementType)}
+                isImageElementType={isImageElementType}
+                onUploadImage={onUploadVariation}
+                onTriggerUpload={
+                  isImageElementType && onUploadVariation
+                    ? () => addSlotFileInputRef.current?.click()
+                    : undefined
+                }
+                onExtractFromImage={
+                  elementType === "color-palette" && onUploadImageForPalette
+                    ? () => addSlotExtractInputRef.current?.click()
+                    : undefined
+                }
+              />
             </div>
           )}
 
-          {/* Queue-level affordance slot */}
-          {draggedId !== null && isQueueSlotDropValid(draggedId, elementType) && !(isImageElementType && draggedId === elementType) && (
+          {/* Queue-level affordance slot (cross-type merge only; same-type add-variation drag removed) */}
+          {draggedId !== null && isSlotDropValid(draggedId, elementType) && (
             <QueueAffordanceSlot
-              isHovered={queueMergeTarget === elementType}
-              isMerge={draggedId !== elementType}
-              hintText={
-                draggedId === elementType
-                  ? "Add variation"
-                  : getMergeHint(draggedId, elementType)
-              }
+              isHovered={dropTarget?.type === "slot" && dropTarget.elementType === elementType}
+              isMerge
+              hintText={resolveMergeUiHint(
+                "slot",
+                draggedId,
+                elementType,
+                getMergeHintVars?.({ sourceId: draggedId, variationId: draggedVariationId }),
+              )}
               colors={colors}
               zoom={zoom}
-              onDragOver={(e) => onQueueSlotDragOver(e, elementType)}
-              onDragLeave={(e) => onQueueSlotDragLeave(e, elementType)}
-              onDrop={(e) => onQueueSlotDrop(e, elementType)}
+              onDragOver={(e) => onSlotDragOver(e, elementType)}
+              onDragLeave={(e) => onSlotDragLeave(e, elementType)}
+              onDrop={(e) => onSlotDrop(e, elementType)}
             />
           )}
 
-          {sortedVersions.length === 0 && (isAddingVariation || isGeneratingPhase) && (
+          {(sortedVersions.length === 0 && isAddingVariation) || isGeneratingPhase ? (
             <div className="flex-shrink-0 relative" style={{ width: slotW, height: slotH }} data-variation-slot>
-              <ElementWrapper label={label} state="waiting"><div /></ElementWrapper>
+              <ElementWrapper label={label} state={isBrewing ? "waiting" : "queued"}><div /></ElementWrapper>
+            </div>
+          ) : null}
+
+          {isQueueMerging && (
+            <div className="flex-shrink-0 relative" style={{ width: slotW, height: slotH }} data-variation-slot>
+              <ElementWrapper label={label} state="merging"><div /></ElementWrapper>
             </div>
           )}
 
           {sortedVersions.map((variation) => {
             const isActive = variation.id === activeVariationId;
             const isThisMergeTarget =
-              mergeTarget?.elementType === elementType && mergeTarget?.variationId === variation.id;
+              dropTarget?.type === "card" && dropTarget.elementType === elementType && dropTarget.variationId === variation.id;
             const isThisCommentTarget =
               commentTarget?.elementType === elementType && commentTarget?.variationId === variation.id;
             const showSlotAffordance =
@@ -513,7 +642,7 @@ export const ElementQueue = React.memo(function ElementQueue({
 
             const variationState: VariationState =
               uploadingVariationIds?.has(variation.id) ? "uploading" :
-              (isActive && isMerging) ? "merging" :
+              mergingVariationIds?.has(variation.id) ? "merging" :
               showSlotAffordance ? "available" :
               checkedVariationIds.has(variation.id) ? "active" :
               "inactive";
@@ -521,9 +650,16 @@ export const ElementQueue = React.memo(function ElementQueue({
             const imageAspectRatio = imageAspectRatios[variation.id] ?? 1;
             const dynamicCardW = Math.max(
               Math.round(slotH * 0.5),
-              Math.round((slotH - LAYOUT.VARIATION_SLOT_PADDING_X) * imageAspectRatio + LAYOUT.VARIATION_SLOT_PADDING_X)
+              Math.round((slotH - LAYOUT.slot.paddingX) * imageAspectRatio + LAYOUT.slot.paddingX)
             );
             const slotWidth = hasImageData ? dynamicCardW : slotW;
+            const isLinkedToActiveConcept =
+              elementType !== "visual-concept" &&
+              Boolean(activeConceptId) &&
+              variation.meta?.sourceConceptVariationId === activeConceptId;
+            const commentHighlightShadow = isThisCommentTarget
+              ? `0 0 0 2.5px var(--bb-user-active-accent), 0 0 0 5px var(--bb-user-active-border)`
+              : null;
 
             return (
               <div
@@ -537,10 +673,7 @@ export const ElementQueue = React.memo(function ElementQueue({
                 style={{
                   width: slotWidth,
                   height: slotH,
-                  ...(isThisCommentTarget ? {
-                    boxShadow: `0 0 0 2.5px var(--bb-user-active-accent), 0 0 0 5px var(--bb-user-active-border)`,
-                    borderRadius: 12,
-                  } : {}),
+                  ...(commentHighlightShadow ? { boxShadow: commentHighlightShadow, borderRadius: 12 } : {}),
                 }}
                 draggable={!commentMode && !uploadingVariationIds?.has(variation.id)}
                 onClick={commentMode ? (e) => {
@@ -549,9 +682,9 @@ export const ElementQueue = React.memo(function ElementQueue({
                 } : undefined}
                 onDragStart={commentMode ? undefined : (e) => onDragStart(e, elementType, variation.id)}
                 onDragEnd={commentMode ? undefined : onDragEnd}
-                onDragOver={(e) => onDragOver(e, elementType, variation.id)}
-                onDragLeave={(e) => onDragLeave(e, elementType, variation.id)}
-                onDrop={onDrop}
+                onDragOver={(e) => onCardDragOver(e, elementType, variation.id)}
+                onDragLeave={(e) => onCardDragLeave(e, elementType, variation.id)}
+                onDrop={onCardDrop}
               >
                 <VariationSlot
                   elementType={elementType}
@@ -562,11 +695,24 @@ export const ElementQueue = React.memo(function ElementQueue({
                   peerVariationIds={sortedVersions.map((v) => v.id).filter((id) => id !== variation.id)}
                   brandBrief={brandBrief}
                   onEditSave={onEditSave}
-                  onAddVariation={onAddVariation}
                   onToggleVariationChecked={onToggleVariationChecked}
                   onDeleteVariation={onDeleteVariation}
                   onImageAspectRatioChange={handleImageAspectRatioChange}
                 />
+
+                {isLinkedToActiveConcept && (
+                  <div
+                    className="absolute z-20 pointer-events-none rounded-full"
+                    style={{
+                      top: adaptiveSize(8, zoom, 6, 14),
+                      left: adaptiveSize(8, zoom, 6, 14),
+                      width: adaptiveSize(LAYOUT.connection.portRadius * 2, zoom),
+                      height: adaptiveSize(LAYOUT.connection.portRadius * 2, zoom),
+                      background: "var(--bb-ai-active-ring)",
+                      opacity: 0.7,
+                    }}
+                  />
+                )}
 
                 {isThisMergeTarget && (
                   <div

@@ -8,6 +8,7 @@ import { createEmptyProject } from "../types/project";
 const MAX_PROJECTS = 3;
 
 export interface UseProjectPersistenceParams {
+  project: ProjectData;
   projectRef: MutableRefObject<ProjectData>;
   setProject: React.Dispatch<React.SetStateAction<ProjectData>>;
   resetToEmpty: () => void;
@@ -16,6 +17,7 @@ export interface UseProjectPersistenceParams {
 }
 
 export function useProjectPersistence({
+  project,
   projectRef,
   setProject,
   resetToEmpty,
@@ -85,7 +87,6 @@ export function useProjectPersistence({
 
   useEffect(() => {
     if (!isLoaded) return;
-    const p = projectRef.current;
     if (pipelineStageRef.current !== null) return;
 
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
@@ -93,7 +94,7 @@ export function useProjectPersistence({
       if (uploadingVariationIdsRef?.current && uploadingVariationIdsRef.current.size > 0) return;
       const p = projectRef.current;
       const snapshot = buildProjectSnapshot(p);
-      const name = p.brandSummary.current.name || p.projectName;
+      const name = p.brandBrief.current.name || p.projectName;
       saveProject(snapshot, currentProjectId)
         .then(() => upsertIndex(currentProjectId, name))
         .catch((err) => console.warn("[Brand Brew] Auto-save failed:", err));
@@ -102,12 +103,12 @@ export function useProjectPersistence({
     return () => {
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     };
-  }, [isLoaded, currentProjectId, upsertIndex, projectRef.current, uploadingVariationIdsRef]);
+  }, [isLoaded, currentProjectId, upsertIndex, project, uploadingVariationIdsRef]);
 
   const doSave = useCallback(async () => {
     const p = projectRef.current;
     const snapshot = buildProjectSnapshot(p);
-    const name = p.brandSummary.current.name || p.projectName;
+    const name = p.brandBrief.current.name || p.projectName;
     await saveProject(snapshot, currentProjectId);
     upsertIndex(currentProjectId, name);
   }, [projectRef, currentProjectId, upsertIndex]);

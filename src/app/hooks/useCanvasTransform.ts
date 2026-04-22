@@ -1,12 +1,25 @@
 import { useState, useCallback, useRef, useEffect } from "react";
-import { CANVAS } from "../utils/design-tokens";
+import { CANVAS, LAYOUT } from "../utils/design-tokens";
 
 const ZOOM_MIN = CANVAS.ZOOM_MIN;
 const ZOOM_MAX = CANVAS.ZOOM_MAX;
 const INITIAL_PAN = CANVAS.PAN_INITIAL;
 const INITIAL_ZOOM = CANVAS.ZOOM_INITIAL;
+const TARGET_VISIBLE_QUEUE_ROWS = CANVAS.TARGET_VISIBLE_QUEUE_ROWS;
+const INITIAL_VIEWPORT_VERTICAL_BUFFER = CANVAS.INITIAL_VIEWPORT_VERTICAL_BUFFER;
 const MAX_PAN_TOP = CANVAS.MAX_PAN_TOP;
 const BOTTOM_MARGIN = CANVAS.BOTTOM_MARGIN;
+const TARGET_QUEUE_STACK_HEIGHT =
+  LAYOUT.queue.rowHeight * TARGET_VISIBLE_QUEUE_ROWS + LAYOUT.queue.gap * (TARGET_VISIBLE_QUEUE_ROWS - 1);
+
+function getResponsiveInitialZoom(containerH: number): number {
+  if (containerH <= 0) return INITIAL_ZOOM;
+  const availableH = Math.max(containerH - INITIAL_VIEWPORT_VERTICAL_BUFFER, 1);
+  const fitRowsZoom = availableH / TARGET_QUEUE_STACK_HEIGHT;
+  return Math.min(Math.max(fitRowsZoom, ZOOM_MIN), INITIAL_ZOOM);
+}
+
+type Pan2 = { x: number; y: number };
 
 function clampPanY(y: number, curZoom: number, containerH: number, contentH: number) {
   const maxY = MAX_PAN_TOP;
@@ -47,8 +60,8 @@ export interface CanvasTransformState {
 }
 
 export function useCanvasTransform(isCanvasPhase: boolean): CanvasTransformState {
-  const [zoom, setZoom] = useState(INITIAL_ZOOM);
-  const [pan, setPan] = useState(INITIAL_PAN);
+  const [zoom, setZoom] = useState<number>(INITIAL_ZOOM);
+  const [pan, setPan] = useState<Pan2>(INITIAL_PAN);
   const [isPanning, setIsPanning] = useState(false);
   const [containerSize, setContainerSize] = useState({ w: 0, h: 0 });
   const [scrollTick, setScrollTick] = useState(0);
@@ -57,22 +70,41 @@ export function useCanvasTransform(isCanvasPhase: boolean): CanvasTransformState
   const canvasRef = useRef<HTMLDivElement>(null);
   const contentHeightRef = useRef(0);
 
-  const stateRef = useRef({ zoom: INITIAL_ZOOM, pan: INITIAL_PAN, containerH: 0, contentH: 0 });
+  const stateRef = useRef<{
+    zoom: number;
+    pan: Pan2;
+    containerH: number;
+    contentH: number;
+  }>({ zoom: INITIAL_ZOOM, pan: INITIAL_PAN, containerH: 0, contentH: 0 });
   stateRef.current = { zoom, pan, containerH: containerSize.h, contentH: contentHeightRef.current };
+  const didInitResponsiveDefaultRef = useRef(false);
 
   const panStartRef = useRef({ mouseX: 0, mouseY: 0, panX: 0, panY: 0 });
   const isPanningRef = useRef(false);
 
-  const touchRef = useRef({
+  const touchRef = useRef<{
+    startDist: number;
+    startZoom: number;
+    startPan: Pan2;
+    startCenter: Pan2;
+    lastCenter: Pan2;
+    isTwoFinger: boolean;
+    isOneFinger: boolean;
+    isFilmstripScroll: boolean;
+    filmstripEl: HTMLElement | null;
+    filmstripStartScroll: number;
+    startOneFingerPan: Pan2;
+    startOneFingerClient: Pan2;
+  }>({
     startDist: 0,
     startZoom: INITIAL_ZOOM,
-    startPan: INITIAL_PAN,
+    startPan: { x: INITIAL_PAN.x, y: INITIAL_PAN.y },
     startCenter: { x: 0, y: 0 },
     lastCenter: { x: 0, y: 0 },
     isTwoFinger: false,
     isOneFinger: false,
     isFilmstripScroll: false,
-    filmstripEl: null as HTMLElement | null,
+    filmstripEl: null,
     filmstripStartScroll: 0,
     startOneFingerPan: { x: 0, y: 0 },
     startOneFingerClient: { x: 0, y: 0 },
@@ -100,6 +132,15 @@ export function useCanvasTransform(isCanvasPhase: boolean): CanvasTransformState
     return () => ro.disconnect();
   }, [isCanvasPhase]);
 
+  // Apply a responsive default zoom once after container size is known.
+  useEffect(() => {
+    if (!isCanvasPhase || didInitResponsiveDefaultRef.current || containerSize.h <= 0) return;
+    didInitResponsiveDefaultRef.current = true;
+    const defaultZoom = getResponsiveInitialZoom(containerSize.h);
+    setZoom(defaultZoom);
+    setPan(INITIAL_PAN);
+  }, [containerSize.h, isCanvasPhase]);
+
   // Non-passive wheel listener (zoom + pan)
   useEffect(() => {
     const el = containerRef.current;
@@ -108,6 +149,10 @@ export function useCanvasTransform(isCanvasPhase: boolean): CanvasTransformState
     const onWheel = (e: WheelEvent): void => {
       const vsScroll = (e.target as Element)?.closest("[data-vs-snapshot-scroll]") as HTMLElement | null;
       if (vsScroll) return;
+      const vcScroll = (e.target as Element)?.closest("[data-vc-concept-scroll]") as HTMLElement | null;
+      if (vcScroll) return;
+      const briefScroll = (e.target as Element)?.closest("[data-brief-scroll]") as HTMLElement | null;
+      if (briefScroll) return;
 
       if (!e.ctrlKey) {
         const isHorizontalDominant = Math.abs(e.deltaX) > Math.abs(e.deltaY);
@@ -167,7 +212,7 @@ export function useCanvasTransform(isCanvasPhase: boolean): CanvasTransformState
     if (e.button !== 0 && e.button !== 1) return;
     const target = e.target as Element;
     const onCardSlot = !!target.closest("[data-variation-slot]");
-    const onInteractive = !!target.closest("button, input, textarea, select, a, [contenteditable]");
+    const onInteractive = !!target.closest("button, input, textarea, select, a, [contenteditable], [data-no-pan]");
     if (onInteractive) return;
     if (onCardSlot && e.button === 0) return;
 
@@ -219,7 +264,7 @@ export function useCanvasTransform(isCanvasPhase: boolean): CanvasTransformState
     } else if (touches.length === 1) {
       const touch = touches[0];
       const target = touch.target as Element;
-      const onInteractive = target.closest?.("button, input, textarea, select, a, [contenteditable]");
+      const onInteractive = target.closest?.("button, input, textarea, select, a, [contenteditable], [data-no-pan]");
       if (onInteractive) {
         touchRef.current.isOneFinger = false;
         touchRef.current.isFilmstripScroll = false;
@@ -319,17 +364,22 @@ export function useCanvasTransform(isCanvasPhase: boolean): CanvasTransformState
     const containerRect = containerRef.current.getBoundingClientRect();
     const canvasBCR = canvasRef.current.getBoundingClientRect();
     const naturalH = canvasBCR.height / stateRef.current.zoom;
-    const pad = 48;
+    // Subtract top and bottom padding of the canvas content wrapper so zoom is
+    // based on actual visual content height, not the padded canvas height.
+    const naturalContentH = Math.max(naturalH - CANVAS.CONTENT_BOTTOM_PAD - CANVAS.CONTENT_TOP_PAD, 1);
+    const pad = CANVAS.FIT_PADDING;
     const newZoom = Math.min(
-      (containerRect.height - pad * 2) / naturalH,
+      (containerRect.height - pad * 2) / naturalContentH,
       1.0,
     );
+    // Bypass clampPanY: with naturalContentH * newZoom = containerH - 2*pad,
+    // setting y=pad gives perfectly symmetric top/bottom spacing.
     setZoom(newZoom);
-    setPan({ x: 0, y: clampPanY(pad, newZoom, containerRect.height, naturalH) });
+    setPan({ x: 0, y: pad });
   };
 
   const handleResetView = () => {
-    setZoom(INITIAL_ZOOM);
+    setZoom(getResponsiveInitialZoom(stateRef.current.containerH));
     setPan(INITIAL_PAN);
   };
 

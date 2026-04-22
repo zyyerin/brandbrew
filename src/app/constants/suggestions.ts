@@ -1,8 +1,8 @@
-import type { BrandSummaryFields } from "../components/brand-summary";
+import type { BrandBriefFields } from "../components/brand-brief";
 
 export const SUGGESTIONS = ["View an Example: Community Cafe"];
 
-export const SUGGESTION_PROMPTS: Record<string, BrandSummaryFields> = {
+export const SUGGESTION_PROMPTS: Record<string, BrandBriefFields> = {
   "View an Example: Community Cafe": {
     brandName: "Community Cafe",
     tagline: "Crafted with care, served with soul",

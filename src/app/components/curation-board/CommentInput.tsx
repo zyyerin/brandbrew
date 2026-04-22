@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
-import { ArrowUp } from "lucide-react";
+import { ArrowUp, X } from "lucide-react";
 import { LAYOUT } from "../../utils/design-tokens";
 
 const COMMENT_INPUT_MIN_WIDTH = 280;
@@ -21,7 +21,7 @@ export function CommentInput({ anchorEl, onSubmit, onCancel }: CommentInputProps
     const rect = anchorEl.getBoundingClientRect();
     setPos({
       left: rect.left,
-      top: rect.bottom + LAYOUT.POPUP_OFFSET,
+      top: rect.bottom + LAYOUT.popup.offset,
       width: Math.max(rect.width, COMMENT_INPUT_MIN_WIDTH),
     });
   }, [anchorEl]);
@@ -64,16 +64,14 @@ export function CommentInput({ anchorEl, onSubmit, onCancel }: CommentInputProps
 
   return (
     <div
+      data-comment-input
       className="fixed z-[9999]"
       style={{ left: pos.left, top: pos.top, width: pos.width }}
       onPointerDown={(e) => e.stopPropagation()}
     >
       <div
-        className="flex items-center gap-2 rounded-full px-4 py-2.5 shadow-xl backdrop-blur-md"
-        style={{
-          background: "var(--bb-comment-overlay-bg)",
-          border: "1px solid var(--bb-comment-overlay-border)",
-        }}
+        className="rounded-full px-2.5 py-1.5 backdrop-blur-sm border flex items-center gap-2"
+        style={{ background: "rgba(255,255,255,0.92)", borderColor: "var(--border)", boxShadow: "var(--bb-hud-shadow)" }}
       >
         <input
           ref={inputRef}
@@ -81,18 +79,28 @@ export function CommentInput({ anchorEl, onSubmit, onCancel }: CommentInputProps
           value={value}
           onChange={(e) => setValue(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder="Add a comment"
-          className="flex-1 bg-transparent text-white text-[14px] outline-none placeholder:text-white/40"
-          style={{ caretColor: "white" }}
+          placeholder="Describe what to change"
+          className="flex-1 bg-transparent text-[13px] outline-none text-foreground placeholder:text-muted-foreground/70"
+          style={{ caretColor: "var(--foreground)" }}
         />
+
+        <button
+          onClick={onCancel}
+          className="flex-shrink-0 w-7 h-7 rounded-full flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors cursor-pointer"
+          title="Cancel comment"
+        >
+          <X size={14} strokeWidth={2.4} />
+        </button>
+
         <button
           onClick={handleSubmit}
           disabled={!canSubmit}
-          className="flex-shrink-0 w-7 h-7 rounded-full flex items-center justify-center transition-all cursor-pointer"
+          className="flex-shrink-0 w-7 h-7 rounded-full flex items-center justify-center transition-all cursor-pointer disabled:cursor-not-allowed"
           style={{
-            background: canSubmit ? "var(--bb-comment-btn-active-bg)" : "var(--bb-comment-btn-inactive-bg)",
-            color: canSubmit ? "var(--bb-comment-btn-active-color)" : "var(--bb-comment-btn-inactive-color)",
+            background: canSubmit ? "var(--bb-ai-active-ring)" : "rgba(0,0,0,0.08)",
+            color: canSubmit ? "white" : "rgba(0,0,0,0.35)",
           }}
+          title="Submit comment"
         >
           <ArrowUp size={15} strokeWidth={2.5} />
         </button>

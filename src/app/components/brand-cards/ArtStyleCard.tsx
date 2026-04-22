@@ -6,7 +6,6 @@ interface ArtStyleCardProps {
   imageUrl: string;
   state?: VariationState;
   onToggleActive?: () => void;
-  onAddVariation?: () => void;
   onDelete?: () => void;
   meta?: VariationMeta;
   onAspectRatioChange?: (aspectRatio: number) => void;
@@ -16,7 +15,6 @@ export function ArtStyleCard({
   imageUrl,
   state,
   onToggleActive,
-  onAddVariation,
   onDelete,
   meta,
   onAspectRatioChange,
@@ -27,7 +25,6 @@ export function ArtStyleCard({
       imageUrl={imageUrl}
       state={state}
       onToggleActive={onToggleActive}
-      onAddVariation={onAddVariation}
       onDelete={onDelete}
       meta={meta}
       onAspectRatioChange={onAspectRatioChange}

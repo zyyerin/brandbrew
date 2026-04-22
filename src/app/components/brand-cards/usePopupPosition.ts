@@ -35,7 +35,7 @@ export function usePopupPosition(
       return;
     }
     const rect = triggerRef.current.getBoundingClientRect();
-    const bottomGap = LAYOUT.POPUP_OFFSET;
+    const bottomGap = LAYOUT.popup.offset;
     const spaceAbove = rect.top - padding;
     const spaceBelow = window.innerHeight - rect.bottom - bottomGap;
     const growDown = spaceBelow >= spaceAbove;
@@ -45,13 +45,13 @@ export function usePopupPosition(
     let transform: string | undefined;
 
     if (growDown) {
-      top = rect.bottom + LAYOUT.POPUP_OFFSET;
-      top = Math.min(top, window.innerHeight - padding - LAYOUT.POPUP_OFFSET);
-      popupMaxHeight = Math.max(LAYOUT.POPUP_MIN_HEIGHT, window.innerHeight - top - LAYOUT.POPUP_OFFSET);
+      top = rect.bottom + LAYOUT.popup.offset;
+      top = Math.min(top, window.innerHeight - padding - LAYOUT.popup.offset);
+      popupMaxHeight = Math.max(LAYOUT.popup.minHeight, window.innerHeight - top - LAYOUT.popup.offset);
     } else {
-      top = rect.top - LAYOUT.POPUP_OFFSET;
+      top = rect.top - LAYOUT.popup.offset;
       top = Math.max(top, padding);
-      popupMaxHeight = Math.max(LAYOUT.POPUP_MIN_HEIGHT, top);
+      popupMaxHeight = Math.max(LAYOUT.popup.minHeight, top);
       transform = "translateY(-100%)";
     }
 

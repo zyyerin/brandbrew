@@ -7,7 +7,9 @@ export default defineConfig({
   plugins: [
     // The React and Tailwind plugins are both required for Make, even if
     // Tailwind is not being actively used – do not remove them
-    react(),
+    // Supabase Edge shared modules are plain TS (no React); skipping Babel + Fast
+    // Refresh here avoids dev/HMR 500s when the app imports @server-shared/*.
+    react({ exclude: /\/supabase\/functions\// }),
     tailwindcss(),
   ],
   resolve: {

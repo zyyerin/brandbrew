@@ -6,6 +6,9 @@ export interface CommentMergeState {
   handleVariationClick: (elementType: string, variationId: string) => void;
   handleCommentSubmit: (comment: string) => void;
   handleCommentCancel: () => void;
+  enterCommentMode: () => void;
+  toggleCommentMode: () => void;
+  clearCommentTarget: () => void;
   exitCommentMode: () => void;
 }
 
@@ -67,6 +70,24 @@ export function useCommentMerge(
     setCommentTarget(null);
   }, []);
 
+  const enterCommentMode = useCallback(() => {
+    setCommentMode(true);
+  }, []);
+
+  const toggleCommentMode = useCallback(() => {
+    setCommentMode((prev) => {
+      if (prev) {
+        setCommentTarget(null);
+        return false;
+      }
+      return true;
+    });
+  }, []);
+
+  const clearCommentTarget = useCallback(() => {
+    setCommentTarget(null);
+  }, []);
+
   const exitCommentMode = useCallback(() => {
     setCommentMode(false);
     setCommentTarget(null);
@@ -78,6 +99,9 @@ export function useCommentMerge(
     handleVariationClick,
     handleCommentSubmit,
     handleCommentCancel,
+    enterCommentMode,
+    toggleCommentMode,
+    clearCommentTarget,
     exitCommentMode,
   };
 }

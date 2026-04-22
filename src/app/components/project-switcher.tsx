@@ -1,7 +1,6 @@
 import { useState } from "react";
-import { FolderOpen, Plus, Save, Trash2, Check } from "lucide-react";
+import { FolderOpen, Plus, Trash2 } from "lucide-react";
 import { Popover, PopoverTrigger, PopoverContent } from "./ui/popover";
-import { TIMING } from "../utils/design-tokens";
 
 const MAX_PROJECTS = 3;
 
@@ -17,7 +16,6 @@ interface ProjectSwitcherProps {
   onSwitch: (projectId: string) => void;
   onNew: () => void;
   onDelete: (projectId: string) => void;
-  onSaveNow: () => Promise<void>;
 }
 
 function timeAgo(iso: string): string {
@@ -37,12 +35,9 @@ export function ProjectSwitcher({
   onSwitch,
   onNew,
   onDelete,
-  onSaveNow,
 }: ProjectSwitcherProps) {
   const [open, setOpen] = useState(false);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
 
   const handleDelete = (id: string) => {
     if (confirmDeleteId !== id) {
@@ -64,22 +59,8 @@ export function ProjectSwitcher({
     onNew();
   };
 
-  const handleSave = async () => {
-    setSaving(true);
-    setSaved(false);
-    try {
-      await onSaveNow();
-      setSaved(true);
-      setTimeout(() => setSaved(false), TIMING.SAVE_FEEDBACK_DURATION);
-    } catch {
-      // error already logged upstream
-    } finally {
-      setSaving(false);
-    }
-  };
-
   return (
-    <Popover open={open} onOpenChange={(v) => { setOpen(v); if (v) { setConfirmDeleteId(null); setSaved(false); } }}>
+    <Popover open={open} onOpenChange={(v) => { setOpen(v); if (v) setConfirmDeleteId(null); }}>
       <PopoverTrigger asChild>
         <button
           className="p-2 rounded-lg bg-white/90 border border-border/60 shadow-sm text-muted-foreground hover:text-foreground transition-colors shrink-0 cursor-pointer"
@@ -94,15 +75,6 @@ export function ProjectSwitcher({
             Projects ({projects.length}/{MAX_PROJECTS})
           </span>
           <div className="flex items-center gap-2">
-            <button
-              onClick={handleSave}
-              disabled={saving}
-              className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-              title="Save current project"
-            >
-              {saved ? <Check size={12} className="text-green-500" /> : <Save size={12} />}
-              {saving ? "Saving…" : saved ? "Saved" : "Save"}
-            </button>
             <button
               onClick={handleNew}
               disabled={projects.length >= MAX_PROJECTS}
