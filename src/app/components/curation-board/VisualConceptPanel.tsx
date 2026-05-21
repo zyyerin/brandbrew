@@ -119,8 +119,8 @@ export function VisualConceptPanel(props: VisualConceptPanelProps) {
               className="w-full px-3 flex items-center justify-center gap-2 rounded-lg transition-colors cursor-pointer disabled:opacity-55 disabled:pointer-events-none"
               style={{
                 ...VISUAL_CONCEPT_PANEL.addConceptButton,
-                fontSize: TYPE.size.baseSm,
-                fontWeight: TYPE.weight.semibold,
+                fontSize: TYPE.size.baseLg,
+                fontWeight: TYPE.weight.bold,
               }}
             >
               {isConceptGenerating ? (
@@ -220,7 +220,7 @@ export function VisualConceptPanel(props: VisualConceptPanelProps) {
                                 if (e.key === "Escape") handleCancelEdit();
                               }}
                               className="w-full bg-transparent border-b border-bb-ai-affordance-border focus:border-bb-ai-active-ring outline-none text-foreground focus:ring-1 focus:ring-bb-ai-active-ring-outer"
-                              style={{ fontSize: TYPE.size.baseSm }}
+                              style={{ fontSize: TYPE.size.baseLg }}
                               placeholder="Concept name"
                             />
                             <textarea
@@ -232,7 +232,7 @@ export function VisualConceptPanel(props: VisualConceptPanelProps) {
                               }}
                               className="w-full bg-transparent border-b outline-none text-muted-foreground resize-none leading-relaxed overflow-hidden focus:ring-1 focus:ring-bb-ai-active-ring-outer"
                               style={{
-                                fontSize: TYPE.size.xs,
+                                fontSize: TYPE.size.baseSm,
                                 borderBottom: VISUAL_CONCEPT_PANEL.editDescriptionUnderline,
                               }}
                               placeholder="Description (optional)"
@@ -271,10 +271,10 @@ export function VisualConceptPanel(props: VisualConceptPanelProps) {
                                   />
                                 )}
                                 <span
-                                  className="text-foreground/80 leading-snug min-w-0"
+                                  className="text-foreground/90 leading-snug min-w-0"
                                   style={{
-                                    fontSize: TYPE.size.baseSm,
-                                    lineHeight: TYPE.leading.relaxed,
+                                    fontSize: TYPE.size.md,
+                                    lineHeight: TYPE.leading.snug,
                                     fontWeight: TYPE.weight.bold,
                                   }}
                                 >
@@ -283,8 +283,8 @@ export function VisualConceptPanel(props: VisualConceptPanelProps) {
                               </div>
                               {conceptData.description && (
                                 <span
-                                  className={`text-muted-foreground/50 leading-relaxed block line-clamp-2 ${isSelected ? "" : "hidden"}`}
-                                  style={{ fontSize: TYPE.size.xs }}
+                                  className={`text-foreground/65 leading-relaxed block line-clamp-4 ${isSelected ? "" : "hidden"}`}
+                                  style={{ fontSize: TYPE.size.baseLg }}
                                 >
                                   {conceptData.description}
                                 </span>

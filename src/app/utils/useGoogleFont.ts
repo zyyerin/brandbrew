@@ -3,6 +3,10 @@ import { useEffect, useRef } from "react";
 // Module-level cache so fonts are only injected once per session
 const injectedFonts = new Set<string>();
 
+function fontRequestName(fontName: string) {
+  return encodeURIComponent(fontName.trim()).replace(/%20/g, "+");
+}
+
 /**
  * Dynamically loads a Google Font by name and returns the CSS font-family
  * string ready to drop into a `style` prop. Loading is debounced by 500 ms
@@ -24,9 +28,8 @@ export function useGoogleFont(fontName: string): string | undefined {
     // Debounce: wait for the user to stop typing before hitting Google Fonts
     if (timerRef.current) clearTimeout(timerRef.current);
     timerRef.current = setTimeout(() => {
-      const slug = name.replace(/\s+/g, "+");
       // Load regular + bold weights for heading use, regular for body
-      const href = `https://fonts.googleapis.com/css2?family=${slug}:ital,wght@0,400;0,700;1,400&display=swap`;
+      const href = `https://fonts.googleapis.com/css2?family=${fontRequestName(name)}:ital,wght@0,400;0,700;1,400&display=swap`;
 
       // Guard against duplicate injections (race condition)
       if (injectedFonts.has(name)) return;

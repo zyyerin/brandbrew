@@ -28,10 +28,12 @@ interface VisualSnapshotPanelProps {
   containerRef: React.RefObject<HTMLDivElement | null>;
   zoom: number;
   pan: { x: number; y: number };
+  variationElMapRef: React.RefObject<Map<string, HTMLDivElement>>;
   slotPositionMapRef: React.RefObject<Map<string, SlotPosition>>;
   filmstripScrollMapRef: React.RefObject<Map<string, number>>;
   visibleQueueTypes: string[];
   checkedVariationIds: Set<string>;
+  connectionsDisabled?: boolean;
   /** Drives noodle recomputation when variation set changes (same ref map, new ids). */
   allVariationIdsKey?: string;
   snapshotHistory: SnapshotItem[];
@@ -59,10 +61,12 @@ export function VisualSnapshotPanel({
   containerRef,
   zoom,
   pan,
+  variationElMapRef,
   slotPositionMapRef,
   filmstripScrollMapRef,
   visibleQueueTypes,
   checkedVariationIds,
+  connectionsDisabled = false,
   allVariationIdsKey = "",
   snapshotHistory,
   selectedSnapshotId,
@@ -139,10 +143,13 @@ export function VisualSnapshotPanel({
     [checkedVariationIds],
   );
 
-  // Pure-math noodle card endpoints — no getBoundingClientRect, no timing lag.
+  // Prefer measured card endpoints so noodles follow dynamic image widths,
+  // zoom/pan transforms, and filmstrip scroll exactly; keep math as fallback.
   const cardEndpoints = useMemo<Array<{ x: number; y: number }>>(() => {
+    if (connectionsDisabled) return [];
     if (checkedVariationIds.size === 0) return [];
 
+    const containerRectForCards = containerRef.current?.getBoundingClientRect();
     const padLeft = LAYOUT.filmstrip.paddingLeft;
     const padTop = LAYOUT.filmstrip.paddingTop;
     const toggleInset = LAYOUT.connection.toggleInset;
@@ -152,6 +159,18 @@ export function VisualSnapshotPanel({
     const points: Array<{ x: number; y: number }> = [];
 
     checkedVariationIds.forEach((varId) => {
+      if (containerRectForCards) {
+        const el = variationElMapRef.current.get(varId);
+        if (el) {
+          const r = el.getBoundingClientRect();
+          const cx = r.right - containerRectForCards.left - toggleInset * zoom;
+          const cy = r.top - containerRectForCards.top + toggleInset * zoom;
+          if (cx < 0 || cx > containerSize.w || cy < 0 || cy > containerSize.h) return;
+          points.push({ x: snap(cx), y: snap(cy) });
+          return;
+        }
+      }
+
       const slot = slotPositionMapRef.current.get(varId);
       if (!slot) return;
 
@@ -179,6 +198,9 @@ export function VisualSnapshotPanel({
   }, [
     checkedVariationIds,
     checkedIdsKey,
+    connectionsDisabled,
+    containerRef,
+    variationElMapRef,
     slotPositionMapRef,
     filmstripScrollMapRef,
     visibleQueueTypes,
@@ -228,20 +250,24 @@ export function VisualSnapshotPanel({
     return selected;
   }, [checkedVariationIds, slotPositionMapRef, visibleQueueTypes, checkedIdsKey, layoutTick, allVariationIdsKey]);
   const hasRequiredSelections = SNAPSHOT_REQUIRED_TYPES.every((item) => selectedRequiredTypes.has(item.key));
-  const canGenerateSnapshot = hasRequiredSelections && !snapshotGenerating && !!onGenerateSnapshot;
+  const canGenerateSnapshot = hasRequiredSelections && !snapshotGenerating && !connectionsDisabled && !!onGenerateSnapshot;
   const generateDisabledReason = snapshotGenerating
     ? "Creating snapshot..."
+    : connectionsDisabled
+      ? "Generation in progress..."
     : hasRequiredSelections
       ? null
       : "Select required elements first";
 
   return (
     <>
-      <NoodleConnections
-        cardEndpoints={cardEndpoints}
-        portX={portX}
-        portY={portY}
-      />
+      {!connectionsDisabled && (
+        <NoodleConnections
+          cardEndpoints={cardEndpoints}
+          portX={portX}
+          portY={portY}
+        />
+      )}
 
       {/* VS Node panel */}
       <div

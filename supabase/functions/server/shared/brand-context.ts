@@ -106,6 +106,12 @@ function buildApplicationsFromLoose(raw: Record<string, unknown>): BrandBriefApp
   return asStringArray(brief.applications) ?? asStringArray(raw.applications);
 }
 
+function readNestedImageUrl(raw: Record<string, unknown>, key: string): string | undefined {
+  const nested = raw[key];
+  if (!isRecord(nested)) return undefined;
+  return asNonEmptyString(nested.imageUrl);
+}
+
 // ── Normalizers ───────────────────────────────────────────────────────────────
 
 export function normalizeFullContext(input: unknown): BrandContextFull {
@@ -125,8 +131,11 @@ export function normalizeFullContext(input: unknown): BrandContextFull {
       titleFont: asNonEmptyString(fontRaw.titleFont) ?? asNonEmptyString(raw.titleFont),
       bodyFont: asNonEmptyString(fontRaw.bodyFont) ?? asNonEmptyString(raw.bodyFont),
     },
-    logoImageUrl: asNonEmptyString(raw.logoImageUrl),
-    artStyleImageUrl: asNonEmptyString(raw.artStyleImageUrl),
+    logoImageUrl: asNonEmptyString(raw.logoImageUrl)
+      ?? readNestedImageUrl(raw, "logo")
+      ?? readNestedImageUrl(raw, "logoInspiration"),
+    artStyleImageUrl: asNonEmptyString(raw.artStyleImageUrl)
+      ?? readNestedImageUrl(raw, "artStyle"),
     applicationImageUrl: asNonEmptyString(raw.applicationImageUrl),
     application: asNonEmptyString(raw.application),
   };

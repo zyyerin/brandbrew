@@ -1,4 +1,5 @@
 import { useState, useCallback } from "react";
+import { toast } from "sonner";
 import type { ProjectData, ElementId, Variation, VariationMeta, PipelineStage, VisualConceptData, ColorPaletteData, FontData } from "../types/project";
 import { generateVisualConcept } from "../utils/generate-brand";
 import { designPaletteAndFonts, designLogoAndStyle } from "../utils/generate-image";
@@ -6,6 +7,7 @@ import { sortColorPaletteForHarmony } from "../utils/helpers";
 import { addVariationToProject } from "../utils/variation-helpers";
 import type { UseGenerationBaseParams } from "../utils/variation-helpers";
 import { withPipelineStage } from "../utils/debug-interceptor-utils";
+import { getUserFacingApiErrorMessage } from "../utils/apiClient";
 
 // ── Public input type for the pipeline entry point ───────────────────────────
 // Distinct from PipelineContext (the art-director's internal accumulated context).
@@ -167,11 +169,13 @@ export function usePipeline({
             prev,
             "color-palette",
             makeVar("color-palette", sortColorPaletteForHarmony(pfResult.colorPalette), { ...pfResult._meta, sourceConceptVariationId: vcVariationId }),
+            false,
           );
           next = addVariationToProject(
             next,
             "font",
             makeVar("font", pfResult.font, { ...pfResult._meta, sourceConceptVariationId: vcVariationId }),
+            false,
           );
           return next;
         });
@@ -183,9 +187,23 @@ export function usePipeline({
           colorPalette: pfResult.colorPalette,
           font: pfResult.font,
           brandContext: {
-            ...(designCtx.brandContext ?? {}),
+            name: briefContext.brandName,
+            tagline: briefContext.tagline,
+            description: briefContext.description,
+            targetAudience: briefContext.targetAudience,
+            keywords: briefContext.keywords,
+            visualConcept: vcResult.visualConcept,
             colorPalette: pfResult.colorPalette,
             font: pfResult.font,
+            application: briefContext.applications?.[0],
+          },
+          brandContextShort: {
+            name: briefContext.brandName,
+            tagline: briefContext.tagline,
+            keywords: briefContext.keywords,
+            visualConcept: vcResult.visualConcept,
+            colorPalette: pfResult.colorPalette,
+            application: briefContext.applications?.[0],
           },
         };
         const lsResult = await withPipelineStage(
@@ -197,7 +215,23 @@ export function usePipeline({
             endpoint: "art-director/design-logo-style",
             request: lsRequest,
           },
-          (finalReq) => designLogoAndStyle(finalReq as typeof lsRequest, { signal }),
+          async (finalReq) => {
+            const result = await designLogoAndStyle(finalReq as typeof lsRequest, { signal });
+            const missingTargets = [
+              !result.logoImageUrl && "logo",
+              !result.artStyleImageUrl && "art-style",
+            ].filter(Boolean);
+
+            if (missingTargets.length > 0) {
+              const details = result.errors?.length ? `: ${result.errors.join(" | ")}` : "";
+              throw new Error(`Drawing stage did not return ${missingTargets.join(" and ")}${details}`);
+            }
+
+            return result as typeof result & {
+              logoImageUrl: string;
+              artStyleImageUrl: string;
+            };
+          },
         );
         throwIfAborted();
 
@@ -216,23 +250,42 @@ export function usePipeline({
             prev,
             "logo",
             makeVar("logo", { imageUrl: lsResult.logoImageUrl }, logoMeta),
+            false,
           );
           next = addVariationToProject(
             next,
             "art-style",
             makeVar("art-style", { imageUrl: lsResult.artStyleImageUrl }, artStyleMeta),
+            false,
           );
 
-          // Auto-check all generated elements (visual-concept excluded — it is not
-          // required for snapshot generation and should not pollute the checked set).
+          // Auto-select the generated visual set only after all snapshot-required
+          // elements exist, preventing noodles from mixing old and new cards.
           const nextElements = { ...next.elements };
-          const snapshotExcluded = new Set<ElementId>(["visual-concept"]);
-          for (const eid of Object.keys(nextElements) as ElementId[]) {
-            const slot = nextElements[eid];
-            if (slot.variations.length > 0 && !snapshotExcluded.has(eid)) {
-              (nextElements as Record<string, unknown>)[eid] = { ...slot, checkedVariationId: slot.activeVariationId };
+          const generatedSelectionIds: Partial<Record<ElementId, string>> = {
+            "color-palette": `color-palette-${genTs}`,
+            font: `font-${genTs}`,
+            logo: `logo-${genTs}`,
+            "art-style": `art-style-${genTs}`,
+          };
+          const requiredSelectionIds: ElementId[] = ["color-palette", "font", "logo", "art-style"];
+          const hasFullGeneratedSelection = requiredSelectionIds.every((eid) => {
+            const varId = generatedSelectionIds[eid];
+            return Boolean(varId && nextElements[eid].variations.some((v) => v.id === varId));
+          });
+
+          if (hasFullGeneratedSelection) {
+            for (const eid of requiredSelectionIds) {
+              const slot = nextElements[eid];
+              const varId = generatedSelectionIds[eid]!;
+              (nextElements as Record<string, unknown>)[eid] = {
+                ...slot,
+                activeVariationId: varId,
+                checkedVariationId: varId,
+              };
             }
           }
+
           next = { ...next, elements: nextElements, phase: "curating" };
           return next;
         });
@@ -242,6 +295,7 @@ export function usePipeline({
         const message = err instanceof Error ? err.message : String(err);
         if (!message.includes("Pipeline aborted by user") && !message.includes("Request aborted by user")) {
           console.error("Visual generation pipeline failed:", err);
+          toast.error(getUserFacingApiErrorMessage(err));
         }
         setProject((prev) => ({ ...prev, phase: "curating" }));
         setDisplayPhase(null);

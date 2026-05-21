@@ -418,8 +418,10 @@ export default function App() {
       setIsDirectionPanelOpen(false);
       setRoute("direction");
     } catch (err) {
-      console.error("Direction pre-generation failed:", err);
-      toast.error("Could not prepare the concept. Please try again.");
+      console.warn("Direction pre-generation skipped; opening Direction Page for retry:", err);
+      setPreviousRoute(routeRef.current);
+      setIsDirectionPanelOpen(false);
+      setRoute("direction");
     } finally {
       setIsPreparingDirection(false);
     }

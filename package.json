@@ -6,7 +6,7 @@
   "scripts": {
     "build": "vite build",
     "dev": "vite",
-    "deploy": "supabase functions deploy server",
+    "deploy": "supabase functions deploy server --no-verify-jwt",
     "typecheck": "tsc --noEmit",
     "check:quality": "npm run typecheck && npm run build",
     "eval:model": "node scripts/eval-model.mjs",

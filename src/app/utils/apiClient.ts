@@ -1,6 +1,7 @@
 import { functionsBaseUrl } from "../config/public-env";
 import { supabase } from "../lib/supabase-client";
 import { clearAccessToken } from "../components/PassphraseGate";
+import { getStoredCurrentProjectId } from "./current-project-id";
 
 export const BASE_URL = functionsBaseUrl;
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -10,6 +11,38 @@ export interface CallApiOptions {
   body?: unknown;
   timeoutMs?: number;
   signal?: AbortSignal;
+}
+
+export class ApiClientError extends Error {
+  readonly status: number;
+  readonly code?: string;
+  readonly details?: string;
+
+  constructor(message: string, options: { status: number; code?: string; details?: string }) {
+    super(message);
+    this.name = "ApiClientError";
+    this.status = options.status;
+    this.code = options.code;
+    this.details = options.details;
+  }
+}
+
+function isQuotaOrSpendCapError(err: unknown): boolean {
+  const code = err instanceof ApiClientError ? err.code ?? "" : "";
+  const status = err instanceof ApiClientError ? err.status : null;
+  const message = err instanceof Error ? err.message : String(err);
+  const details = err instanceof ApiClientError ? err.details ?? "" : "";
+  const haystack = `${code} ${message} ${details}`;
+
+  return status === 429
+    || /quota|rate limit|spending cap|monthly spending cap|resource exhausted/i.test(haystack);
+}
+
+export function getUserFacingApiErrorMessage(err: unknown): string {
+  if (isQuotaOrSpendCapError(err)) {
+    return "AI generation quota reached. Gemini has hit its monthly spending cap; update the AI Studio spend cap or switch API key, then try again.";
+  }
+  return err instanceof Error ? err.message : String(err);
 }
 
 /**
@@ -59,7 +92,21 @@ async function ensureUserSession(): Promise<string> {
  */
 async function handleApiError(res: Response): Promise<never> {
   const err = await res.json().catch(() => ({}));
-  throw new Error((err as { error?: string }).error ?? `HTTP ${res.status}`);
+  const payload = err as { error?: string; details?: string; code?: string };
+  const baseMessage = payload.error ?? `HTTP ${res.status}`;
+  const details = typeof payload.details === "string" && payload.details.trim().length > 0
+    ? payload.details.trim()
+    : null;
+  const code = typeof payload.code === "string" && payload.code.trim().length > 0
+    ? payload.code.trim()
+    : null;
+
+  const suffix = [code, details].filter(Boolean).join(" - ");
+  throw new ApiClientError(suffix ? `${baseMessage}: ${suffix}` : baseMessage, {
+    status: res.status,
+    code: code ?? undefined,
+    details: details ?? undefined,
+  });
 }
 
 /**
@@ -96,7 +143,7 @@ export async function callApi<T>(
     if (accessToken) {
       headers["X-Access-Token"] = accessToken;
     }
-    const projectId = localStorage.getItem("bb_currentProjectId");
+    const projectId = getStoredCurrentProjectId();
     if (projectId) {
       headers["X-Project-Id"] = projectId;
     }

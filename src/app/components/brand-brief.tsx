@@ -139,10 +139,10 @@ export function BriefFooter({ onAutoComplete, onGenerate, isGenerating, isAutoCo
 // Form projection of the Brand Brief fields used by the side panel.
 export interface BrandBriefFields {
   brandName: string;
+  brandDescription: string;
   tagline: string;
   targetAudience: string;
   keywords: string;
-  brandDescription: string;
   /** Comma-separated list of brand touchpoint mockup ideas. */
   applications: string;
 }
@@ -196,10 +196,10 @@ export const BrandBriefForm = forwardRef<BrandBriefRef, BrandBriefProps>(functio
 ) {
   const [fields, setFields] = useState<BrandBriefFields>({
     brandName: "",
+    brandDescription: "",
     tagline: "",
     targetAudience: "",
     keywords: "",
-    brandDescription: "",
     applications: "",
   });
 
@@ -249,10 +249,10 @@ export const BrandBriefForm = forwardRef<BrandBriefRef, BrandBriefProps>(functio
     if (projectPhase === "empty" && !hasMeaningfulBrief(brandBrief)) {
       setFields({
         brandName: "",
+        brandDescription: "",
         tagline: "",
         targetAudience: "",
         keywords: "",
-        brandDescription: "",
         applications: "",
       });
       return;
@@ -299,7 +299,7 @@ export const BrandBriefForm = forwardRef<BrandBriefRef, BrandBriefProps>(functio
   useImperativeHandle(ref, () => ({ getFields: () => fields }), [fields]);
 
   const inputBase =
-    "w-full bg-transparent text-[13px] text-foreground placeholder:text-muted-foreground/40 outline-none resize-none border rounded-lg px-3 py-2 transition-all";
+    "w-full bg-transparent text-foreground placeholder:text-muted-foreground/55 outline-none resize-none border rounded-xl px-3.5 py-2.5 leading-relaxed transition-all";
 
   const fieldBorderClass = "border-border/50 focus:border-primary/40 focus:ring-1 focus:ring-primary/20";
   const fieldBorderGeneratedClass = "border-bb-ai-affordance-border focus:border-bb-ai-active-ring focus:ring-1 focus:ring-bb-ai-active-ring-outer bg-bb-ai-affordance-bg";
@@ -314,10 +314,10 @@ export const BrandBriefForm = forwardRef<BrandBriefRef, BrandBriefProps>(functio
   };
 
   const iconButtonBase =
-    "inline-flex items-center justify-center w-5 h-5 rounded text-muted-foreground/40 hover:text-foreground hover:bg-muted/60 disabled:opacity-30 disabled:cursor-not-allowed transition-colors";
+    "inline-flex items-center justify-center w-5 h-5 rounded text-muted-foreground/70 hover:text-foreground hover:bg-muted/60 disabled:opacity-30 disabled:cursor-not-allowed transition-colors";
 
   const labelRowClass = "flex justify-between items-center mb-1.5";
-  const labelClass = "font-medium text-muted-foreground/60 uppercase tracking-wider";
+  const labelClass = "font-semibold text-foreground/65 uppercase tracking-wider";
   const labelActionsClass = "flex items-center gap-0.5 shrink-0";
 
   // Whether any field-level loading is in flight (prevents triggering another).
@@ -355,6 +355,39 @@ export const BrandBriefForm = forwardRef<BrandBriefRef, BrandBriefProps>(functio
               onChange={(e) => updateField("brandName", e.target.value)}
               placeholder="Enter your brand name"
               className={`${inputBase} ${getFieldBorder("brandName")} ${isGenerated("brandName") ? "text-bb-ai-active-ring" : ""}`}
+              style={{ fontSize: TYPE.size.baseLg }}
+              disabled={isLocked}
+            />
+          </div>
+
+          {/* Brand Description */}
+          <div>
+            <div className={labelRowClass}>
+              <label className={labelClass} style={{ fontSize: TYPE.size.sm }}>Brand Description</label>
+              <div className={labelActionsClass}>
+                {onRevertField && preEnhanceSnapshot?.brandDescription !== undefined && (
+                  <button type="button" onClick={() => onRevertField("brandDescription")} disabled={isLocked} className={iconButtonBase} title="Revert to original">
+                    <Undo2 size={TYPE.icon.sm} />
+                  </button>
+                )}
+                {onFieldAutoFill && (
+                  <button type="button" onClick={() => onFieldAutoFill("brandDescription", fields)} disabled={isGenerating || isAutoCompleting || anyFieldAutoFilling}
+                    className={`${iconButtonBase} ${autoFillingFieldKey === "brandDescription" ? "text-bb-ai-active-ring" : ""}`} title="Auto-fill this field">
+                    {autoFillingFieldKey === "brandDescription" ? <div className="w-3 h-3 border-[1.5px] border-bb-ai-affordance-border border-t-bb-ai-active-ring rounded-full animate-spin" /> : <Sparkles size={TYPE.icon.sm} />}
+                  </button>
+                )}
+                <button type="button" onClick={() => handleClearField("brandDescription")} disabled={isLocked} className={iconButtonBase} title="Clear">
+                  <X size={TYPE.icon.sm} />
+                </button>
+              </div>
+            </div>
+            <textarea
+              value={fields.brandDescription}
+              onChange={(e) => updateField("brandDescription", e.target.value)}
+              placeholder="Describe your brand's vision, values, products, stories, anything you want to share about your brand"
+              rows={4}
+              className={`${inputBase} ${getFieldBorder("brandDescription")} ${isGenerated("brandDescription") ? "text-bb-ai-active-ring" : ""}`}
+              style={{ fontSize: TYPE.size.baseLg }}
               disabled={isLocked}
             />
           </div>
@@ -386,6 +419,7 @@ export const BrandBriefForm = forwardRef<BrandBriefRef, BrandBriefProps>(functio
               onChange={(e) => updateField("tagline", e.target.value)}
               placeholder="Enter a brand tagline"
               className={`${inputBase} ${getFieldBorder("tagline")} ${isGenerated("tagline") ? "text-bb-ai-active-ring" : ""}`}
+              style={{ fontSize: TYPE.size.baseLg }}
               disabled={isLocked}
             />
           </div>
@@ -417,6 +451,7 @@ export const BrandBriefForm = forwardRef<BrandBriefRef, BrandBriefProps>(functio
               placeholder="Describe who your brand is for"
               rows={3}
               className={`${inputBase} ${getFieldBorder("targetAudience")} ${isGenerated("targetAudience") ? "text-bb-ai-active-ring" : ""}`}
+              style={{ fontSize: TYPE.size.baseLg }}
               disabled={isLocked}
             />
           </div>
@@ -449,37 +484,6 @@ export const BrandBriefForm = forwardRef<BrandBriefRef, BrandBriefProps>(functio
               disabled={isLocked}
               generated={isGenerated("keywords")}
               generatedTags={generatedTagsByField?.keywords}
-            />
-          </div>
-
-          {/* Brand Description */}
-          <div>
-            <div className={labelRowClass}>
-              <label className={labelClass} style={{ fontSize: TYPE.size.sm }}>Brand Description</label>
-              <div className={labelActionsClass}>
-                {onRevertField && preEnhanceSnapshot?.brandDescription !== undefined && (
-                  <button type="button" onClick={() => onRevertField("brandDescription")} disabled={isLocked} className={iconButtonBase} title="Revert to original">
-                    <Undo2 size={TYPE.icon.sm} />
-                  </button>
-                )}
-                {onFieldAutoFill && (
-                  <button type="button" onClick={() => onFieldAutoFill("brandDescription", fields)} disabled={isGenerating || isAutoCompleting || anyFieldAutoFilling}
-                    className={`${iconButtonBase} ${autoFillingFieldKey === "brandDescription" ? "text-bb-ai-active-ring" : ""}`} title="Auto-fill this field">
-                    {autoFillingFieldKey === "brandDescription" ? <div className="w-3 h-3 border-[1.5px] border-bb-ai-affordance-border border-t-bb-ai-active-ring rounded-full animate-spin" /> : <Sparkles size={TYPE.icon.sm} />}
-                  </button>
-                )}
-                <button type="button" onClick={() => handleClearField("brandDescription")} disabled={isLocked} className={iconButtonBase} title="Clear">
-                  <X size={TYPE.icon.sm} />
-                </button>
-              </div>
-            </div>
-            <textarea
-              value={fields.brandDescription}
-              onChange={(e) => updateField("brandDescription", e.target.value)}
-              placeholder="Describe your brand's vision, values, products, stories, anything you want to share about your brand"
-              rows={4}
-              className={`${inputBase} ${getFieldBorder("brandDescription")} ${isGenerated("brandDescription") ? "text-bb-ai-active-ring" : ""}`}
-              disabled={isLocked}
             />
           </div>
 

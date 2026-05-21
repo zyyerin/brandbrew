@@ -76,7 +76,7 @@ Deploy the `server` function:
 
 ```bash
 npm run deploy
-# or: supabase functions deploy server
+# or: supabase functions deploy server --no-verify-jwt
 ```
 
 ## GitHub

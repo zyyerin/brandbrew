@@ -2,7 +2,7 @@ import { useState, useCallback, useRef, type MutableRefObject } from "react";
 import type { ProjectData, ElementId, Variation, VariationMeta } from "../types/project";
 import { IMAGE_ELEMENT_IDS, getActiveElementData, getVariationDataById } from "../types/project";
 import { generateCardVariation, generateVisualConcept, uploadImage } from "../utils/generate-brand";
-import { generateBrandImage, designPaletteAndFonts, designLogoAndStyle } from "../utils/generate-image";
+import { generateBrandImage, designPaletteAndFonts } from "../utils/generate-image";
 import type { ImageCardType } from "../utils/generate-image";
 import type { DebugInterceptor } from "./usePipelineDebugger";
 import { toast } from "sonner";
@@ -99,57 +99,18 @@ export function useBrandGeneration({
 
         if (IMAGE_ELEMENT_IDS.has(eid)) {
           if ((eid === "art-style" || eid === "logo") && !sourceVariationId) {
-            if (vcObj) {
-              // Active visual concept exists — skip pipeline, redraw directly from current context
-              const activePalette = getActiveElementData(p.elements, "color-palette") as string[] | null;
-              const activeFont = getActiveElementData(p.elements, "font") as { titleFont: string; bodyFont: string } | null;
+            const activePalette = getActiveElementData(p.elements, "color-palette") as string[] | null;
+            const activeFont = getActiveElementData(p.elements, "font") as { titleFont: string; bodyFont: string } | null;
 
-              const styleRequest = {
-                brandName: brief.name,
-                tagline: brief.tagline,
-                description: brief.description,
-                targetAudience: brief.targetAudience,
-                keywords: brief.keywords,
-                visualConcept: vcObj,
-                colorPalette: activePalette ?? undefined,
-                font: activeFont ?? undefined,
-              };
-              const styleResult = await withDebugLog(
-                debugInterceptor,
-                {
-                  label: `Add Variation: ${eid} (concept active, 1/1)`,
-                  agent: "art-director",
-                  endpoint: "art-director/design-logo-style",
-                  request: styleRequest as Record<string, unknown>,
-                },
-                () => designLogoAndStyle(styleRequest),
-              );
+            let visualConcept = vcObj ?? undefined;
+            let colorPalette = activePalette ?? undefined;
+            let font = activeFont ?? undefined;
+            let pipelineSeed: VariationMeta["pipelineSeed"] | undefined;
+            const pipelineStageCount = "3";
 
-              let finalImageUrl: string | null = null;
-              let finalMeta: VariationMeta | undefined;
-              if (eid === "logo") {
-                finalImageUrl = styleResult.logoImageUrl ?? null;
-                finalMeta = styleResult._meta
-                  ? { ...styleResult._meta, model: styleResult.logoModel ?? styleResult._meta.model }
-                  : styleResult.logoModel
-                    ? { model: styleResult.logoModel }
-                    : undefined;
-              } else {
-                finalImageUrl = styleResult.artStyleImageUrl ?? null;
-                finalMeta = styleResult._meta
-                  ? { ...styleResult._meta, model: styleResult.artStyleModel ?? styleResult._meta.model }
-                  : styleResult.artStyleModel
-                    ? { model: styleResult.artStyleModel }
-                    : undefined;
-              }
-              if (!finalImageUrl) {
-                throw new Error(`No ${eid} image generated`);
-              }
-              data = { imageUrl: finalImageUrl };
-              resultMeta = finalMeta;
-            } else {
-              // No active visual concept — run full 3-stage pipeline
-              const totalStages = "3";
+            if (!visualConcept) {
+              // No active visual concept — derive the missing strategic seed first,
+              // then generate only the requested image target.
               const vcRequest = {
                 brandName: brief.name,
                 tagline: brief.tagline,
@@ -160,7 +121,7 @@ export function useBrandGeneration({
               const vcResult = await withDebugLog(
                 debugInterceptor,
                 {
-                  label: `Pipeline Add Variation: ${eid} (stage 1/${totalStages})`,
+                  label: `Pipeline Add Variation: ${eid} (stage 1/${pipelineStageCount})`,
                   agent: "brand-strategist",
                   endpoint: "strategist/generate-visual-concept",
                   request: vcRequest as Record<string, unknown>,
@@ -175,7 +136,7 @@ export function useBrandGeneration({
               const pfResult = await withDebugLog(
                 debugInterceptor,
                 {
-                  label: `Pipeline Add Variation: ${eid} (stage 2/${totalStages})`,
+                  label: `Pipeline Add Variation: ${eid} (stage 2/${pipelineStageCount})`,
                   agent: "art-director",
                   endpoint: "art-director/design-palette-fonts",
                   request: pfRequest as Record<string, unknown>,
@@ -183,70 +144,76 @@ export function useBrandGeneration({
                 () => designPaletteAndFonts(pfRequest),
               );
 
-              const styleRequest = {
-                ...pfRequest,
+              visualConcept = vcResult.visualConcept;
+              colorPalette = pfResult.colorPalette;
+              font = pfResult.font;
+              pipelineSeed = {
+                visualConcept: vcResult.visualConcept,
                 colorPalette: pfResult.colorPalette,
                 font: pfResult.font,
-              };
-              const styleResult = await withDebugLog(
-                debugInterceptor,
-                {
-                  label: `Pipeline Add Variation: ${eid} (stage 3/${totalStages})`,
-                  agent: "art-director",
-                  endpoint: "art-director/design-logo-style",
-                  request: styleRequest as Record<string, unknown>,
-                },
-                () => designLogoAndStyle(styleRequest),
-              );
-
-              let finalImageUrl: string | null = null;
-              let finalMeta: VariationMeta | undefined;
-              if (eid === "logo") {
-                finalImageUrl = styleResult.logoImageUrl ?? null;
-                finalMeta = styleResult._meta
-                  ? { ...styleResult._meta, model: styleResult.logoModel ?? styleResult._meta.model }
-                  : styleResult.logoModel
-                    ? { model: styleResult.logoModel }
-                    : undefined;
-              } else {
-                finalImageUrl = styleResult.artStyleImageUrl ?? null;
-                finalMeta = styleResult._meta
-                  ? { ...styleResult._meta, model: styleResult.artStyleModel ?? styleResult._meta.model }
-                  : styleResult.artStyleModel
-                    ? { model: styleResult.artStyleModel }
-                    : undefined;
-              }
-              if (!finalImageUrl) {
-                throw new Error(`No ${eid} image generated in pipeline add variation`);
-              }
-              data = { imageUrl: finalImageUrl };
-              resultMeta = {
-                ...finalMeta,
-                pipelineSeed: {
-                  visualConcept: vcResult.visualConcept,
-                  colorPalette: pfResult.colorPalette,
-                  font: pfResult.font,
-                  application: brief.applications?.[0] ?? "brand application",
-                },
+                application: brief.applications?.[0] ?? "brand application",
               };
             }
+
+            const brandContextShort = {
+              name: brief.name || undefined,
+              tagline: brief.tagline || undefined,
+              keywords: brief.keywords,
+              visualConcept,
+              colorPalette,
+              application: brief.applications?.[0],
+            };
+            const imageCtx = {
+              brandContext: {
+                name: brief.name || undefined,
+                tagline: brief.tagline || undefined,
+                description: brief.description || undefined,
+                targetAudience: brief.targetAudience || undefined,
+                keywords: brief.keywords,
+                visualConcept,
+                colorPalette,
+                font,
+                application: brief.applications?.[0],
+              },
+              brandContextShort,
+            };
+            const result = await withDebugLog(
+              debugInterceptor,
+              {
+                label: pipelineSeed
+                  ? `Pipeline Add Variation: ${eid} (stage 3/${pipelineStageCount})`
+                  : `Add Variation: ${eid} (concept active, 1/1)`,
+                agent: debugAgentForGenerateImage({ cardType: elementId, ...imageCtx }),
+                endpoint: "generate-image",
+                request: imageCtx as Record<string, unknown>,
+              },
+              () => generateBrandImage(elementId as ImageCardType, imageCtx),
+            );
+
+            data = { imageUrl: result.imageUrl };
+            resultMeta = pipelineSeed
+              ? {
+                  ...(result._meta ?? {}),
+                  pipelineSeed,
+                }
+              : result._meta;
           } else {
-          const imgCtx = {
-            brandContextShort: buildBriefOnlyContext(p),
-            sourceImageUrl: (sourceData as { imageUrl?: string } | null)?.imageUrl,
-          };
-          const result = await withDebugLog(
-            debugInterceptor,
-            {
-              label: "Add Variation (image)",
-              agent: debugAgentForGenerateImage({ cardType: elementId, ...imgCtx }),
-              endpoint: "generate-image",
-              request: imgCtx as Record<string, unknown>,
-            },
-            () => generateBrandImage(elementId as ImageCardType, imgCtx),
-          );
-          data = { imageUrl: result.imageUrl };
-          resultMeta = result._meta;
+            const imgCtx = {
+              brandContextShort: buildBriefOnlyContext(p),
+              sourceImageUrl: (sourceData as { imageUrl?: string } | null)?.imageUrl,
+            };
+            const result = await withDebugLog(
+              debugInterceptor,
+              {
+                label: "Add Variation (image)",
+                agent: debugAgentForGenerateImage({ cardType: elementId, ...imgCtx }),
+                endpoint: "generate-image",
+                request: imgCtx as Record<string, unknown>,
+              },
+              () => generateBrandImage(elementId as ImageCardType, imgCtx),
+            );
+            data = { imageUrl: result.imageUrl };
+            resultMeta = result._meta;
           }
         } else {
           const usedFontNames: string[] = [];

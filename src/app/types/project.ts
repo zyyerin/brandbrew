@@ -229,7 +229,7 @@ export interface DirectionCache {
   colorNames: { hex: string; name: string }[];
   logoImageUrl?: string;
   brandInContextDescription: string;
-  contextImageUrls?: string[];
+  contextImageUrls?: Array<string | null>;
   /** AI-generated paragraph expanding on the visual concept. Always present after direction generation. */
   visualConceptContent?: string;
   /** Frozen concept name used by direction page to avoid live variation drift. */

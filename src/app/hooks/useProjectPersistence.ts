@@ -4,6 +4,11 @@ import type { ProjectEntry } from "../components/project-switcher";
 import { buildProjectSnapshot, hydrateProjectData } from "../utils/project-snapshot";
 import type { ProjectData, PipelineStage } from "../types/project";
 import { createEmptyProject } from "../types/project";
+import {
+  createNextProjectId,
+  getOrCreateCurrentProjectId,
+  setStoredCurrentProjectId,
+} from "../utils/current-project-id";
 
 const MAX_PROJECTS = 3;
 
@@ -25,7 +30,7 @@ export function useProjectPersistence({
   pipelineStageRef,
 }: UseProjectPersistenceParams) {
   const [currentProjectId, setCurrentProjectId] = useState(
-    () => localStorage.getItem("bb_currentProjectId") ?? "default",
+    () => getOrCreateCurrentProjectId(),
   );
   const [isLoaded, setIsLoaded] = useState(false);
   const [projectIndex, setProjectIndex] = useState<ProjectEntry[]>(() => {
@@ -38,9 +43,15 @@ export function useProjectPersistence({
 
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const projectIndexRef = useRef(projectIndex);
+  const pendingSaveRef = useRef<{
+    snapshot: Record<string, unknown>;
+    projectId: string;
+    name: string;
+  } | null>(null);
+  const saveLoopRef = useRef<Promise<void> | null>(null);
 
   useEffect(() => {
-    localStorage.setItem("bb_currentProjectId", currentProjectId);
+    setStoredCurrentProjectId(currentProjectId);
   }, [currentProjectId]);
 
   useEffect(() => {
@@ -60,6 +71,29 @@ export function useProjectPersistence({
   const removeFromIndex = useCallback((id: string) => {
     setProjectIndex((prev) => prev.filter((p) => p.id !== id));
   }, []);
+
+  const enqueueSave = useCallback((
+    snapshot: Record<string, unknown>,
+    projectId: string,
+    name: string,
+  ): Promise<void> => {
+    pendingSaveRef.current = { snapshot, projectId, name };
+    if (saveLoopRef.current) return saveLoopRef.current;
+
+    const run = async () => {
+      while (pendingSaveRef.current) {
+        const next = pendingSaveRef.current;
+        pendingSaveRef.current = null;
+        await saveProject(next.snapshot, next.projectId);
+        upsertIndex(next.projectId, next.name);
+      }
+    };
+
+    saveLoopRef.current = run().finally(() => {
+      saveLoopRef.current = null;
+    });
+    return saveLoopRef.current;
+  }, [upsertIndex]);
 
   useEffect(() => {
     let cancelled = false;
@@ -95,8 +129,7 @@ export function useProjectPersistence({
       const p = projectRef.current;
       const snapshot = buildProjectSnapshot(p);
       const name = p.brandBrief.current.name || p.projectName;
-      saveProject(snapshot, currentProjectId)
-        .then(() => upsertIndex(currentProjectId, name))
+      enqueueSave(snapshot, currentProjectId, name)
         .catch((err) => console.warn("[Brand Brew] Auto-save failed:", err));
     }, 2000);
 
@@ -109,9 +142,13 @@ export function useProjectPersistence({
     const p = projectRef.current;
     const snapshot = buildProjectSnapshot(p);
     const name = p.brandBrief.current.name || p.projectName;
-    await saveProject(snapshot, currentProjectId);
-    upsertIndex(currentProjectId, name);
-  }, [projectRef, currentProjectId, upsertIndex]);
+    await enqueueSave(snapshot, currentProjectId, name);
+  }, [projectRef, currentProjectId, enqueueSave]);
+
+  const updateCurrentProjectId = useCallback((nextProjectId: string) => {
+    setStoredCurrentProjectId(nextProjectId);
+    setCurrentProjectId(nextProjectId);
+  }, []);
 
   const handleSwitchProject = useCallback(
     async (targetId: string) => {
@@ -124,9 +161,9 @@ export function useProjectPersistence({
         console.warn("[Brand Brew] Save before switch failed:", err);
       }
       resetToEmpty();
-      setCurrentProjectId(targetId);
+      updateCurrentProjectId(targetId);
     },
-    [currentProjectId, doSave, resetToEmpty],
+    [currentProjectId, doSave, resetToEmpty, updateCurrentProjectId],
   );
 
   const handleNewProject = useCallback(async () => {
@@ -138,8 +175,8 @@ export function useProjectPersistence({
       console.warn("[Brand Brew] Save before new project failed:", err);
     }
     resetToEmpty();
-    setCurrentProjectId(`proj-${Date.now()}`);
-  }, [doSave, resetToEmpty]);
+    updateCurrentProjectId(createNextProjectId());
+  }, [doSave, resetToEmpty, updateCurrentProjectId]);
 
   const handleDeleteProject = useCallback(
     (deletedId: string) => {
@@ -151,12 +188,12 @@ export function useProjectPersistence({
         const remaining = projectIndexRef.current.filter(
           (p) => p.id !== deletedId,
         );
-        setCurrentProjectId(
-          remaining.length > 0 ? remaining[0].id : `proj-${Date.now()}`,
+        updateCurrentProjectId(
+          remaining.length > 0 ? remaining[0].id : createNextProjectId(),
         );
       }
     },
-    [currentProjectId, resetToEmpty, removeFromIndex],
+    [currentProjectId, resetToEmpty, removeFromIndex, updateCurrentProjectId],
   );
 
   const handleSaveNow = useCallback(async () => {

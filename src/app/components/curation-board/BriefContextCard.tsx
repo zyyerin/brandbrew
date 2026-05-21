@@ -1,5 +1,5 @@
 import React, { useRef } from "react";
-import { ChevronDown, ChevronUp } from "lucide-react";
+import { Maximize2, Minimize2 } from "lucide-react";
 import type { BrandBriefData, PipelineStage } from "../../types/project";
 import type {
   BrandBriefFields,
@@ -11,6 +11,7 @@ import { BrandBriefForm, BriefFooter, isBriefSaturatedForAutoComplete } from "..
 import { TYPE } from "../../utils/design-tokens";
 
 const MAX_VISIBLE_KEYWORDS = 4;
+const MAX_VISIBLE_APPLICATIONS = 3;
 
 interface BriefContextCardProps {
   expanded: boolean;
@@ -65,6 +66,9 @@ export function BriefContextCard({
   const keywords = brandBrief.keywords ?? [];
   const visibleKeywords = keywords.slice(0, MAX_VISIBLE_KEYWORDS);
   const extraCount = keywords.length - MAX_VISIBLE_KEYWORDS;
+  const applications = brandBrief.applications ?? [];
+  const visibleApplications = applications.slice(0, MAX_VISIBLE_APPLICATIONS);
+  const applicationExtraCount = applications.length - MAX_VISIBLE_APPLICATIONS;
   // Panel expand/collapse stays available during visual-concept pipeline; only block while
   // batch or per-field auto-complete is mutating the form.
   const briefPanelToggleDisabled = isAutoCompleting || autoFillingFieldKey !== null;
@@ -100,7 +104,7 @@ export function BriefContextCard({
             >
               Brand Brief
             </h2>
-            <ChevronUp size={14} className="text-muted-foreground/50" />
+            <Minimize2 size={14} className="text-muted-foreground/50" />
           </button>
         ) : (
           <div
@@ -165,9 +169,8 @@ export function BriefContextCard({
   // Compact (read-only summary) mode
   const hasContent = !!(
     brandBrief.name?.trim() ||
-    brandBrief.tagline?.trim() ||
-    brandBrief.targetAudience?.trim() ||
-    keywords.length > 0
+    keywords.length > 0 ||
+    applications.length > 0
   );
 
   return (
@@ -178,22 +181,22 @@ export function BriefContextCard({
       <button
         type="button"
         onClick={onToggleExpanded}
-        className="w-full text-left px-3 py-2.5 hover:bg-muted/30 transition-colors group cursor-pointer"
+        className="w-full text-left px-3.5 py-3 hover:bg-muted/30 transition-colors group cursor-pointer"
       >
         {/* Name row */}
-        <div className="flex items-start justify-between gap-2 mb-4">
+        <div className="flex items-start justify-between gap-2 mb-3.5">
           <span
-            className="font-semibold text-foreground/80 leading-tight truncate"
+            className="font-semibold text-foreground/90 leading-tight truncate"
             style={{
-              fontSize: TYPE.size.md,
-              fontWeight: TYPE.weight.semibold,
+              fontSize: TYPE.size.lg,
+              fontWeight: TYPE.weight.bold,
             }}
           >
             {brandBrief.name?.trim() || (
               <span className="text-muted-foreground/40 font-normal">Brand Brief</span>
             )}
           </span>
-          <ChevronDown
+          <Maximize2
             size={13}
             className="shrink-0 mt-0.5 text-muted-foreground/40 group-hover:text-muted-foreground/70 transition-colors"
           />
@@ -201,44 +204,47 @@ export function BriefContextCard({
 
         {hasContent && (
           <>
-            {/* Tagline */}
-            {brandBrief.tagline && (
-              <p
-                className="text-muted-foreground/55 truncate mb-1"
-                style={{ fontSize: TYPE.size.baseSm }}
-              >
-                {brandBrief.tagline}
-              </p>
-            )}
-
-            {/* Target audience */}
-            {brandBrief.targetAudience && (
-              <p
-                className="text-muted-foreground/45 truncate mb-1.5"
-                style={{ fontSize: TYPE.size.xs, letterSpacing: "0.01em" }}
-              >
-                {brandBrief.targetAudience}
-              </p>
-            )}
-
             {/* Keywords */}
             {visibleKeywords.length > 0 && (
-              <div className="flex flex-wrap gap-1">
+              <div className="flex flex-wrap gap-1 mb-1.5">
                 {visibleKeywords.map((k) => (
                   <span
                     key={k}
-                    className="px-1.5 py-0.5 rounded bg-muted/60 text-muted-foreground/65 leading-none"
-                    style={{ fontSize: TYPE.size.xs }}
+                    className="px-2.5 py-1 rounded-md bg-muted/70 text-foreground/70 leading-none font-medium"
+                    style={{ fontSize: TYPE.size.baseSm }}
                   >
                     {k}
                   </span>
                 ))}
                 {extraCount > 0 && (
                   <span
-                    className="px-1.5 py-0.5 rounded bg-muted/40 text-muted-foreground/40 leading-none"
-                    style={{ fontSize: TYPE.size.xs }}
+                    className="px-2.5 py-1 rounded-md bg-muted/50 text-foreground/50 leading-none font-medium"
+                    style={{ fontSize: TYPE.size.baseSm }}
                   >
                     +{extraCount}
+                  </span>
+                )}
+              </div>
+            )}
+
+            {/* Applications */}
+            {visibleApplications.length > 0 && (
+              <div className="flex flex-wrap gap-1">
+                {visibleApplications.map((application) => (
+                  <span
+                    key={application}
+                    className="px-2.5 py-1 rounded-md bg-primary/10 text-primary/80 leading-none font-medium"
+                    style={{ fontSize: TYPE.size.baseSm }}
+                  >
+                    {application}
+                  </span>
+                ))}
+                {applicationExtraCount > 0 && (
+                  <span
+                    className="px-2.5 py-1 rounded-md bg-primary/5 text-primary/55 leading-none font-medium"
+                    style={{ fontSize: TYPE.size.baseSm }}
+                  >
+                    +{applicationExtraCount}
                   </span>
                 )}
               </div>

@@ -74,6 +74,34 @@ const AUTO_FILL_FIELD_SPECS: Record<string, { jsonShape: string; rules: string; 
   },
 };
 
+function buildVisualConceptErrorResponse(err: unknown): {
+  status: 429 | 500;
+  body: { error: string; code?: string; provider?: string; details?: string };
+} {
+  const details = err instanceof Error ? err.message : String(err);
+  const isGeminiQuotaError =
+    /Gemini(?:\s+\w+)? API error \(HTTP 429\)|\(code:\s*429\)|monthly spending cap|quota|rate limit|RESOURCE_EXHAUSTED/i.test(details);
+
+  if (isGeminiQuotaError) {
+    return {
+      status: 429,
+      body: {
+        error: "Visual concept generation failed: Gemini quota or spending cap reached",
+        code: "UPSTREAM_QUOTA_EXCEEDED",
+        provider: "gemini",
+        details,
+      },
+    };
+  }
+
+  return {
+    status: 500,
+    body: {
+      error: `Visual concept generation failed: ${details}`,
+    },
+  };
+}
+
 
 // ── Route: POST /generate-visual-concept ─────────────────────────────────────
 
@@ -138,10 +166,11 @@ strategist.post("/generate-visual-concept", async (c) => {
   } catch (err) {
     const isDev = Deno.env.get("ENABLE_DEV_ROUTES") === "true";
     console.error("[strategist] generate-visual-concept error:", (err as Error)?.stack ?? String(err));
+    const response = buildVisualConceptErrorResponse(err);
     return c.json({
-      error: `Visual concept generation failed: ${String(err)}`,
+      ...response.body,
       ...(isDev && _rawGeminiText !== undefined && { _debug: { rawText: _rawGeminiText.slice(0, 500) } }),
-    }, 500);
+    }, response.status);
   }
 });
 
@@ -385,7 +414,11 @@ strategist.post("/direction", async (c) => {
   let _rawGeminiText: string | undefined;
   try {
     const startTime = Date.now();
-    const { brandData } = await c.req.json();
+    const body = await c.req.json();
+    const brandData =
+      body && typeof body === "object" && "brandData" in body && body.brandData && typeof body.brandData === "object"
+        ? body.brandData as Record<string, unknown>
+        : {};
     const apiKey = Deno.env.get("GEMINI_API_KEY");
     if (!apiKey) return c.json({ error: "GEMINI_API_KEY not configured" }, 500);
 
@@ -401,8 +434,8 @@ strategist.post("/direction", async (c) => {
       colorPalette: fullContext.colorPalette,
       visualConcept: fullContext.visualConcept,
       font: fullContext.font,
-      artStyleImageUrl: fullContext.artStyleImageUrl ?? brandData.artStyleImageUrl,
-      logoImageUrl: fullContext.logoImageUrl ?? brandData.logoImageUrl,
+      artStyleImageUrl: fullContext.artStyleImageUrl,
+      logoImageUrl: fullContext.logoImageUrl,
     }, null, 2);
 
     const fullPrompt = buildPrompt({
@@ -414,8 +447,8 @@ strategist.post("/direction", async (c) => {
 
     // Fetch logo and art style images to pass to the model as visual context.
     // Failures are non-fatal — fall back to text-only generation.
-    const logoImageUrl = brandData.logoImageUrl as string | undefined;
-    const artStyleImageUrl = brandData.artStyleImageUrl as string | undefined;
+    const logoImageUrl = fullContext.logoImageUrl;
+    const artStyleImageUrl = fullContext.artStyleImageUrl;
 
     const imageResults = await Promise.all([
       logoImageUrl ? fetchImageAsBase64(logoImageUrl) : Promise.resolve(null),
@@ -441,7 +474,7 @@ strategist.post("/direction", async (c) => {
 
     const direction = safeParseJson<Record<string, unknown>>(_rawGeminiText, "direction");
     const generationTime = Date.now() - startTime;
-    console.log(`[strategist] Direction generated: ${brandData.brandBrief?.name} (${generationTime}ms, images: ${images.length})`);
+    console.log(`[strategist] Direction generated: ${fullContext.name ?? "unknown"} (${generationTime}ms, images: ${images.length})`);
 
     return c.json({
       ...direction,

@@ -336,7 +336,7 @@ export function CurationBoard({
       ref={canvas.containerRef}
       className="h-full overflow-hidden relative"
       style={{
-        background: "var(--bb-canvas-bg)",
+        backgroundColor: "var(--bb-canvas-bg)",
         backgroundImage: "radial-gradient(circle, var(--bb-canvas-dot) 1px, transparent 1px)",
         backgroundSize: `${dotSize}px ${dotSize}px`,
         backgroundPosition: `${dotOffset.x}px ${dotOffset.y}px`,
@@ -551,10 +551,12 @@ export function CurationBoard({
           containerRef={canvas.containerRef}
           zoom={canvas.zoom}
           pan={canvas.pan}
+          variationElMapRef={variationElMapRef}
           slotPositionMapRef={slotPositionMapRef}
           filmstripScrollMapRef={filmstripScrollMapRef}
           visibleQueueTypes={visibleQueueTypes}
           checkedVariationIds={checkedVariationIds}
+          connectionsDisabled={pipelineStage !== null}
           allVariationIdsKey={allVariationIdsKey}
           vcPanelFraction={leftPanelActive ? effectiveLeftWidthFraction : 0}
           snapshotHistory={snapshotHistory}

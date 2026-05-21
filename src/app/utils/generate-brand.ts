@@ -2,6 +2,9 @@ import { callApi } from "./apiClient";
 import type { VariationMeta } from "../types/project";
 import type { BrandContextFull } from "@server-shared/types.tsx";
 
+const STRATEGIST_VISUAL_CONCEPT_TIMEOUT_MS = 90_000;
+const STRATEGIST_DIRECTION_TIMEOUT_MS = 90_000;
+
 // ─── 类型定义 ─────────────────────────────────────────────────────────────────
 
 export interface VisualConceptData {
@@ -83,7 +86,11 @@ export async function generateVisualConcept(
   };
   const raw = await callApi<{ visualConcept: VisualConceptData; _meta?: VariationMeta }>(
     "strategist/generate-visual-concept",
-    { body: { ...input, brandContext }, signal: opts?.signal },
+    {
+      body: { ...input, brandContext },
+      timeoutMs: STRATEGIST_VISUAL_CONCEPT_TIMEOUT_MS,
+      signal: opts?.signal,
+    },
   );
   return { visualConcept: raw.visualConcept, _meta: raw._meta };
 }
@@ -209,13 +216,57 @@ export interface DirectionData {
   synthesizedVisualConcept?: string;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isEdgeRuntime503(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  return /HTTP 503|SUPABASE_EDGE_RUNTIME_ERROR|Service Unavailable/i.test(err.message);
+}
+
+function stripDirectionImageContext(brandData: Record<string, unknown>): Record<string, unknown> {
+  const next: Record<string, unknown> = { ...brandData };
+  delete next.logoImageUrl;
+  delete next.artStyleImageUrl;
+
+  if (isRecord(next.artStyle) && "imageUrl" in next.artStyle) {
+    const { imageUrl: _imageUrl, ...rest } = next.artStyle;
+    next.artStyle = Object.keys(rest).length > 0 ? rest : undefined;
+  }
+
+  if (isRecord(next.logo) && "imageUrl" in next.logo) {
+    const { imageUrl: _imageUrl, ...rest } = next.logo;
+    next.logo = Object.keys(rest).length > 0 ? rest : undefined;
+  }
+
+  return next;
+}
+
 /**
  * Generate direction rationales, color names, and context descriptions via AI.
  */
 export async function generateDirection(brandData: Record<string, unknown>): Promise<DirectionData> {
-  const raw = await callApi<DirectionData & { _meta?: unknown }>("generate-direction", { body: { brandData } });
-  const { _meta, ...data } = raw as any;
-  return data as DirectionData;
+  try {
+    const raw = await callApi<DirectionData & { _meta?: unknown }>("strategist/direction", {
+      body: { brandData },
+      timeoutMs: STRATEGIST_DIRECTION_TIMEOUT_MS,
+    });
+    const { _meta, ...data } = raw as any;
+    return data as DirectionData;
+  } catch (err) {
+    if (!isEdgeRuntime503(err)) {
+      throw err;
+    }
+
+    const fallbackBrandData = stripDirectionImageContext(brandData);
+    const raw = await callApi<DirectionData & { _meta?: unknown }>("strategist/direction", {
+      body: { brandData: fallbackBrandData },
+      timeoutMs: STRATEGIST_DIRECTION_TIMEOUT_MS,
+    });
+    const { _meta, ...data } = raw as any;
+    return data as DirectionData;
+  }
 }
 
 // ─── User image upload ───────────────────────────────────────────────────────
@@ -233,7 +284,25 @@ export async function uploadImage(
 // ─── Project persistence ──────────────────────────────────────────────────────
 
 export async function saveProject(data: Record<string, unknown>, projectId = "default"): Promise<void> {
-  await callApi<{ ok: boolean }>("save-project", { body: { projectId, data } });
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      await callApi<{ ok: boolean }>("save-project", { body: { projectId, data } });
+      return;
+    } catch (err) {
+      lastError = err;
+      const message = err instanceof Error ? err.message : String(err);
+      const isRetryable =
+        /HTTP 5\d\d/.test(message)
+        || message.includes("SUPABASE_EDGE_RUNTIME_ERROR")
+        || message.includes("Service Unavailable");
+      if (!isRetryable || attempt === 2) break;
+      await new Promise((resolve) => setTimeout(resolve, 1000 * (attempt + 1)));
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }
 
 export async function loadProject(projectId = "default"): Promise<{ found: boolean; data?: Record<string, unknown> }> {

@@ -93,7 +93,9 @@ export function DirectionVersionsPanel({
               const isActive = version.id === activeVersionId;
               const previewUrl = version.snapshotImageUrl ?? visualSnapshotUrl;
               const logoUrl = version.cache?.logoImageUrl;
-              const applicationUrl = version.cache?.contextImageUrls?.[0];
+              const applicationUrl = version.cache?.contextImageUrls?.find(
+                (url): url is string => typeof url === "string" && url.length > 0,
+              );
               const createdAt = version.createdAt instanceof Date
                 ? version.createdAt
                 : new Date(version.createdAt);

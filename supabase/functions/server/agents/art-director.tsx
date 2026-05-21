@@ -11,6 +11,7 @@
 import { Hono } from "npm:hono";
 import {
   callGeminiText,
+  PRO_IMAGE_MODEL,
   TEXT_MODEL,
   generateImage,
   fetchImageAsBase64,
@@ -436,7 +437,7 @@ artDirector.post("/design-logo-style", async (c) => {
 
     const [logoSettled, artStyleSettled] = await Promise.allSettled([
       generateImage(apiKey, logoPrompt,     { cardType: "logo", aspectRatio: logoAR }),
-      generateImage(apiKey, artStylePrompt, { cardType: "art-style", aspectRatio: artStyleAR }),
+      generateImage(apiKey, artStylePrompt, { cardType: "art-style", aspectRatio: artStyleAR, modelOverride: PRO_IMAGE_MODEL }),
     ]);
 
     const partialErrors: string[] = [];
@@ -449,9 +450,14 @@ artDirector.post("/design-logo-style", async (c) => {
     if (logoSettled.status === "fulfilled") {
       const r = logoSettled.value;
       if (r.errors.length > 0) console.log(`[art-director] Logo generation warnings: ${r.errors.join(" | ")}`);
-      logoImageUrl = await uploadAndSignImage(r.b64, r.mimeType, "logo", c.req.header("X-Project-Id"));
-      logoModel = r.usedModel;
-      usedModel = r.usedModel;
+      try {
+        logoImageUrl = await uploadAndSignImage(r.b64, r.mimeType, "logo", c.req.header("X-Project-Id"));
+        logoModel = r.usedModel;
+        usedModel = r.usedModel;
+      } catch (err) {
+        console.error("[art-director] Logo upload failed:", err);
+        partialErrors.push(`logo upload: ${String(err)}`);
+      }
     } else {
       console.error("[art-director] Logo generation failed:", logoSettled.reason);
       partialErrors.push(`logo: ${String(logoSettled.reason)}`);
@@ -460,9 +466,14 @@ artDirector.post("/design-logo-style", async (c) => {
     if (artStyleSettled.status === "fulfilled") {
       const r = artStyleSettled.value;
       if (r.errors.length > 0) console.log(`[art-director] Art style generation warnings: ${r.errors.join(" | ")}`);
-      artStyleImageUrl = await uploadAndSignImage(r.b64, r.mimeType, "art-style", c.req.header("X-Project-Id"));
-      artStyleModel = r.usedModel;
-      if (usedModel === "unknown") usedModel = r.usedModel;
+      try {
+        artStyleImageUrl = await uploadAndSignImage(r.b64, r.mimeType, "art-style", c.req.header("X-Project-Id"));
+        artStyleModel = r.usedModel;
+        if (usedModel === "unknown") usedModel = r.usedModel;
+      } catch (err) {
+        console.error("[art-director] Art style upload failed:", err);
+        partialErrors.push(`art-style upload: ${String(err)}`);
+      }
     } else {
       console.error("[art-director] Art style generation failed:", artStyleSettled.reason);
       partialErrors.push(`art-style: ${String(artStyleSettled.reason)}`);

@@ -700,24 +700,86 @@ async function cosAuthorization(
   return `q-sign-algorithm=sha1&q-ak=${secretId}&q-sign-time=${keyTime}&q-key-time=${keyTime}&q-header-list=host&q-url-param-list=&q-signature=${signature}`;
 }
 
+function getCosPublicUrl(host: string, pathname: string, cdnDomain?: string | null): string {
+  const baseUrl = cdnDomain ? `https://${cdnDomain}` : `https://${host}`;
+  return `${baseUrl}${pathname}`;
+}
+
+async function verifyCosObjectExists(
+  secretId: string,
+  secretKey: string,
+  host: string,
+  pathname: string,
+): Promise<boolean> {
+  try {
+    const auth = await cosAuthorization(secretId, secretKey, "HEAD", pathname, host);
+    const res = await fetch(`https://${host}${pathname}`, {
+      method: "HEAD",
+      headers: { Host: host, Authorization: auth },
+      signal: AbortSignal.timeout(10_000),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+async function confirmCosObjectWithRetry(
+  secretId: string,
+  secretKey: string,
+  host: string,
+  pathname: string,
+): Promise<boolean> {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const exists = await verifyCosObjectExists(secretId, secretKey, host, pathname);
+    if (exists) return true;
+    if (attempt < 2) {
+      await new Promise((resolve) => setTimeout(resolve, 1500 * (attempt + 1)));
+    }
+  }
+  return false;
+}
+
 async function uploadToCos(buffer: Uint8Array, mimeType: string, fileName: string): Promise<string> {
   const { secretId, secretKey, bucket, region, cdnDomain } = getCosConfig();
   const host = `${bucket}.cos.${region}.myqcloud.com`;
   const pathname = `/${fileName}`;
-  const auth = await cosAuthorization(secretId, secretKey, "PUT", pathname, host);
+  const publicUrl = getCosPublicUrl(host, pathname, cdnDomain);
 
-  const res = await fetch(`https://${host}${pathname}`, {
-    method: "PUT",
-    headers: { Host: host, Authorization: auth, "Content-Type": mimeType, "Content-Length": String(buffer.length) },
-    body: buffer,
-    signal: AbortSignal.timeout(30_000),
-  });
-  if (!res.ok) {
-    const errText = await res.text();
-    throw new Error(`COS upload error (HTTP ${res.status}): ${errText.slice(0, 300)}`);
+  const timeoutsMs = [45_000, 90_000];
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt < timeoutsMs.length; attempt++) {
+    const auth = await cosAuthorization(secretId, secretKey, "PUT", pathname, host);
+    try {
+      const res = await fetch(`https://${host}${pathname}`, {
+        method: "PUT",
+        headers: { Host: host, Authorization: auth, "Content-Type": mimeType, "Content-Length": String(buffer.length) },
+        body: buffer,
+        signal: AbortSignal.timeout(timeoutsMs[attempt]),
+      });
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(`COS upload error (HTTP ${res.status}): ${errText.slice(0, 300)}`);
+      }
+      return publicUrl;
+    } catch (err) {
+      lastError = err;
+      const name = err instanceof Error ? err.name : "";
+      if (name === "AbortError" || name === "TimeoutError") {
+        const exists = await confirmCosObjectWithRetry(secretId, secretKey, host, pathname);
+        if (exists) {
+          console.warn(`[cos] Upload timed out after object became available: ${fileName}`);
+          return publicUrl;
+        }
+        console.warn(`[cos] Upload attempt ${attempt + 1} timed out for ${fileName}`);
+      } else {
+        throw err;
+      }
+    }
   }
-  const baseUrl = cdnDomain ? `https://${cdnDomain}` : `https://${host}`;
-  return `${baseUrl}${pathname}`;
+
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }
 
 // ── Upload image and return a public URL ─────────────────────────────────────
@@ -734,7 +796,7 @@ export async function uploadAndSignImage(
   for (let i = 0; i < binary.length; i++) buffer[i] = binary.charCodeAt(i);
 
   const ext = mimeType.includes("jpeg") ? "jpg" : "png";
-  const baseName = `${cardType}-${Date.now()}.${ext}`;
+  const baseName = `${cardType}-${Date.now()}-${crypto.randomUUID()}.${ext}`;
   const fileName = projectId ? `projects/${projectId}/${baseName}` : baseName;
 
   // ── Tencent Cloud COS (preferred when configured) ────────────────────────

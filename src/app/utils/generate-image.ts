@@ -182,10 +182,11 @@ export interface PaletteFontsResult {
 }
 
 export interface LogoStyleResult {
-  artStyleImageUrl: string;
-  logoImageUrl: string;
+  artStyleImageUrl?: string | null;
+  logoImageUrl?: string | null;
   artStyleModel?: string;
   logoModel?: string;
+  errors?: string[];
   _meta?: VariationMeta;
 }
 
@@ -244,6 +245,7 @@ export async function designLogoAndStyle(
     logoImageUrl: raw.logoImageUrl,
     artStyleModel: raw.artStyleModel,
     logoModel: raw.logoModel,
+    errors: raw.errors,
     _meta: raw._meta,
   };
 }
@@ -309,13 +311,10 @@ export async function generateVisualSnapshotFromElements(
  */
 export async function generateBrandContextMockup(
   params: BrandContextMockupParams,
-): Promise<ImageGenResult> {
+): Promise<ImageGenResult | null> {
   const { application, brandName, brandDescription, visualSnapshotUrl } = params;
 
-  const prompt = `Create a mockup of ${application}, clean composition.`;
-
   const body: Record<string, unknown> = {
-    prompt,
     application,
   };
   if (brandName?.trim()) {
@@ -329,12 +328,28 @@ export async function generateBrandContextMockup(
     body.referenceImageUrls = [visualSnapshotUrl];
   }
 
-  const data = await callApi<{ imageUrl?: string; _meta?: ImageGenResult["_meta"] }>(
-    "visual-designer/context",
-    { body, timeoutMs: IMAGE_GEN_TIMEOUT_MS },
-  );
-  if (!data.imageUrl) throw new Error("No imageUrl in server response");
-  return { imageUrl: data.imageUrl, _meta: data._meta };
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const data = await callApi<{ imageUrl?: string | null; warning?: string; _meta?: ImageGenResult["_meta"] }>(
+        "visual-designer/context",
+        { body, timeoutMs: IMAGE_GEN_TIMEOUT_MS },
+      );
+      if (data.warning && !data.imageUrl) {
+        console.warn(`[Brand in Context] ${application}: ${data.warning}`);
+        return null;
+      }
+      if (!data.imageUrl) throw new Error("No imageUrl in server response");
+      return { imageUrl: data.imageUrl, _meta: data._meta };
+    } catch (err) {
+      lastError = err;
+      if (attempt === 0) {
+        await new Promise((resolve) => setTimeout(resolve, 1200));
+        continue;
+      }
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }
 
 // ─── Merge API calls (moved from merge-logic.ts) ─────────────────────────────

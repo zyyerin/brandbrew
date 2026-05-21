@@ -83,9 +83,13 @@ function hasShortContext(body: unknown): boolean {
 }
 
 function buildErrorPayload(publicMessage: string, err: unknown, debug?: Record<string, unknown>) {
+  const detail = err instanceof Error ? err.message : String(err);
   const payload: Record<string, unknown> = { error: publicMessage };
+  if (detail && detail !== "[object Object]") {
+    payload.details = detail.length > 500 ? `${detail.slice(0, 500)}…` : detail;
+  }
   if (isDevMode()) {
-    payload.error = `${publicMessage}: ${String(err)}`;
+    payload.error = `${publicMessage}: ${detail}`;
     if (debug) payload._debug = debug;
   }
   return payload;
@@ -497,7 +501,7 @@ visualDesigner.post("/context", async (c) => {
     const effectiveAR = resolveAspectRatio("brand-context", aspectRatio);
     let effectivePrompt =
       prompt ??
-      `Create a curated brand mockup of ${application}. Apply the reference visual dynamically across the items, varying the scale between full-bleed macro crops on some items and small, isolated placements on others. Clean composition. Avoid redundant, tiled patterns.`;
+      `Create a curated brand application mockup of ${application}${brandName ? ` for "${brandName}"` : ""}. Apply the reference visual selectively across the composition, varying the scale between full-bleed macro moments and smaller intentional placements. Keep the result presentation-ready, realistic, and cohesive. Avoid redundant tiled patterns, watermarks, dense illegible text, and split-screen collage layouts.`;
     if (brandDescriptionForPrompt) {
       effectivePrompt =
         `${effectivePrompt}\n\nBrand description: ${brandDescriptionForPrompt}`;
@@ -519,16 +523,29 @@ visualDesigner.post("/context", async (c) => {
         aspectRatio: effectiveAR,
       });
     } catch (err) {
-      const errMsg = String(err);
-      const likelySafetyBlock = errMsg.includes("blockReason") || errMsg.includes("no inlineData");
-      if (!likelySafetyBlock || images.length === 0) throw err;
+      try {
+        if (images.length === 0) throw err;
 
-      console.log(`[visual-designer] Context safety block, retrying without reference images`);
-      genResult = await generateImage(apiKey, effectivePrompt, {
-        cardType: "application",
-        refImages: [],
-        aspectRatio: effectiveAR,
-      });
+        console.log(`[visual-designer] Context generation failed with refs, retrying without reference images: ${String(err)}`);
+        genResult = await generateImage(apiKey, effectivePrompt, {
+          cardType: "application",
+          refImages: [],
+          aspectRatio: effectiveAR,
+        });
+      } catch (retryErr) {
+        const warning = retryErr instanceof Error ? retryErr.message : String(retryErr);
+        console.warn(`[visual-designer] Context generation skipped for "${application}": ${warning}`);
+        return c.json({
+          imageUrl: null,
+          warning,
+          _meta: {
+            agent: "visual-designer-context",
+            prompt: effectivePrompt,
+            generationTime: Date.now() - startTime,
+            ingredients: [brandName, application].filter(Boolean),
+          },
+        });
+      }
     }
 
     if (genResult.errors.length > 0) {
