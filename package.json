@@ -7,6 +7,7 @@
     "build": "vite build",
     "dev": "vite",
     "deploy": "supabase functions deploy server --no-verify-jwt",
+    "deploy:note": "INTENTIONAL --no-verify-jwt: JWT is manually verified in auth-middleware.tsx via supabase.auth.getUser(). Platform-level check would be redundant. See auth-middleware.tsx for details.",
     "typecheck": "tsc --noEmit",
     "check:quality": "npm run typecheck && npm run build",
     "eval:model": "node scripts/eval-model.mjs",

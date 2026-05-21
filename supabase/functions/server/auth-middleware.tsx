@@ -2,6 +2,12 @@
 // auth-middleware.tsx — JWT + access-token verification for Edge Function routes
 // 1. Requires Authorization: Bearer <supabase JWT>. Sets c.set("userId", …).
 // 2. If ACCESS_TOKENS secret is set, also requires X-Access-Token header.
+//
+// DEPLOYMENT NOTE: The deploy script uses --no-verify-jwt, which disables
+// Supabase's platform-level JWT check. This is INTENTIONAL. JWT validation is
+// done here manually via supabase.auth.getUser(token), which calls the Supabase
+// Auth server — equivalent security, all auth logic lives in one place.
+// Removing --no-verify-jwt would add a redundant double-check with no benefit.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import type { Context, Next } from "npm:hono";

@@ -8,6 +8,7 @@ import { generateDirection } from "../utils/generate-brand";
 import type { DirectionData, DirectionColorName } from "../utils/generate-brand";
 
 import { generateBrandContextMockup } from "../utils/generate-image";
+import { toast } from "sonner";
 
 // ── Types ───────────────────────────────────────────────────────────────────────
 interface DirectionPageProps {
@@ -378,6 +379,7 @@ export function DirectionPage({
         if (activeVersionIdRef.current === versionId) {
           setDirectionError(String(err));
           setDirectionLoading(false);
+          toast.error("Direction generation failed. Please try again.");
         }
       } finally {
         if (activeVersionIdRef.current === versionId) {

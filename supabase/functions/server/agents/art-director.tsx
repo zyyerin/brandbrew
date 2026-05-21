@@ -360,7 +360,7 @@ artDirector.post("/design-palette-fonts", async (c) => {
       font: result.font,
       _meta: {
         agent: "art-director",
-        prompt: fullPrompt,
+        ...(isDevRoutesEnabled() && { prompt: fullPrompt }),
         model: TEXT_MODEL,
         generationTime,
         contextMode: "full",
@@ -494,7 +494,7 @@ artDirector.post("/design-logo-style", async (c) => {
       ...(partialErrors.length > 0 && { errors: partialErrors }),
       _meta: {
         agent: "art-director",
-        prompt: `[art-style] ${artStylePrompt} | [logo] ${logoPrompt}`,
+        ...(isDevRoutesEnabled() && { prompt: `[art-style] ${artStylePrompt} | [logo] ${logoPrompt}` }),
         model: usedModel,
         generationTime,
         contextMode: "full",
@@ -613,7 +613,7 @@ artDirector.post("/design-application", async (c) => {
       applicationImageUrl,
       _meta: {
         agent: "art-director",
-        prompt: applicationPrompt,
+        ...(isDevRoutesEnabled() && { prompt: applicationPrompt }),
         model: usedModel,
         generationTime,
         contextMode: "full",
@@ -683,7 +683,7 @@ artDirector.post("/variation", async (c) => {
       ...variation,
       _meta: {
         agent: "art-director",
-        prompt: fullPrompt,
+        ...(isDevRoutesEnabled() && { prompt: fullPrompt }),
         model: TEXT_MODEL,
         generationTime,
         contextMode: "full",

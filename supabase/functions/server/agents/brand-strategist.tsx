@@ -74,6 +74,11 @@ const AUTO_FILL_FIELD_SPECS: Record<string, { jsonShape: string; rules: string; 
   },
 };
 
+// ── Input length limits ───────────────────────────────────────────────────────
+const MAX_USER_PROMPT_LEN = 2000;
+const MAX_BRIEF_FIELD_LEN = 500;
+const MAX_EXISTING_VALUE_LEN = 500;
+
 function buildVisualConceptErrorResponse(err: unknown): {
   status: 429 | 500;
   body: { error: string; code?: string; provider?: string; details?: string };
@@ -156,7 +161,7 @@ strategist.post("/generate-visual-concept", async (c) => {
       visualConcept: result.visualConcept,
       _meta: {
         agent: "brand-strategist",
-        prompt: fullPrompt,
+        ...(Deno.env.get("ENABLE_DEV_ROUTES") === "true" && { prompt: fullPrompt }),
         model: TEXT_MODEL,
         generationTime,
         contextMode: "full",
@@ -181,6 +186,11 @@ strategist.post("/generate-brand", async (c) => {
   try {
     const startTime = Date.now();
     const { userPrompt } = await c.req.json();
+    if (!userPrompt || typeof userPrompt !== "string")
+      return c.json({ error: "userPrompt is required" }, 400);
+    if (userPrompt.length > MAX_USER_PROMPT_LEN)
+      return c.json({ error: `userPrompt exceeds maximum length of ${MAX_USER_PROMPT_LEN} characters` }, 400);
+
     const apiKey = Deno.env.get("GEMINI_API_KEY");
     if (!apiKey) return c.json({ error: "GEMINI_API_KEY not configured" }, 500);
 
@@ -200,7 +210,7 @@ strategist.post("/generate-brand", async (c) => {
       ...brandData,
       _meta: {
         agent: "brand-strategist",
-        prompt: fullPrompt,
+        ...(Deno.env.get("ENABLE_DEV_ROUTES") === "true" && { prompt: fullPrompt }),
         model: TEXT_MODEL,
         generationTime,
         userInput: userPrompt,
@@ -231,6 +241,11 @@ strategist.post("/auto-complete", async (c) => {
       applications: applicationsInput,
     } = body;
     const { name = "", tagline = "", description = "" } = partialBrief;
+    for (const [field, val] of [["name", name], ["tagline", tagline], ["description", description], ["targetAudience", targetAudience]] as [string, string][]) {
+      if (typeof val === "string" && val.length > MAX_BRIEF_FIELD_LEN)
+        return c.json({ error: `${field} exceeds maximum length of ${MAX_BRIEF_FIELD_LEN} characters` }, 400);
+    }
+
     const apiKey = Deno.env.get("GEMINI_API_KEY");
     if (!apiKey) return c.json({ error: "GEMINI_API_KEY not configured" }, 500);
 
@@ -271,7 +286,7 @@ strategist.post("/auto-complete", async (c) => {
       targetAudience: (out.targetAudience as string) ?? "",
       keywords: Array.isArray(out.keywords) ? out.keywords : (out.keywords ? [out.keywords] : []),
       applications: Array.isArray(out.applications) ? out.applications : [],
-      _meta: { agent: "brand-strategist", model: TEXT_MODEL, generationTime, prompt: fullPrompt },
+      _meta: { agent: "brand-strategist", model: TEXT_MODEL, generationTime, ...(Deno.env.get("ENABLE_DEV_ROUTES") === "true" && { prompt: fullPrompt }) },
     });
   } catch (err) {
     const isDev = Deno.env.get("ENABLE_DEV_ROUTES") === "true";
@@ -291,6 +306,9 @@ strategist.post("/auto-fill", async (c) => {
     const startTime = Date.now();
     const body = await c.req.json();
     const { targetField, existingValue, mode, brandBrief = {} } = body;
+    if (typeof existingValue === "string" && existingValue.length > MAX_EXISTING_VALUE_LEN)
+      return c.json({ error: `existingValue exceeds maximum length of ${MAX_EXISTING_VALUE_LEN} characters` }, 400);
+
     const apiKey = Deno.env.get("GEMINI_API_KEY");
     if (!apiKey) return c.json({ error: "GEMINI_API_KEY not configured" }, 500);
 
@@ -337,7 +355,7 @@ Rules: ${activeRules}`,
     return c.json({
       targetField,
       value: out.value,
-      _meta: { agent: "brand-strategist", model: TEXT_MODEL, generationTime, prompt: fullPrompt },
+      _meta: { agent: "brand-strategist", model: TEXT_MODEL, generationTime, ...(Deno.env.get("ENABLE_DEV_ROUTES") === "true" && { prompt: fullPrompt }) },
     });
   } catch (err) {
     const isDev = Deno.env.get("ENABLE_DEV_ROUTES") === "true";
@@ -391,7 +409,7 @@ strategist.post("/variation", async (c) => {
       ...variation,
       _meta: {
         agent: "brand-strategist",
-        prompt: fullPrompt,
+        ...(Deno.env.get("ENABLE_DEV_ROUTES") === "true" && { prompt: fullPrompt }),
         model: TEXT_MODEL,
         generationTime,
         contextMode: "full",

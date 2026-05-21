@@ -540,7 +540,7 @@ visualDesigner.post("/context", async (c) => {
           warning,
           _meta: {
             agent: "visual-designer-context",
-            prompt: effectivePrompt,
+            ...(isDevMode() && { prompt: effectivePrompt }),
             generationTime: Date.now() - startTime,
             ingredients: [brandName, application].filter(Boolean),
           },
@@ -565,7 +565,7 @@ visualDesigner.post("/context", async (c) => {
       imageUrl,
       _meta: {
         agent: "visual-designer-context",
-        prompt: effectivePrompt,
+        ...(isDevMode() && { prompt: effectivePrompt }),
         model: usedModel,
         generationTime,
         ingredients: [brandName, application].filter(Boolean),
@@ -612,6 +612,8 @@ visualDesigner.post("/merge-generate", async (c) => {
     if (!newHint) {
       return c.json({ error: "newHint is required for merge generation" }, 400);
     }
+    if (newHint.length > 500)
+      return c.json({ error: "newHint exceeds maximum length of 500 characters" }, 400);
 
     let sourceImage: { b64: string; mimeType: string } | undefined;
     if (sourceImageUrl) {
@@ -905,7 +907,7 @@ visualDesigner.post("/extract-palette", async (c) => {
       patch: { colorPalette: checkedPalette },
       _meta: {
         agent: "visual-designer",
-        prompt: instruction,
+        ...(isDevMode() && { prompt: instruction }),
         promptKey: `${sourceId}->color-palette:extract-palette`,
         model: spec.textModel ?? TEXT_MODEL,
         generationTime,
@@ -1031,6 +1033,8 @@ visualDesigner.post("/comment-modify", async (c) => {
     if (typeof comment !== "string" || !comment.trim()) {
       return c.json({ error: "comment is required" }, 400);
     }
+    if (comment.length > 1000)
+      return c.json({ error: "comment exceeds maximum length of 1000 characters" }, 400);
     if (!isRecord(brandData)) {
       return c.json({ error: "brandData must be an object" }, 400);
     }
@@ -1064,7 +1068,7 @@ visualDesigner.post("/comment-modify", async (c) => {
       patch: { [targetField]: guarded },
       _meta: {
         agent: "visual-designer",
-        prompt: fullPrompt,
+        ...(isDevMode() && { prompt: fullPrompt }),
         promptKey: `${targetId}:comment-modify`,
         model: TEXT_MODEL,
         generationTime,
@@ -1144,7 +1148,7 @@ visualDesigner.post("/merge", async (c) => {
       patch: { [targetField]: guarded },
       _meta: {
         agent: "visual-designer",
-        prompt: fullPrompt,
+        ...(isDevMode() && { prompt: fullPrompt }),
         promptKey: `${sourceId}->${targetId}:merge`,
         model: spec.textModel ?? TEXT_MODEL,
         generationTime,

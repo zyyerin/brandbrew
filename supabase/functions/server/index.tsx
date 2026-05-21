@@ -30,18 +30,59 @@ const app = new Hono();
 
 app.use("*", logger(console.log));
 
+// ── CORS ─────────────────────────────────────────────────────────────────────
+// Set CORS_ORIGIN secret (production only) to your deployed frontend URL, e.g.:
+//   supabase secrets set CORS_ORIGIN="https://your-app.netlify.app"
+// Local dev: leave unset — falls back to wildcard so any localhost port works.
+const _rawCorsOrigin = Deno.env.get("CORS_ORIGIN");
+if (!_rawCorsOrigin) console.warn("[server] CORS_ORIGIN not set — falling back to wildcard origin");
+const ALLOWED_ORIGINS = _rawCorsOrigin?.split(",").map((o) => o.trim()).filter(Boolean) ?? [];
+
 app.use(
   "/*",
   cors({
-    origin: "*",
+    origin: ALLOWED_ORIGINS.length
+      ? (origin) => (ALLOWED_ORIGINS.includes(origin) ? origin : ALLOWED_ORIGINS[0])
+      : "*",
     allowHeaders: ["Content-Type", "Authorization", "X-Access-Token", "X-Project-Id"],
     allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     exposeHeaders: ["Content-Length"],
     maxAge: 600,
+    credentials: true,
   }),
 );
 
+// ── Per-user rate limiter (in-memory, per-isolate) ────────────────────────────
+// Limits LLM-heavy agent routes to RATE_LIMIT_MAX requests per RATE_LIMIT_WINDOW_MS per user.
+// Note: Supabase may run multiple isolates; each has its own map (acceptable for this project).
+const RATE_LIMIT_MAX = 20;
+const RATE_LIMIT_WINDOW_MS = 60_000;
+interface RateEntry { count: number; windowStart: number }
+const rateLimitMap = new Map<string, RateEntry>();
+
+function checkRateLimit(userId: string): boolean {
+  const now = Date.now();
+  const entry = rateLimitMap.get(userId);
+  if (!entry || now - entry.windowStart > RATE_LIMIT_WINDOW_MS) {
+    rateLimitMap.set(userId, { count: 1, windowStart: now });
+    return true;
+  }
+  if (entry.count >= RATE_LIMIT_MAX) return false;
+  entry.count++;
+  return true;
+}
+
 app.use(`${PREFIX}/*`, requireAuth);
+
+// Rate-limit the LLM-heavy agent routes (userId is set by requireAuth above).
+for (const prefix of [`${PREFIX}/strategist/*`, `${PREFIX}/art-director/*`, `${PREFIX}/visual-designer/*`]) {
+  app.use(prefix, async (c, next) => {
+    const userId = c.get("userId") as string | undefined;
+    if (userId && !checkRateLimit(userId))
+      return c.json({ error: "Rate limit exceeded. Please wait before retrying.", code: "RATE_LIMIT_EXCEEDED" }, 429);
+    return next();
+  });
+}
 
 // ── Mount agent sub-routers ──────────────────────────────────────────────────
 

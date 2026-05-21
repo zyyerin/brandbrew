@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback, type MutableRefObject } from "react";
+import { toast } from "sonner";
 import { saveProject, loadProject } from "../utils/generate-brand";
 import type { ProjectEntry } from "../components/project-switcher";
 import { buildProjectSnapshot, hydrateProjectData } from "../utils/project-snapshot";
@@ -110,6 +111,7 @@ export function useProjectPersistence({
         console.log("[Brand Brew] Project restored from server");
       } catch (err) {
         console.warn("[Brand Brew] Failed to load saved project:", err);
+        toast.error("Could not load your project. Starting fresh.", { duration: 4000 });
       } finally {
         if (!cancelled) setIsLoaded(true);
       }
@@ -130,7 +132,13 @@ export function useProjectPersistence({
       const snapshot = buildProjectSnapshot(p);
       const name = p.brandBrief.current.name || p.projectName;
       enqueueSave(snapshot, currentProjectId, name)
-        .catch((err) => console.warn("[Brand Brew] Auto-save failed:", err));
+        .catch((err) => {
+          console.warn("[Brand Brew] Auto-save failed:", err);
+          toast.error("Auto-save failed. Changes may not be saved.", {
+            id: "autosave-error",
+            duration: 5000,
+          });
+        });
     }, 2000);
 
     return () => {
