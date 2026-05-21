@@ -27,6 +27,7 @@ const DEFAULT_CONTEXT_APPLICATIONS = [
   "social media post",
   "website hero section",
 ] as const;
+const CONTEXT_IMAGE_CONCURRENCY = 3;
 
 const DEFAULT_CONTEXT_DESCRIPTION =
   "Real-world application of the identity system across digital and physical touchpoints.";
@@ -222,7 +223,7 @@ export function DirectionPage({
   const [colorNames, setColorNames] = useState<DirectionColorName[]>([]);
   const [exporting, setExporting] = useState(false);
   const [contextDescription, setContextDescription] = useState(DEFAULT_CONTEXT_DESCRIPTION);
-  const [contextImages, setContextImages] = useState<string[]>([]);
+  const [contextImages, setContextImages] = useState<Array<string | null>>([]);
 
   // ── Generated rationale fields (read-only for users) ───────────────────────
   const [rationales, setRationales] = useState<Record<string, string>>({
@@ -238,7 +239,7 @@ export function DirectionPage({
 
   // ── Fetch AI-generated direction content (extracted for reuse) ─────────────
   const fetchDirectionAndContext = useCallback(
-    async (versionId: string) => {
+    async (versionId: string, existingImages?: Array<string | null>) => {
       setDirectionLoading(true);
       setContextLoading(true);
       setDirectionError(null);
@@ -277,18 +278,34 @@ export function DirectionPage({
           setDirectionLoading(false);
         }
 
-        const applications =
+        const applications = (
           project.brandBrief.current.applications && project.brandBrief.current.applications.length > 0
             ? project.brandBrief.current.applications
-            : DEFAULT_CONTEXT_APPLICATIONS;
+            : DEFAULT_CONTEXT_APPLICATIONS
+        ).slice(0, 4);
 
-        const imageSlots: (string | null)[] = Array(Math.min(applications.length, 4)).fill(null);
+        // Seed imageSlots from any already-generated images passed in (partial cache re-entry).
+        const imageSlots: Array<string | null> = existingImages
+          ? [...existingImages].slice(0, applications.length).concat(
+              Array(Math.max(0, applications.length - existingImages.length)).fill(null),
+            )
+          : Array(applications.length).fill(null);
 
-        // Generate all context mockups and reveal each one as it arrives.
-        await Promise.allSettled(
-          applications.map(async (app, i) => {
-            const slotIndex = i;
-            if (slotIndex >= 4) return;
+        // Show already-generated images immediately when re-entering with a partial cache.
+        if (existingImages?.some(Boolean) && activeVersionIdRef.current === versionId) {
+          setContextImages([...imageSlots]);
+        }
+
+        let nextIndex = 0;
+        const workerCount = Math.min(CONTEXT_IMAGE_CONCURRENCY, applications.length);
+
+        const runContextWorker = async () => {
+          while (true) {
+            const slotIndex = nextIndex++;
+            if (slotIndex >= applications.length) return;
+            // Skip slots that were already generated (partial cache re-entry).
+            if (imageSlots[slotIndex]) continue;
+            const app = applications[slotIndex];
             try {
               const result = await generateBrandContextMockup({
                 application: app,
@@ -299,21 +316,36 @@ export function DirectionPage({
               if (result?.imageUrl) {
                 imageSlots[slotIndex] = result.imageUrl;
                 if (activeVersionIdRef.current === versionId) {
-                  setContextImages(imageSlots.filter((u): u is string => u !== null));
+                  setContextImages([...imageSlots]);
                 }
+                // Persist each image immediately so it survives component unmount mid-flight.
+                setVersions((prev) =>
+                  prev.map((v) => {
+                    if (v.id !== versionId || !v.cache) return v;
+                    const urls = v.cache.contextImageUrls
+                      ? [...v.cache.contextImageUrls]
+                      : new Array(applications.length).fill(null);
+                    urls[slotIndex] = result.imageUrl;
+                    return { ...v, cache: { ...v.cache, contextImageUrls: urls } };
+                  }),
+                );
               }
             } catch (err) {
-              console.error("Brand in Context generation failed for application:", app, err);
+              console.warn("Brand in Context generation failed for application:", app, err);
             }
-          }),
+          }
+        };
+
+        await Promise.all(
+          Array.from({ length: workerCount }, () => runContextWorker()),
         );
 
-        const finalImages = imageSlots.filter((u): u is string => u !== null).slice(0, 4);
+        const finalImages = [...imageSlots];
         if (activeVersionIdRef.current === versionId) {
           setContextImages(finalImages);
         }
 
-        // Sync AI-generated cache back to the parent version state for persistence
+        // Final sync — merges any per-image writes already made with the complete text cache fields.
         const newLabel =
           !concept && typeof newSynthesizedConcept === "string" && newSynthesizedConcept.trim()
             ? newSynthesizedConcept.trim()
@@ -329,7 +361,10 @@ export function DirectionPage({
                     colorNames: newColorNames,
                     logoImageUrl,
                     brandInContextDescription: newContextDesc,
-                    contextImageUrls: finalImages,
+                    // Prefer finalImages slot; fall back to anything already written per-image.
+                    contextImageUrls: finalImages.map(
+                      (img, i) => img ?? v.cache?.contextImageUrls?.[i] ?? null,
+                    ),
                     visualConceptContent: newVisualConceptContent,
                     visualConceptName: newVisualConceptName,
                     synthesizedVisualConcept: newSynthesizedConcept,
@@ -369,7 +404,13 @@ export function DirectionPage({
     if (version?.cache) {
       const cache = version.cache;
       const cacheContextImages = cache.contextImageUrls ?? [];
-      const shouldRegenerateContext = cacheContextImages.length === 0;
+      // Compute how many mockup slots are expected so partial caches are filled in, not discarded.
+      const expectedImageCount = (
+        project.brandBrief.current.applications?.length > 0
+          ? project.brandBrief.current.applications
+          : DEFAULT_CONTEXT_APPLICATIONS
+      ).slice(0, 4).length;
+      const shouldRegenerateContext = cacheContextImages.filter(Boolean).length < expectedImageCount;
       setDirectionLoading(false);
       setContextLoading(shouldRegenerateContext);
       setRationales({
@@ -383,7 +424,8 @@ export function DirectionPage({
       setContextImages(cacheContextImages);
 
       if (shouldRegenerateContext) {
-        fetchDirectionAndContext(activeVersionId).finally(() => {
+        // Pass existing partial images so only the missing slots are generated.
+        fetchDirectionAndContext(activeVersionId, cacheContextImages).finally(() => {
           if (token === hydrationTokenRef.current) {
             suppressRationalePersistRef.current = false;
           }
@@ -521,7 +563,7 @@ export function DirectionPage({
         toDataUrl(logoImageUrl),
         toDataUrl(artStyleImageUrl),
         toDataUrl(visualSnapshotUrl),
-        ...contextImages.map((url) => toDataUrl(url)),
+        ...contextImages.map((url) => toDataUrl(url ?? undefined)),
       ]);
 
       const hasConceptBgImage = Boolean(exportSnapshot);
@@ -547,21 +589,23 @@ export function DirectionPage({
         : "";
 
       const contextRows: string[] = [];
-      if (exportContextImages.length > 0) {
+      if (exportContextImages.some(Boolean)) {
         for (let i = 0; i < exportContextImages.length; i += 2) {
           const pair = exportContextImages.slice(i, i + 2);
-          contextRows.push(
-            `<div class="exp-context-row">${pair
-              .map(
-                (img, pairIndex) => {
-                  const appLabel = exportAppsToShow[i + pairIndex] ?? "";
-                  return `<div class="exp-context-cell">
+          const pairCells = pair
+            .map((img, pairIndex) => {
+              if (!img) return "";
+              const appLabel = exportAppsToShow[i + pairIndex] ?? "";
+              return `<div class="exp-context-cell">
                     <div class="exp-context-aspect"><img src="${escapeHtml(img)}" alt="Brand in context mockup" /></div>
                     ${appLabel ? `<p class="exp-context-label">${escapeHtml(appLabel)}</p>` : ""}
                   </div>`;
-                },
-              )
-              .join("")}</div>`,
+            })
+            .filter(Boolean)
+            .join("");
+          if (!pairCells) continue;
+          contextRows.push(
+            `<div class="exp-context-row">${pairCells}</div>`,
           );
         }
       }
