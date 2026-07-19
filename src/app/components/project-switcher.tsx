@@ -2,8 +2,6 @@ import { useState } from "react";
 import { FolderOpen, Plus, Trash2 } from "lucide-react";
 import { Popover, PopoverTrigger, PopoverContent } from "./ui/popover";
 
-const MAX_PROJECTS = 3;
-
 export interface ProjectEntry {
   id: string;
   name: string;
@@ -72,13 +70,12 @@ export function ProjectSwitcher({
       <PopoverContent align="end" sideOffset={8} className="w-64 p-0">
         <div className="px-3 py-2 border-b border-border/60 flex items-center justify-between">
           <span className="text-xs font-medium text-muted-foreground">
-            Projects ({projects.length}/{MAX_PROJECTS})
+            Projects ({projects.length})
           </span>
           <div className="flex items-center gap-2">
             <button
               onClick={handleNew}
-              disabled={projects.length >= MAX_PROJECTS}
-              className="flex items-center gap-1 text-xs text-primary hover:text-primary/80 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              className="flex items-center gap-1 text-xs text-primary hover:text-primary/80 transition-colors"
             >
               <Plus size={12} />
               New

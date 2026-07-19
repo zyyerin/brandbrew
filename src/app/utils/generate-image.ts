@@ -4,8 +4,8 @@ import type { BrandContextFull, BrandContextShort, MergeBoardPromptContext } fro
 import type { MergeBrandContext, MergeResult } from "./variation-helpers";
 import { isMergeSupported } from "@server-shared/merge-specs.tsx";
 
-const IMAGE_GEN_TIMEOUT_MS = 120_000;
-const ART_DIRECTOR_LOGO_STYLE_TIMEOUT_MS = 150_000;
+const IMAGE_GEN_TIMEOUT_MS = 180_000;
+const ART_DIRECTOR_LOGO_STYLE_TIMEOUT_MS = 210_000;
 const ART_DIRECTOR_LAYOUT_TIMEOUT_MS = 180_000;
 
 export type ImageCardType =

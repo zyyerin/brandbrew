@@ -11,8 +11,6 @@ import {
   setStoredCurrentProjectId,
 } from "../utils/current-project-id";
 
-const MAX_PROJECTS = 3;
-
 export interface UseProjectPersistenceParams {
   project: ProjectData;
   projectRef: MutableRefObject<ProjectData>;
@@ -65,7 +63,7 @@ export function useProjectPersistence({
       const now = new Date().toISOString();
       const next = prev.filter((p) => p.id !== id);
       next.unshift({ id, name, savedAt: now });
-      return next.slice(0, MAX_PROJECTS);
+      return next;
     });
   }, []);
 
