@@ -1,6 +1,7 @@
 import { callApi } from "./apiClient";
 import type { VariationMeta } from "../types/project";
 import type { BrandContextFull, BrandContextShort, MergeBoardPromptContext } from "@server-shared/types.tsx";
+import type { LogoComposition } from "@server-shared/logo-prompts.ts";
 import type { MergeBrandContext, MergeResult } from "./variation-helpers";
 import { isMergeSupported } from "@server-shared/merge-specs.tsx";
 
@@ -165,6 +166,7 @@ export interface PipelineContext {
   visualConcept?: { concept: string; description: string };
   colorPalette?: string[];
   font?: { titleFont: string; bodyFont: string };
+  logoComposition?: LogoComposition;
   artStyleImageUrl?: string;
   logoImageUrl?: string;
   /** Touchpoint name for application mockup generation (e.g. "Business Card", "Packaging") */
@@ -178,6 +180,7 @@ export interface PipelineContext {
 export interface PaletteFontsResult {
   colorPalette: string[];
   font: { titleFont: string; bodyFont: string };
+  logoComposition: LogoComposition;
   _meta?: VariationMeta;
 }
 
@@ -186,6 +189,7 @@ export interface LogoStyleResult {
   logoImageUrl?: string | null;
   artStyleModel?: string;
   logoModel?: string;
+  logoComposition?: LogoComposition;
   errors?: string[];
   _meta?: VariationMeta;
 }
@@ -216,7 +220,12 @@ export async function designPaletteAndFonts(
     "art-director/design-palette-fonts",
     { body: { ...ctx, brandContext }, timeoutMs: 60_000, signal: opts?.signal },
   );
-  return { colorPalette: raw.colorPalette, font: raw.font, _meta: raw._meta };
+  return {
+    colorPalette: raw.colorPalette,
+    font: raw.font,
+    logoComposition: raw.logoComposition,
+    _meta: raw._meta,
+  };
 }
 
 export async function designLogoAndStyle(
@@ -245,6 +254,7 @@ export async function designLogoAndStyle(
     logoImageUrl: raw.logoImageUrl,
     artStyleModel: raw.artStyleModel,
     logoModel: raw.logoModel,
+    logoComposition: raw.logoComposition,
     errors: raw.errors,
     _meta: raw._meta,
   };

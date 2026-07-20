@@ -186,6 +186,7 @@ export function usePipeline({
           ...designCtx,
           colorPalette: pfResult.colorPalette,
           font: pfResult.font,
+          logoComposition: pfResult.logoComposition,
           brandContext: {
             name: briefContext.brandName,
             tagline: briefContext.tagline,
@@ -236,11 +237,14 @@ export function usePipeline({
         throwIfAborted();
 
         setProject((prev) => {
-          const logoMeta = lsResult._meta
-            ? { ...lsResult._meta, model: lsResult.logoModel ?? lsResult._meta.model, sourceConceptVariationId: vcVariationId }
-            : lsResult.logoModel
-              ? { model: lsResult.logoModel, sourceConceptVariationId: vcVariationId }
-              : { sourceConceptVariationId: vcVariationId };
+          const effectiveLogoComposition = lsResult.logoComposition ?? pfResult.logoComposition;
+          const effectiveLogoModel = lsResult.logoModel ?? lsResult._meta?.model;
+          const logoMeta: VariationMeta = {
+            ...(lsResult._meta ?? {}),
+            ...(effectiveLogoModel ? { model: effectiveLogoModel } : {}),
+            sourceConceptVariationId: vcVariationId,
+            logoComposition: effectiveLogoComposition,
+          };
           const artStyleMeta = lsResult._meta
             ? { ...lsResult._meta, model: lsResult.artStyleModel ?? lsResult._meta.model, sourceConceptVariationId: vcVariationId }
             : lsResult.artStyleModel

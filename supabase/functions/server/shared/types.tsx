@@ -2,6 +2,10 @@
 // shared/types.tsx — Shared type definitions for the agent system
 // ─────────────────────────────────────────────────────────────────────────────
 
+import type { LogoComposition } from "./logo-prompts.ts";
+
+export type { LogoComposition, LogoCompositionMode } from "./logo-prompts.ts";
+
 export type MergeSpec = {
   /** Model-facing slot-merge / primary hint; UI prefers `newHintNote` when set (see resolveMergeUiHint). */
   newHint: string;
@@ -138,6 +142,7 @@ export type ImagePromptContext = {
   newHint?: string;
   titleFont?: string;
   bodyFont?: string;
+  logoComposition?: LogoComposition;
   aspectRatio?: string;
   /** Touchpoint name for application mockup generation (e.g. "Business Card", "Packaging") */
   application?: string;

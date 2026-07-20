@@ -33,6 +33,12 @@ import {
   buildFullContextText,
   normalizeFullContext,
 } from "../shared/brand-context.ts";
+import {
+  buildLogoImagePrompt,
+  validateLogoComposition,
+  validateOptionalLogoComposition,
+  type LogoComposition,
+} from "../shared/logo-prompts.ts";
 
 type Variables = { geminiApiKey: string };
 
@@ -152,21 +158,8 @@ function buildCreativeBrief(
     : "";
 
   switch (cardType) {
-    case "logo": {
-      const motif = vc?.concept
-        ? `Visual motif: ${vc.concept}. `
-        : "";
-      return (
-        `${focus}Design a logo mark for a brand about: ` +
-        `${description ?? name}. ` +
-        `${motif}` +
-        `${palette}` +
-        `Rules: ` +
-        `Purely graphic symbol — absolutely NO text, NO letters, NO words, NO characters. ` +
-        `NOT an illustration, NOT a scene, NOT a mascot, NOT a badge, NOT a detailed drawing. ` +
-        `Centered on pure white background with generous padding.`
-      );
-    }
+    case "logo":
+      return buildLogoImagePrompt(ctx);
     case "art-style":
       return (
         `${focus}Art style reference image for "${name}" brand. ` +
@@ -227,6 +220,7 @@ artDirector.post("/generate", async (c) => {
       colorPalette,
       newHint,
       aspectRatio,
+      logoComposition: logoCompositionRaw,
     } = body;
     const fullContext = normalizeFullContext(body);
 
@@ -239,6 +233,14 @@ artDirector.post("/generate", async (c) => {
     const vc = fullContext.visualConcept ?? normalizeVisualConcept(visualConceptRaw, conceptPhrases);
     const normalizedKeywords = fullContext.keywords ?? normalizeStringArray(keywords);
     const normalizedPalette = fullContext.colorPalette ?? normalizeStringArray(colorPalette);
+    let logoComposition: LogoComposition | undefined;
+    try {
+      logoComposition = cardType === "logo"
+        ? validateOptionalLogoComposition(logoCompositionRaw)
+        : undefined;
+    } catch (err) {
+      return c.json({ error: String((err as Error).message ?? err) }, 400);
+    }
 
     const ctx: ImagePromptContext = {
       brandName: fullContext.name ?? brandName,
@@ -249,6 +251,9 @@ artDirector.post("/generate", async (c) => {
       keywords: normalizedKeywords,
       colorPalette: normalizedPalette,
       newHint,
+      titleFont: fullContext.font?.titleFont,
+      bodyFont: fullContext.font?.bodyFont,
+      logoComposition,
       aspectRatio: effectiveAR,
     };
 
@@ -351,13 +356,19 @@ artDirector.post("/design-palette-fonts", async (c) => {
     });
 
     _rawGeminiText = await callGeminiText(apiKey, fullPrompt, { temperature: TEMPERATURES["design-palette-fonts"] });
-    const result = safeParseJson<{ colorPalette: string[]; font: { titleFont: string; bodyFont: string } }>(_rawGeminiText, "design-palette-fonts");
+    const result = safeParseJson<{
+      colorPalette: string[];
+      font: { titleFont: string; bodyFont: string };
+      logoComposition?: unknown;
+    }>(_rawGeminiText, "design-palette-fonts");
+    const logoComposition = validateLogoComposition(result.logoComposition);
     const generationTime = Date.now() - startTime;
     console.log(`[art-director] Palette + fonts designed (${generationTime}ms)`);
 
     return c.json({
       colorPalette: result.colorPalette,
       font: result.font,
+      logoComposition,
       _meta: {
         agent: "art-director",
         ...(isDevRoutesEnabled() && { prompt: fullPrompt }),
@@ -394,6 +405,7 @@ artDirector.post("/design-logo-style", async (c) => {
     const {
       brandName, description, keywords,
       visualConcept, colorPalette, aspectRatio, _promptOverride,
+      logoComposition: logoCompositionRaw,
     } = body;
     const fullContext = normalizeFullContext(body);
     const effectiveBrandName = fullContext.name ?? brandName;
@@ -417,6 +429,12 @@ artDirector.post("/design-logo-style", async (c) => {
     const apiKey = c.get("geminiApiKey");
     const normalizedKeywords = fullContext.keywords ?? normalizeStringArray(keywords);
     const normalizedPalette = fullContext.colorPalette ?? normalizeStringArray(colorPalette);
+    let logoComposition: LogoComposition | undefined;
+    try {
+      logoComposition = validateOptionalLogoComposition(logoCompositionRaw);
+    } catch (err) {
+      return c.json({ error: String((err as Error).message ?? err) }, 400);
+    }
 
     const logoAR     = resolveAspectRatio("logo", aspectRatio);
     const artStyleAR = resolveAspectRatio("art-style", aspectRatio);
@@ -430,6 +448,9 @@ artDirector.post("/design-logo-style", async (c) => {
       visualConcept: vc2,
       keywords: normalizedKeywords,
       colorPalette: normalizedPalette,
+      titleFont: fullContext.font?.titleFont,
+      bodyFont: fullContext.font?.bodyFont,
+      logoComposition,
     };
 
     const logoPrompt     = effectiveOverride?.logoPrompt     ?? buildCreativeBrief("logo",      { ...baseCtx, aspectRatio: logoAR });
@@ -490,6 +511,7 @@ artDirector.post("/design-logo-style", async (c) => {
       artStyleImageUrl,
       logoImageUrl,
       logoModel,
+      ...(logoComposition && { logoComposition }),
       artStyleModel,
       ...(partialErrors.length > 0 && { errors: partialErrors }),
       _meta: {
