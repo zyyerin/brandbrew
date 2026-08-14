@@ -30,6 +30,8 @@ export interface ImageGenContext {
   bodyFont?: string;
   brandContext?: BrandContextFull;
   brandContextShort?: BrandContextShort;
+  /** Required for cardType "logo" txt2img generation — decides icon+wordmark vs wordmark-only composition. */
+  logoComposition?: LogoComposition;
 }
 
 export interface ImageGenResult {
@@ -365,6 +367,7 @@ export async function generateBrandContextMockup(
 // ─── Merge API calls (moved from merge-logic.ts) ─────────────────────────────
 
 const VISION_MERGE_TIMEOUT_MS = 90_000;
+const PALETTE_EXTRACTION_TIMEOUT_MS = 180_000;
 
 export async function performMerge(
   sourceId: string,
@@ -390,16 +393,18 @@ export async function performPaletteExtraction(
   sourceId: string,
   sourceImageUrl: string,
   brandContext: MergeBrandContext,
+  options: { throwOnError?: boolean } = {},
 ): Promise<MergeResult> {
   try {
     const result = await callApi<{ patch?: Partial<MergeBrandContext>; _meta?: VariationMeta; error?: string }>(
-      "extract-palette",
-      { body: { sourceId, sourceImageUrl, brandData: brandContext }, timeoutMs: VISION_MERGE_TIMEOUT_MS },
+      "visual-designer/extract-palette",
+      { body: { sourceId, sourceImageUrl, brandData: brandContext }, timeoutMs: PALETTE_EXTRACTION_TIMEOUT_MS },
     );
     if (result.error) throw new Error(`[performPaletteExtraction] server error: ${result.error}`);
     return { patch: result.patch ?? null, _meta: result._meta };
   } catch (err) {
     console.error("[performPaletteExtraction] failed:", err);
+    if (options.throwOnError) throw err;
     return { patch: null };
   }
 }

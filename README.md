@@ -71,6 +71,7 @@ Set these in the Supabase dashboard (**Edge Functions → Secrets**) or via CLI:
 | `SUPABASE_URL` | Usually auto-provided when deploying |
 | `SUPABASE_SERVICE_ROLE_KEY` | Service role (server only) |
 | `GEMINI_API_KEY` | Google Gemini API |
+| `CORS_ORIGIN` | Comma-separated frontend origins, e.g. `https://brandbrew-app.netlify.app` |
 
 Deploy the `server` function:
 

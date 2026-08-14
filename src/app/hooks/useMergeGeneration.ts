@@ -386,7 +386,7 @@ export function useMergeGeneration({
               : null;
 
             const cardHint = resolveMergeHint("card", sourceId, targetId, {
-              sourceData: formatSourceForHint(sourceId, getVariationData(sourceEid, sourceVarId)),
+              sourceData: formatSourceForHint(sourceId, getVariationData(sourceEid, sourceVarId), targetId),
               brandName: brief.name,
               brandDescription: brief.description,
             });

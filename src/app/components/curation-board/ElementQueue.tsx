@@ -2,13 +2,13 @@ import React, { useState, useCallback, useRef, useEffect, useLayoutEffect, useMe
 import { GripVertical, Upload } from "lucide-react";
 import { LAYOUT, CANVAS, TYPE, ELEMENT_TYPE_LABELS as LABELS, adaptiveSize } from "../../utils/design-tokens";
 import type { SlotPosition } from "../curation-board";
-import { isMergeSupported, resolveMergeUiHint } from "@server-shared/merge-specs.tsx";
+import { isMergeSupported } from "@server-shared/merge-specs.tsx";
+import { resolveMergeUiHint } from "@server-shared/merge-ui-hints.ts";
 import { IMAGE_ELEMENT_IDS } from "../../types/project";
 import { useVSPanel } from "../../contexts/VSPanelContext";
 import { useVCPanel } from "../../contexts/VCPanelContext";
 import type { ElementId } from "../../types/project";
-import type { DropTarget, MergeUiHintContext } from "../../hooks/useDirectMerge";
-import type { MergeHintTemplateVars } from "@server-shared/merge-specs.tsx";
+import type { DropTarget } from "../../hooks/useDirectMerge";
 import { ElementWrapper } from "../brand-cards";
 import type { VariationState } from "../brand-cards";
 import type { VariationItem } from "../variations-panel";
@@ -32,9 +32,10 @@ interface ElementQueueProps {
   isQueueReorderDragging: boolean;
   isQueueReorderDropTarget: boolean;
   isQueueReorderEnabled: boolean;
+  /** Disable variation-card drag/drop while any card is being edited. */
+  isCardDragDisabled: boolean;
   draggedId: string | null;
   draggedVariationId: string | null;
-  getMergeHintVars?: (ctx: MergeUiHintContext) => MergeHintTemplateVars | undefined;
   dropTarget: DropTarget | null;
   checkedVariationIds: Set<string>;
   brandBrief?: { name?: string; tagline?: string; description?: string };
@@ -125,9 +126,9 @@ export const ElementQueue = React.memo(function ElementQueue({
   isQueueReorderDragging,
   isQueueReorderDropTarget,
   isQueueReorderEnabled,
+  isCardDragDisabled,
   draggedId,
   draggedVariationId,
-  getMergeHintVars,
   dropTarget,
   checkedVariationIds,
   brandBrief,
@@ -560,7 +561,7 @@ export const ElementQueue = React.memo(function ElementQueue({
                 <input
                   ref={addSlotFileInputRef}
                   type="file"
-                  accept="image/*"
+                  accept="image/jpeg,image/png,image/webp"
                   className="hidden"
                   onChange={handleAddSlotFileChange}
                   aria-hidden
@@ -570,7 +571,7 @@ export const ElementQueue = React.memo(function ElementQueue({
                 <input
                   ref={addSlotExtractInputRef}
                   type="file"
-                  accept="image/*"
+                  accept="image/jpeg,image/png,image/webp"
                   className="hidden"
                   onChange={handleAddSlotExtractChange}
                   aria-hidden
@@ -606,7 +607,6 @@ export const ElementQueue = React.memo(function ElementQueue({
                 "slot",
                 draggedId,
                 elementType,
-                getMergeHintVars?.({ sourceId: draggedId, variationId: draggedVariationId }),
               )}
               colors={colors}
               zoom={zoom}
@@ -660,6 +660,10 @@ export const ElementQueue = React.memo(function ElementQueue({
             const commentHighlightShadow = isThisCommentTarget
               ? `0 0 0 2.5px var(--bb-user-active-accent), 0 0 0 5px var(--bb-user-active-border)`
               : null;
+            const canStartCardDrag =
+              !isCardDragDisabled &&
+              !commentMode &&
+              !uploadingVariationIds?.has(variation.id);
 
             return (
               <div
@@ -675,16 +679,16 @@ export const ElementQueue = React.memo(function ElementQueue({
                   height: slotH,
                   ...(commentHighlightShadow ? { boxShadow: commentHighlightShadow, borderRadius: 12 } : {}),
                 }}
-                draggable={!commentMode && !uploadingVariationIds?.has(variation.id)}
+                draggable={canStartCardDrag}
                 onClick={commentMode ? (e) => {
                   e.stopPropagation();
                   onCommentClick?.(elementType, variation.id);
                 } : undefined}
-                onDragStart={commentMode ? undefined : (e) => onDragStart(e, elementType, variation.id)}
-                onDragEnd={commentMode ? undefined : onDragEnd}
-                onDragOver={(e) => onCardDragOver(e, elementType, variation.id)}
-                onDragLeave={(e) => onCardDragLeave(e, elementType, variation.id)}
-                onDrop={onCardDrop}
+                onDragStart={canStartCardDrag ? (e) => onDragStart(e, elementType, variation.id) : undefined}
+                onDragEnd={canStartCardDrag ? onDragEnd : undefined}
+                onDragOver={isCardDragDisabled ? undefined : (e) => onCardDragOver(e, elementType, variation.id)}
+                onDragLeave={isCardDragDisabled ? undefined : (e) => onCardDragLeave(e, elementType, variation.id)}
+                onDrop={isCardDragDisabled ? undefined : onCardDrop}
               >
                 <VariationSlot
                   elementType={elementType}

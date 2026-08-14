@@ -1,9 +1,13 @@
 import React, { useState, useRef, useEffect } from "react";
 import { toast } from "sonner";
-import { isMergeSupported, resolveMergeUiHint, type MergeHintTemplateVars } from "@server-shared/merge-specs.tsx";
+import { isMergeSupported } from "@server-shared/merge-specs.tsx";
+import {
+  resolveMergeUiHint,
+  resolveMoveUiHint,
+  resolveSnapshotUiHint,
+} from "@server-shared/merge-ui-hints.ts";
 import { IMAGE_ELEMENT_IDS } from "../types/project";
 import type { ElementId } from "../types/project";
-import { ELEMENT_TYPE_LABELS as LABELS } from "../utils/design-tokens";
 
 const DRAG_HINT_TOAST_ID = "direct-merge-hint";
 
@@ -34,9 +38,6 @@ const SNAPSHOT_DROPPABLE: ReadonlySet<string> = new Set([
   "color-palette", "font", "logo", "art-style",
 ]);
 
-/** Passed to getMergeHintVars so parents can resolve {sourceData} without a circular hook dependency. */
-export type MergeUiHintContext = { sourceId: string; variationId: string | null };
-
 export interface DirectMergeState {
   draggedId: string | null;
   draggedVariationId: string | null;
@@ -65,7 +66,6 @@ export function useDirectMerge(
   isVariationDisabled?: (variationId: string) => boolean,
   zoom: number = 1,
   onSnapshotMerge?: (sourceElementType: string, sourceVariationId: string, targetSnapshotId: string) => void,
-  getMergeHintVars?: (ctx: MergeUiHintContext) => MergeHintTemplateVars | undefined,
 ): DirectMergeState {
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const [draggedVariationId, setDraggedVariationId] = useState<string | null>(null);
@@ -90,10 +90,9 @@ export function useDirectMerge(
       if (draggedId && !dropTarget) toast.dismiss(DRAG_HINT_TOAST_ID);
       return;
     }
-    const hintVars = getMergeHintVars?.({ sourceId: draggedId, variationId: draggedVariationId });
     switch (dropTarget.type) {
       case "card": {
-        toast(resolveMergeUiHint("card", draggedId, dropTarget.elementType, hintVars), {
+        toast(resolveMergeUiHint("card", draggedId, dropTarget.elementType), {
           id: DRAG_HINT_TOAST_ID,
           duration: Infinity,
           icon: "✦",
@@ -102,7 +101,7 @@ export function useDirectMerge(
         break;
       }
       case "slot": {
-        toast(resolveMergeUiHint("slot", draggedId, dropTarget.elementType, hintVars), {
+        toast(resolveMergeUiHint("slot", draggedId, dropTarget.elementType), {
           id: DRAG_HINT_TOAST_ID,
           duration: Infinity,
           icon: "✦",
@@ -111,8 +110,7 @@ export function useDirectMerge(
         break;
       }
       case "body": {
-        const label = LABELS[dropTarget.elementType] ?? dropTarget.elementType;
-        toast(`Move to ${label}`, {
+        toast(resolveMoveUiHint(draggedId, dropTarget.elementType), {
           id: DRAG_HINT_TOAST_ID,
           duration: Infinity,
           icon: "⇄",
@@ -121,8 +119,7 @@ export function useDirectMerge(
         break;
       }
       case "snapshot": {
-        const srcLabel = LABELS[draggedId] ?? draggedId;
-        toast(`Update snapshot: replace ${srcLabel}`, {
+        toast(resolveSnapshotUiHint(draggedId), {
           id: DRAG_HINT_TOAST_ID,
           duration: Infinity,
           icon: "✦",
@@ -131,7 +128,7 @@ export function useDirectMerge(
         break;
       }
     }
-  }, [draggedId, draggedVariationId, dropTarget, getMergeHintVars]);
+  }, [draggedId, dropTarget]);
 
   // ── Utility predicates ───────────────────────────────────────────────────
 

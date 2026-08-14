@@ -7,6 +7,28 @@ import {
 import { generateVisualSnapshotFromElements } from "../utils/generate-image";
 import type { VisualSnapshotFromElementsParams } from "../utils/generate-image";
 import type { DebugInterceptor } from "./usePipelineDebugger";
+import { toast } from "sonner";
+
+const REFERENCE_IMAGE_RETRY_DELAY_MS = 1_000;
+
+function isReferenceImageLoadError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return /failed to load reference images/i.test(message);
+}
+
+function visualSnapshotErrorMessage(err: unknown): string {
+  const message = err instanceof Error ? err.message : String(err);
+  if (isReferenceImageLoadError(err)) {
+    return "Visual Snapshot could not load its reference images. Please try again.";
+  }
+  if (/timed out/i.test(message)) {
+    return "Visual Snapshot generation timed out. Please try again.";
+  }
+  if (/network error|failed to fetch|networkerror/i.test(message)) {
+    return "Network connection failed. Check your connection and try again.";
+  }
+  return "Visual Snapshot generation failed. Please try again.";
+}
 
 function selectedImageUrl(
   project: ProjectData,
@@ -136,8 +158,8 @@ export function useSnapshotHistory({
       setLoadingElements((prev) => new Set([...prev, "visual-snapshot"]));
 
       try {
-        const snapshotResult = debugInterceptor
-          ? await debugInterceptor.logCall(
+        const requestSnapshot = () => debugInterceptor
+          ? debugInterceptor.logCall(
               {
                 label: "Visual Snapshot",
                 agent: "visual-designer-visual-snapshot",
@@ -146,7 +168,16 @@ export function useSnapshotHistory({
               },
               () => generateVisualSnapshotFromElements(payload.params),
             )
-          : await generateVisualSnapshotFromElements(payload.params);
+          : generateVisualSnapshotFromElements(payload.params);
+
+        let snapshotResult: Awaited<ReturnType<typeof generateVisualSnapshotFromElements>>;
+        try {
+          snapshotResult = await requestSnapshot();
+        } catch (err) {
+          if (!isReferenceImageLoadError(err)) throw err;
+          await new Promise((resolve) => setTimeout(resolve, REFERENCE_IMAGE_RETRY_DELAY_MS));
+          snapshotResult = await requestSnapshot();
+        }
         const snapshotMeta = snapshotResult._meta;
 
         const p = projectRef.current;
@@ -183,6 +214,7 @@ export function useSnapshotHistory({
         }));
       } catch (err) {
         console.error("Visual snapshot generation failed:", err);
+        toast.error(visualSnapshotErrorMessage(err), { duration: 6_000 });
       } finally {
         setLoadingElements((prev) => {
           const n = new Set(prev);
@@ -212,6 +244,7 @@ export function useSnapshotHistory({
       const payload = buildSnapshotPayload(p, selections);
       if (!payload) {
         console.warn("generateVisualSnapshot: no visual inputs; aborting.");
+        toast.error("Select a Logo and Art Style before creating a Visual Snapshot.");
         return;
       }
 
@@ -240,6 +273,7 @@ export function useSnapshotHistory({
         const payload = buildSnapshotPayload(p, updatedSelections);
         if (!payload) {
           console.warn("regenerateWithOverride: no visual inputs; aborting.");
+          toast.error("Select a Logo and Art Style before creating a Visual Snapshot.");
           return;
         }
 
