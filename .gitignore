@@ -21,4 +21,7 @@ supabase/.temp/
 thesis-local/*
 !thesis-local/README.md
 
+# Obsidian local editor state (window layout, plugin config) — not project code
+docs/.obsidian/
+
 .DS_Store

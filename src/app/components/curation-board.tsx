@@ -3,8 +3,7 @@ import { BotMessageSquare, X } from "lucide-react";
 import type { VariationItem } from "./variations-panel";
 import { CANVAS, LAYOUT, TYPE, ELEMENT_TYPE_LABELS as LABELS } from "../utils/design-tokens";
 import { useCanvasTransform } from "../hooks/useCanvasTransform";
-import { useDirectMerge, type MergeUiHintContext } from "../hooks/useDirectMerge";
-import { formatSourceForHint } from "@server-shared/merge-specs.tsx";
+import { useDirectMerge } from "../hooks/useDirectMerge";
 import { useQueueReorder } from "../hooks/useQueueReorder";
 import { useVariationReorder } from "../hooks/useVariationReorder";
 import { useCommentMerge } from "../hooks/useCommentMerge";
@@ -145,26 +144,12 @@ export function CurationBoard({
 
   const canvas = useCanvasTransform(isCanvasPhase);
 
-  const getMergeHintVars = useCallback(
-    (ctx: MergeUiHintContext) => {
-      const variations = allVariationsByElementType[ctx.sourceId] ?? [];
-      const v = ctx.variationId ? variations.find((x) => x.id === ctx.variationId) : undefined;
-      return {
-        sourceData: formatSourceForHint(ctx.sourceId, v?.data),
-        brandName: brandSummary.name,
-        brandDescription: brandSummary.description,
-      };
-    },
-    [allVariationsByElementType, brandSummary],
-  );
-
   const drag = useDirectMerge(
     onMerge,
     onMoveVariationToQueue,
     (varId) => uploadingVariationIds?.has(varId) ?? false,
     canvas.zoom,
     onSnapshotMerge,
-    getMergeHintVars,
   );
   const queueReorder = useQueueReorder(checkedVariationIds.size > 0 && !isAnyCardEditing);
   const varReorder = useVariationReorder(
@@ -435,9 +420,9 @@ export function CurationBoard({
                 isQueueReorderDragging={queueReorder.reorderDragElementType === elementType}
                 isQueueReorderDropTarget={queueReorder.reorderOverElementType === elementType}
                 isQueueReorderEnabled={queueReorder.isQueueReorderEnabled}
+                isCardDragDisabled={isAnyCardEditing}
                 draggedId={drag.draggedId}
                 draggedVariationId={drag.draggedVariationId}
-                getMergeHintVars={getMergeHintVars}
                 dropTarget={drag.dropTarget}
                 checkedVariationIds={checkedVariationIds}
                 brandBrief={brandSummary}

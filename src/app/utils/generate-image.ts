@@ -1,6 +1,7 @@
 import { callApi } from "./apiClient";
 import type { VariationMeta } from "../types/project";
 import type { BrandContextFull, BrandContextShort, MergeBoardPromptContext } from "@server-shared/types.tsx";
+import type { LogoComposition } from "@server-shared/logo-prompts.ts";
 import type { MergeBrandContext, MergeResult } from "./variation-helpers";
 import { isMergeSupported } from "@server-shared/merge-specs.tsx";
 
@@ -29,6 +30,8 @@ export interface ImageGenContext {
   bodyFont?: string;
   brandContext?: BrandContextFull;
   brandContextShort?: BrandContextShort;
+  /** Required for cardType "logo" txt2img generation — decides icon+wordmark vs wordmark-only composition. */
+  logoComposition?: LogoComposition;
 }
 
 export interface ImageGenResult {
@@ -165,6 +168,7 @@ export interface PipelineContext {
   visualConcept?: { concept: string; description: string };
   colorPalette?: string[];
   font?: { titleFont: string; bodyFont: string };
+  logoComposition?: LogoComposition;
   artStyleImageUrl?: string;
   logoImageUrl?: string;
   /** Touchpoint name for application mockup generation (e.g. "Business Card", "Packaging") */
@@ -178,6 +182,7 @@ export interface PipelineContext {
 export interface PaletteFontsResult {
   colorPalette: string[];
   font: { titleFont: string; bodyFont: string };
+  logoComposition: LogoComposition;
   _meta?: VariationMeta;
 }
 
@@ -186,6 +191,7 @@ export interface LogoStyleResult {
   logoImageUrl?: string | null;
   artStyleModel?: string;
   logoModel?: string;
+  logoComposition?: LogoComposition;
   errors?: string[];
   _meta?: VariationMeta;
 }
@@ -216,7 +222,12 @@ export async function designPaletteAndFonts(
     "art-director/design-palette-fonts",
     { body: { ...ctx, brandContext }, timeoutMs: 60_000, signal: opts?.signal },
   );
-  return { colorPalette: raw.colorPalette, font: raw.font, _meta: raw._meta };
+  return {
+    colorPalette: raw.colorPalette,
+    font: raw.font,
+    logoComposition: raw.logoComposition,
+    _meta: raw._meta,
+  };
 }
 
 export async function designLogoAndStyle(
@@ -245,6 +256,7 @@ export async function designLogoAndStyle(
     logoImageUrl: raw.logoImageUrl,
     artStyleModel: raw.artStyleModel,
     logoModel: raw.logoModel,
+    logoComposition: raw.logoComposition,
     errors: raw.errors,
     _meta: raw._meta,
   };
@@ -355,6 +367,7 @@ export async function generateBrandContextMockup(
 // ─── Merge API calls (moved from merge-logic.ts) ─────────────────────────────
 
 const VISION_MERGE_TIMEOUT_MS = 90_000;
+const PALETTE_EXTRACTION_TIMEOUT_MS = 180_000;
 
 export async function performMerge(
   sourceId: string,
@@ -380,16 +393,18 @@ export async function performPaletteExtraction(
   sourceId: string,
   sourceImageUrl: string,
   brandContext: MergeBrandContext,
+  options: { throwOnError?: boolean } = {},
 ): Promise<MergeResult> {
   try {
     const result = await callApi<{ patch?: Partial<MergeBrandContext>; _meta?: VariationMeta; error?: string }>(
-      "extract-palette",
-      { body: { sourceId, sourceImageUrl, brandData: brandContext }, timeoutMs: VISION_MERGE_TIMEOUT_MS },
+      "visual-designer/extract-palette",
+      { body: { sourceId, sourceImageUrl, brandData: brandContext }, timeoutMs: PALETTE_EXTRACTION_TIMEOUT_MS },
     );
     if (result.error) throw new Error(`[performPaletteExtraction] server error: ${result.error}`);
     return { patch: result.patch ?? null, _meta: result._meta };
   } catch (err) {
     console.error("[performPaletteExtraction] failed:", err);
+    if (options.throwOnError) throw err;
     return { patch: null };
   }
 }

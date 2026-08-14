@@ -394,6 +394,13 @@ export function DirectionPage({
   const hydratedVersionRef = useRef<string | null>(null);
   const suppressRationalePersistRef = useRef(false);
   const hydrationTokenRef = useRef(0);
+  // Tracks which version IDs currently have a `fetchDirectionAndContext` call in
+  // flight. Generation keeps running in the background even after the user
+  // navigates away (so it survives unmount), so if the user navigates back to
+  // the same version before it finishes, the hydration effect below would
+  // otherwise fire a *second*, competing generation pass for the same slots —
+  // each producing a different image and racing to overwrite the cache/UI.
+  const inFlightVersionsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     if (hydratedVersionRef.current === activeVersionId) return;
@@ -402,6 +409,24 @@ export function DirectionPage({
     const token = ++hydrationTokenRef.current;
 
     const version = versions.find((v) => v.id === activeVersionId);
+
+    const runFetch = (versionId: string, existingImages?: Array<string | null>) => {
+      if (inFlightVersionsRef.current.has(versionId)) {
+        // Already generating in the background from a previous visit to this
+        // version — let that run finish instead of starting a duplicate.
+        if (token === hydrationTokenRef.current) {
+          suppressRationalePersistRef.current = false;
+        }
+        return;
+      }
+      inFlightVersionsRef.current.add(versionId);
+      fetchDirectionAndContext(versionId, existingImages).finally(() => {
+        inFlightVersionsRef.current.delete(versionId);
+        if (token === hydrationTokenRef.current) {
+          suppressRationalePersistRef.current = false;
+        }
+      });
+    };
 
     if (version?.cache) {
       const cache = version.cache;
@@ -427,11 +452,7 @@ export function DirectionPage({
 
       if (shouldRegenerateContext) {
         // Pass existing partial images so only the missing slots are generated.
-        fetchDirectionAndContext(activeVersionId, cacheContextImages).finally(() => {
-          if (token === hydrationTokenRef.current) {
-            suppressRationalePersistRef.current = false;
-          }
-        });
+        runFetch(activeVersionId, cacheContextImages);
         return;
       }
       if (token === hydrationTokenRef.current) {
@@ -440,11 +461,7 @@ export function DirectionPage({
       return;
     }
 
-    fetchDirectionAndContext(activeVersionId).finally(() => {
-      if (token === hydrationTokenRef.current) {
-        suppressRationalePersistRef.current = false;
-      }
-    });
+    runFetch(activeVersionId);
   }, [activeVersionId, versions, fetchDirectionAndContext]);
 
   // ── Persist rationale edits to current version's directionCache ─────────────────

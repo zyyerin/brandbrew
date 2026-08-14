@@ -43,7 +43,7 @@ const STATUS_LABELS: Record<PipelineStageLog["status"], string> = {
 const EDITABLE_FIELDS: Record<NonNullable<PipelineStage>, string[]> = {
   conceptualizing: ["description", "keywords", "targetAudience"],
   styling: ["visualConcept"],
-  drawing: ["colorPalette", "font"],
+  drawing: ["colorPalette", "font", "logoComposition"],
   synthesizing: [],
 };
 
@@ -1008,12 +1008,57 @@ function FieldRow({
   const isArray = Array.isArray(value);
   const isObject = value !== null && typeof value === "object" && !isArray;
   const [collapsed, setCollapsed] = useState(isObject || isArray);
+  const [objectJson, setObjectJson] = useState(() => isObject ? JSON.stringify(value, null, 2) : "");
+  const [objectError, setObjectError] = useState<string | null>(null);
 
   const displayValue = isObject || isArray
     ? JSON.stringify(value)
     : String(value ?? "");
 
-  if (!editable || isObject) {
+  if (editable && isObject) {
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+        <span style={{ color: "#64748b", fontSize: 9 }}>{fieldKey}</span>
+        <textarea
+          value={objectJson}
+          onChange={(e) => {
+            const nextText = e.target.value;
+            setObjectJson(nextText);
+            try {
+              const parsed = JSON.parse(nextText);
+              if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+                setObjectError("must be a JSON object");
+                return;
+              }
+              setObjectError(null);
+              onChange(parsed);
+            } catch {
+              setObjectError("invalid JSON");
+            }
+          }}
+          spellCheck={false}
+          style={{
+            width: "100%",
+            minHeight: 72,
+            background: "rgba(255,255,255,0.03)",
+            border: `1px solid ${objectError ? "#ef4444" : "rgba(167,139,250,0.25)"}`,
+            borderRadius: 4,
+            color: objectError ? "#f87171" : "#c4b5fd",
+            fontFamily: "inherit",
+            fontSize: 9,
+            padding: "5px 6px",
+            resize: "vertical",
+            outline: "none",
+          }}
+        />
+        {objectError && (
+          <span style={{ color: "#ef4444", fontSize: 8 }}>{objectError}</span>
+        )}
+      </div>
+    );
+  }
+
+  if (!editable) {
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
         <div

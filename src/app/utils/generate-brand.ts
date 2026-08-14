@@ -4,6 +4,7 @@ import type { BrandContextFull } from "@server-shared/types.tsx";
 
 const STRATEGIST_VISUAL_CONCEPT_TIMEOUT_MS = 90_000;
 const STRATEGIST_DIRECTION_TIMEOUT_MS = 90_000;
+const IMAGE_UPLOAD_TIMEOUT_MS = 180_000;
 
 // ─── 类型定义 ─────────────────────────────────────────────────────────────────
 
@@ -278,6 +279,8 @@ export async function uploadImage(
 ): Promise<{ imageUrl: string }> {
   return callApi<{ imageUrl: string }>("upload-image", {
     body: { base64, mimeType, cardType },
+    // COS retries can legitimately take longer than callApi's 30s default.
+    timeoutMs: IMAGE_UPLOAD_TIMEOUT_MS,
   });
 }
 

@@ -93,9 +93,12 @@ export function DirectionVersionsPanel({
               const isActive = version.id === activeVersionId;
               const previewUrl = version.snapshotImageUrl ?? visualSnapshotUrl;
               const logoUrl = version.cache?.logoImageUrl;
-              const applicationUrl = version.cache?.contextImageUrls?.find(
-                (url): url is string => typeof url === "string" && url.length > 0,
-              );
+              // Pin the preview to a fixed slot (the first application) instead of
+              // "first non-null" — mockup slots finish generating out of order, so
+              // picking whichever is non-null right now made this thumbnail jump
+              // between different application mockups as generation progressed,
+              // which looked like the image kept "changing" on its own.
+              const applicationUrl = version.cache?.contextImageUrls?.[0] ?? undefined;
               const createdAt = version.createdAt instanceof Date
                 ? version.createdAt
                 : new Date(version.createdAt);

@@ -36,14 +36,41 @@ app.use("*", logger(console.log));
 // Local dev: leave unset — falls back to wildcard so any localhost port works.
 const _rawCorsOrigin = Deno.env.get("CORS_ORIGIN");
 if (!_rawCorsOrigin) console.warn("[server] CORS_ORIGIN not set — falling back to wildcard origin");
-const ALLOWED_ORIGINS = _rawCorsOrigin?.split(",").map((o) => o.trim()).filter(Boolean) ?? [];
+
+function normalizeCorsOrigin(value: string): string | null {
+  const candidate = value.trim();
+  if (!candidate) return null;
+
+  try {
+    const url = new URL(candidate);
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
+      console.warn(`[server] Ignoring unsupported CORS origin: ${candidate}`);
+      return null;
+    }
+    // URL.origin is the browser-compatible representation and never includes a
+    // trailing slash, path, query, or fragment.
+    return url.origin;
+  } catch {
+    console.warn(`[server] Ignoring invalid CORS origin: ${candidate}`);
+    return null;
+  }
+}
+
+const ALLOWED_ORIGINS = [
+  ...new Set(
+    _rawCorsOrigin
+      ?.split(",")
+      .map(normalizeCorsOrigin)
+      .filter((origin): origin is string => origin !== null) ?? [],
+  ),
+];
 
 app.use(
   "/*",
   cors({
-    origin: ALLOWED_ORIGINS.length
-      ? (origin) => (ALLOWED_ORIGINS.includes(origin) ? origin : ALLOWED_ORIGINS[0])
-      : "*",
+    // An explicitly configured but invalid/empty allowlist denies every
+    // browser origin. Only a completely unset secret uses the local-dev '*'.
+    origin: _rawCorsOrigin ? ALLOWED_ORIGINS : "*",
     allowHeaders: ["Content-Type", "Authorization", "X-Access-Token", "X-Project-Id"],
     allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     exposeHeaders: ["Content-Length"],

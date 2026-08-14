@@ -5,6 +5,7 @@
 
 import { jsonrepair } from "https://esm.sh/jsonrepair@3.12.0";
 import { getSupabaseClient } from "../supabase-client.tsx";
+import { buildImageBaseName } from "./storage-paths.ts";
 import type {
   GeminiTextConfig,
   ImageResult,
@@ -308,12 +309,7 @@ function isAllowedImageUrl(urlString: string): boolean {
   }
 }
 
-export async function fetchImageAsBase64(
-  url: string,
-): Promise<ImageResult | ImageError> {
-  if (!isAllowedImageUrl(url)) {
-    return { error: "fetchImage → URL not allowed" };
-  }
+async function fetchImageAsBase64Once(url: string): Promise<ImageResult | ImageError> {
   try {
     const res = await fetch(url, { signal: AbortSignal.timeout(15_000) });
     if (!res.ok) {
@@ -338,6 +334,24 @@ export async function fetchImageAsBase64(
   } catch (err: unknown) {
     return { error: `fetchImage → ${String(err)}` };
   }
+}
+
+export async function fetchImageAsBase64(
+  url: string,
+): Promise<ImageResult | ImageError> {
+  if (!isAllowedImageUrl(url)) {
+    return { error: "fetchImage → URL not allowed" };
+  }
+  const first = await fetchImageAsBase64Once(url);
+  if (!("error" in first)) return first;
+
+  // A transient network blip / storage hiccup here silently degrades the
+  // downstream generation (agents fall back to generating without this
+  // reference image), which the user perceives as an unrelated / inconsistent
+  // result. One short-backoff retry avoids giving up on a single flaky fetch.
+  console.warn(`[gemini] fetchImageAsBase64 first attempt failed (${first.error}), retrying once…`);
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  return fetchImageAsBase64Once(url);
 }
 
 // ── Imagen :predict caller ───────────────────────────────────────────────────
@@ -795,8 +809,7 @@ export async function uploadAndSignImage(
   const buffer = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) buffer[i] = binary.charCodeAt(i);
 
-  const ext = mimeType.includes("jpeg") ? "jpg" : "png";
-  const baseName = `${cardType}-${Date.now()}-${crypto.randomUUID()}.${ext}`;
+  const baseName = buildImageBaseName(cardType, mimeType);
   const fileName = projectId ? `projects/${projectId}/${baseName}` : baseName;
 
   // ── Tencent Cloud COS (preferred when configured) ────────────────────────

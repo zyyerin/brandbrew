@@ -4,6 +4,7 @@ import { IMAGE_ELEMENT_IDS, getActiveElementData, getVariationDataById } from ".
 import { generateCardVariation, generateVisualConcept, uploadImage } from "../utils/generate-brand";
 import { generateBrandImage, designPaletteAndFonts } from "../utils/generate-image";
 import type { ImageCardType } from "../utils/generate-image";
+import type { LogoComposition } from "@server-shared/logo-prompts.ts";
 import type { DebugInterceptor } from "./usePipelineDebugger";
 import { toast } from "sonner";
 import { normalizeAndSortColorPalette } from "../utils/helpers";
@@ -21,6 +22,60 @@ import type { UseBriefCompletionReturn } from "./useBriefCompletion";
 import { useMergeGeneration } from "./useMergeGeneration";
 import type { UseMergeGenerationReturn } from "./useMergeGeneration";
 import { performPaletteExtraction } from "../utils/generate-image";
+
+const MAX_UPLOAD_SIZE = 5 * 1024 * 1024;
+const SUPPORTED_UPLOAD_MIME_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
+
+function normalizeUploadMimeType(mimeType: string): string {
+  const normalized = mimeType.split(";")[0].trim().toLowerCase();
+  return normalized === "image/jpg" ? "image/jpeg" : normalized;
+}
+
+function validateImageUpload(file: File): { mimeType: string; error?: string } {
+  const mimeType = normalizeUploadMimeType(file.type);
+  if (!SUPPORTED_UPLOAD_MIME_TYPES.has(mimeType)) {
+    return { mimeType, error: "Only JPG, PNG, or WebP images are supported." };
+  }
+  if (file.size > MAX_UPLOAD_SIZE) {
+    return { mimeType, error: "Image is too large. Maximum size is 5 MB." };
+  }
+  return { mimeType };
+}
+
+function readFileAsBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("Could not read the image file."));
+    reader.onload = () => {
+      if (typeof reader.result !== "string") {
+        reject(new Error("Could not read the image file."));
+        return;
+      }
+      const commaIndex = reader.result.indexOf(",");
+      if (commaIndex < 0 || commaIndex === reader.result.length - 1) {
+        reject(new Error("The image data is invalid."));
+        return;
+      }
+      resolve(reader.result.slice(commaIndex + 1));
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+function imageActionErrorMessage(err: unknown, action: "upload" | "palette"): string {
+  const message = err instanceof Error ? err.message : String(err);
+  if (/timed out/i.test(message)) {
+    return action === "upload"
+      ? "Image upload timed out. Please try again."
+      : "Palette extraction timed out. Please try again.";
+  }
+  if (/network error|failed to fetch|networkerror/i.test(message)) {
+    return "Network connection failed. Check your connection and try again.";
+  }
+  return action === "upload"
+    ? "Image upload failed. Please try again."
+    : "Could not extract a color palette from this image. Please try again.";
+}
 
 export interface UseBrandGenerationParams {
   project: ProjectData;
@@ -105,6 +160,7 @@ export function useBrandGeneration({
             let visualConcept = vcObj ?? undefined;
             let colorPalette = activePalette ?? undefined;
             let font = activeFont ?? undefined;
+            let logoComposition: LogoComposition | undefined;
             let pipelineSeed: VariationMeta["pipelineSeed"] | undefined;
             const pipelineStageCount = "3";
 
@@ -147,12 +203,37 @@ export function useBrandGeneration({
               visualConcept = vcResult.visualConcept;
               colorPalette = pfResult.colorPalette;
               font = pfResult.font;
+              logoComposition = pfResult.logoComposition;
               pipelineSeed = {
                 visualConcept: vcResult.visualConcept,
                 colorPalette: pfResult.colorPalette,
                 font: pfResult.font,
+                logoComposition: pfResult.logoComposition,
                 application: brief.applications?.[0] ?? "brand application",
               };
+            } else if (eid === "logo") {
+              // Visual concept already exists on the board, but a logo needs an
+              // explicit icon+wordmark composition decision — without it the
+              // image prompt falls back to a text-free, icon-only mark.
+              const pfRequest = {
+                brandName: brief.name,
+                tagline: brief.tagline,
+                description: brief.description,
+                targetAudience: brief.targetAudience,
+                keywords: brief.keywords,
+                visualConcept,
+              };
+              const pfResult = await withDebugLog(
+                debugInterceptor,
+                {
+                  label: "Add Variation: logo (composition)",
+                  agent: "art-director",
+                  endpoint: "art-director/design-palette-fonts",
+                  request: pfRequest as Record<string, unknown>,
+                },
+                () => designPaletteAndFonts(pfRequest),
+              );
+              logoComposition = pfResult.logoComposition;
             }
 
             const brandContextShort = {
@@ -176,6 +257,7 @@ export function useBrandGeneration({
                 application: brief.applications?.[0],
               },
               brandContextShort,
+              ...(eid === "logo" && logoComposition ? { logoComposition } : {}),
             };
             const result = await withDebugLog(
               debugInterceptor,
@@ -197,6 +279,9 @@ export function useBrandGeneration({
                   pipelineSeed,
                 }
               : result._meta;
+            if (eid === "logo" && logoComposition) {
+              resultMeta = { ...(resultMeta ?? {}), logoComposition };
+            }
           } else {
             const imgCtx = {
               brandContextShort: buildBriefOnlyContext(p),
@@ -306,15 +391,13 @@ export function useBrandGeneration({
 
   // ── handleUploadVariation ─────────────────────────────────────────────────
 
-  const MAX_UPLOAD_SIZE = 5 * 1024 * 1024;
-
   const handleUploadVariation = useCallback(
     (elementId: string, file: File) => {
       const eid = elementId as ElementId;
       if (!IMAGE_ELEMENT_IDS.has(eid)) return;
-      if (!file.type.startsWith("image/")) return;
-      if (file.size > MAX_UPLOAD_SIZE) {
-        console.warn(`File too large (${(file.size / 1024 / 1024).toFixed(1)} MB). Max 5 MB.`);
+      const validation = validateImageUpload(file);
+      if (validation.error) {
+        toast.error(validation.error);
         return;
       }
 
@@ -327,18 +410,18 @@ export function useBrandGeneration({
       uploadingVariationIdsRef?.current.add(varId);
       setUploadingVariationIds((prev) => new Set(prev).add(varId));
 
-      const reader = new FileReader();
-      reader.onload = async () => {
+      void (async () => {
         try {
-          const dataUrl = reader.result as string;
-          const { imageUrl: signedUrl } = await uploadImage(dataUrl.split(",")[1], file.type, elementId);
+          const base64 = await readFileAsBase64(file);
+          const { imageUrl: signedUrl } = await uploadImage(base64, validation.mimeType, elementId);
           setProject((prev) => {
             const slot = prev.elements[eid];
             return { ...prev, elements: { ...prev.elements, [eid]: { ...slot, variations: slot.variations.map((v) => v.id === varId ? { ...v, data: { imageUrl: signedUrl } } : v) } } };
           });
+          toast.success("Image uploaded successfully.");
         } catch (err) {
           console.error("Image upload failed:", err);
-          toast.error("图片上传失败，请重试");
+          toast.error(imageActionErrorMessage(err, "upload"));
           setProject((prev) => {
             const slot = prev.elements[eid];
             return { ...prev, elements: { ...prev.elements, [eid]: { ...slot, variations: slot.variations.filter((v) => v.id !== varId) } } };
@@ -348,8 +431,7 @@ export function useBrandGeneration({
           uploadingVariationIdsRef?.current.delete(varId);
           setUploadingVariationIds((prev) => { const n = new Set(prev); n.delete(varId); return n; });
         }
-      };
-      reader.readAsDataURL(file);
+      })();
     },
     [generationCounterRef, setProject, uploadingVariationIdsRef],
   );
@@ -358,39 +440,37 @@ export function useBrandGeneration({
 
   const handleExtractPaletteFromImage = useCallback(
     (file: File) => {
-      if (!file.type.startsWith("image/")) return;
-      if (file.size > MAX_UPLOAD_SIZE) {
-        toast.error("图片太大，最大支持 5MB");
+      const validation = validateImageUpload(file);
+      if (validation.error) {
+        toast.error(validation.error);
         return;
       }
 
       setLoadingElements((prev) => new Set([...prev, "color-palette"]));
 
-      const reader = new FileReader();
-      reader.onload = async () => {
+      void (async () => {
         try {
-          const dataUrl = reader.result as string;
-          const { imageUrl: signedUrl } = await uploadImage(dataUrl.split(",")[1], file.type, "color-palette");
+          const base64 = await readFileAsBase64(file);
+          const { imageUrl: signedUrl } = await uploadImage(base64, validation.mimeType, "color-palette");
           const mergeContext = buildFullBrandContext(projectRef.current);
           // Use "logo" as the source key — it has requiresSourceImage=true and works for generic image uploads.
-          const { patch, _meta } = await performPaletteExtraction("logo", signedUrl, mergeContext);
-          if (patch) {
-            const normalized = normalizeAndSortColorPalette((patch as Record<string, unknown>).colorPalette);
-            if (normalized != null) {
-              const variation = createVariation({ prefix: "upload-palette", data: normalized, source: "add-variation", meta: _meta, counterRef: generationCounterRef });
-              setProject((prev) => addVariationToProject(prev, "color-palette", variation));
-            }
-          } else {
-            toast.error("未能从图片中提取到色板，请重试");
+          const { patch, _meta } = await performPaletteExtraction("logo", signedUrl, mergeContext, { throwOnError: true });
+          const normalized = normalizeAndSortColorPalette(
+            patch ? (patch as Record<string, unknown>).colorPalette : null,
+          );
+          if (normalized == null) {
+            throw new Error("Palette extraction returned no valid colors");
           }
+          const variation = createVariation({ prefix: "upload-palette", data: normalized, source: "add-variation", meta: _meta, counterRef: generationCounterRef });
+          setProject((prev) => addVariationToProject(prev, "color-palette", variation));
+          toast.success("Color palette extracted from image.");
         } catch (err) {
           console.error("Palette extraction from image failed:", err);
-          toast.error("无法从图片提取色板，请重试");
+          toast.error(imageActionErrorMessage(err, "palette"));
         } finally {
           setLoadingElements((prev) => { const n = new Set(prev); n.delete("color-palette"); return n; });
         }
-      };
-      reader.readAsDataURL(file);
+      })();
     },
     [projectRef, generationCounterRef, setProject, setLoadingElements],
   );

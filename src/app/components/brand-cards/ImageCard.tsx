@@ -4,6 +4,7 @@ import type { VariationMeta, VariationState } from "./types";
 import { ElementWrapper } from "./ElementWrapper";
 import { ImageWithFallback } from "./ImageWithFallback";
 import { LAYOUT, TYPE } from "../../utils/design-tokens";
+import { getImageViewerUrl } from "../../utils/open-image-viewer";
 
 interface ImageCardProps {
   label: string;
@@ -58,14 +59,18 @@ export function ImageCard({
 
   const downloadButton = imageUrl ? (
     <>
-      <button
-        onClick={(e) => { e.stopPropagation(); window.open(imageUrl, "_blank", "noopener,noreferrer"); }}
+      <a
+        href={getImageViewerUrl(imageUrl, label)}
+        target="_blank"
+        rel="noopener noreferrer"
+        onClick={(e) => e.stopPropagation()}
         className="p-1 rounded-md text-muted-foreground/60 hover:text-foreground hover:bg-black/5 transition-colors"
         title="Open image in new tab"
+        aria-label="Open image in new tab"
         data-no-card-toggle
       >
         <ExternalLink size={TYPE.icon.base} />
-      </button>
+      </a>
       <button
         onClick={handleDownload}
         className="p-1 rounded-md text-muted-foreground/60 hover:text-foreground hover:bg-black/5 transition-colors"

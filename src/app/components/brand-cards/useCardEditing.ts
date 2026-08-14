@@ -98,4 +98,8 @@ export function useCardEditing<T extends object>(
  *  Any card currently in edit mode will cancel without saving. */
 export function cancelAllCardEdits() {
   window.dispatchEvent(new CustomEvent(EDIT_ENTER_EVENT, { detail: { id: "external" } }));
+  // The enter-shaped event above synchronously tells every editing card to
+  // cancel. Follow it with the matching global state update so board-level
+  // drag locks do not remain enabled after an ordinary card selection.
+  window.dispatchEvent(new CustomEvent(EDIT_EXIT_EVENT));
 }

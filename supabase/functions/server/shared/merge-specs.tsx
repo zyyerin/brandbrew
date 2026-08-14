@@ -16,7 +16,7 @@
 //
 //   Layer 3 — PROMPT_OVERRIDES
 //     Selective per-pair fine-tuning. Any field set here wins over the composed
-//     default. Optional newHintNote / cardHintNote override UI copy only (toast / slot).
+//     default. UI copy lives separately in merge-ui-hints.ts.
 //     Key format: "source→target" (e.g. "font→art-style").
 //
 // At module load, buildAllMergeSpecs() walks every supported combination,
@@ -38,6 +38,7 @@ import type {
   VisualConceptData,
 } from "./types.tsx";
 import { buildVisualConceptContextText } from "./brand-context.ts";
+import { SUPPORTED_MERGE_PAIRS } from "./merge-pairs.ts";
 import { buildPrompt } from "./prompt-builder.ts";
 import { RULE_OUTPUT_JSON } from "./prompt-rules.ts";
 
@@ -148,40 +149,28 @@ const PROMPT_OVERRIDES: Record<string, Partial<MergeSpec>> = {
       "Find a Google Fonts pairing (titleFont + bodyFont) that matches the typeface in the image. Otherwise, recommend a Google Fonts pairing whose aesthetic matches the mood and atmosphere observed in the image. Change only titleFont and bodyFont.",
   },
 
-  // ── image targets (newHint / cardHint overrides) ────────────────────────────
-  // Optional newHintNote (slot-drop UI) and cardHintNote (card-drop toast); same placeholders as hints.
+  // ── image targets (model-facing newHint / cardHint overrides) ───────────────
   "color-palette→logo": {
     newHint: "Design a logo inspired by the color scheme: {sourceData}.",
     cardHint: "Recolor this image with this color scheme: {sourceData}",
-    cardHintNote: "Recolor the logo with this color palette",
   },
   "color-palette→art-style": {
     newHint: "Generate a modular brand graphic device system emphasizing chromatic diffusion and organic color gradients. Include a primary key visual (KV) and secondary supporting assets. No photography. No actual logo.",
-    newHintNote: "Art style inspired by the color palette",
-    cardHintNote: "Recolor the art stylewith this color palette",
   },
   "font→logo": {
     newHint: "Design a wordmark from typeface (black wordmark on white background)",
-    newHintNote: "Design a wordmark from typeface",
-    cardHint: "Replace the text in the image with these fonts: {sourceData}; if no text is visible, add a wordmark in the first typeface. Brand name: {brandName}",
-    cardHintNote: "Replace the typeface in the logo",
+    cardHint: "Replace the text in the image with this font: {sourceData}; if no text is visible, add a wordmark in this typeface. Use only this single typeface for all text — do not mix in any other font. Brand name: {brandName}",
   },
   // Slot merge: /merge-generate uses buildMergeGeneratePrompt (strict 3 segments; no brief text).
   "font→art-style": {
     newHint: "Generate a modular brand graphic device system extracting and deconstructing the specific letterforms, terminals, and glyph geometry of the chosen fonts. Include a primary key visual (KV) and secondary supporting patterns/shapes. No photography. No actual logo.",
-    newHintNote: "Art style inspired by the fonts",
     cardHint: "Replace the typeface in the image with these fonts: {sourceData}",
-    cardHintNote: "Replace the typeface",
   },
   "logo→art-style": {
     newHint: "Generate a modular brand graphic device system reflecting the logo's stylistic signature. Include a primary key visual (KV) and secondary supporting patterns/shapes. No photography. Do not include actual logo.",
-    newHintNote: "Art style inspired by the logo",
-    cardHintNote: "Replace the typeface in the art style",
   },
   "art-style→logo": {
     newHint: "Design a logo referring to this style: {sourceData}",
-    newHintNote: "Logo inspired by the art style",
-    cardHintNote: "Replace the typeface in the logo",
   },
 };
 
@@ -209,14 +198,12 @@ function buildMergeSpec(source: string, target: string): MergeSpec | null {
     const instruction = overrides.instruction
       ?? tgtAction.textAction.replace("{SOURCE_DESC}", srcDesc.textDesc);
 
-    // 无覆盖时的简短 newHint：取 textAction 第一句（按句号切）填入源描述后截断，供 UI/日志等使用
+    // 无覆盖时的模型 newHint：取 textAction 第一句并保持原有长度限制。
     const defaultHint = `${tgtAction.textAction.split(".")[0].replace("{SOURCE_DESC}", srcDesc.textDesc).slice(0, 60)}`;
 
     return {
       newHint: coalesceMergeHint(overrides.newHint, defaultHint),
       cardHint: overrides.cardHint,
-      newHintNote: overrides.newHintNote,
-      cardHintNote: overrides.cardHintNote,
       allowedFields: tgtAction.allowedFields,
       instruction,
       extractPaletteInstructionWithExistingTarget: overrides.extractPaletteInstructionWithExistingTarget,
@@ -232,8 +219,6 @@ function buildMergeSpec(source: string, target: string): MergeSpec | null {
     return {
       newHint: coalesceMergeHint(overrides.newHint, defaultHint),
       cardHint: overrides.cardHint,
-      newHintNote: overrides.newHintNote,
-      cardHintNote: overrides.cardHintNote,
     };
   }
 
@@ -248,32 +233,13 @@ function buildMergeSpec(source: string, target: string): MergeSpec | null {
 // Never add visual-snapshot (or other composition-only UI targets): they are not
 // board element slots and have no TARGET_ACTIONS entry.
 
-const SUPPORTED_PAIRS: Array<[source: string, target: string]> = [
-  // color-palette →
-  ["color-palette", "logo"],
-  ["color-palette", "art-style"],
-  ["color-palette", "font"],
-  // font →
-  ["font", "logo"],
-  ["font", "art-style"],
-  ["font", "color-palette"],
-  // logo →
-  ["logo", "art-style"],
-  ["logo", "color-palette"],
-  ["logo", "font"],
-  // art-style →
-  ["art-style", "logo"],
-  ["art-style", "color-palette"],
-  ["art-style", "font"],
-];
-
 function buildAllMergeSpecs(): Record<string, Record<string, MergeSpec>> {
   const table: Record<string, Record<string, MergeSpec>> = {};
-  for (const [source, target] of SUPPORTED_PAIRS) {
+  for (const [source, target] of SUPPORTED_MERGE_PAIRS) {
     const spec = buildMergeSpec(source, target);
     if (!spec) {
       throw new Error(
-        `[merge-specs] Invalid SUPPORTED_PAIRS entry: ${source}→${target}. ` +
+        `[merge-specs] Invalid SUPPORTED_MERGE_PAIRS entry: ${source}→${target}. ` +
           "Both ends must exist in SOURCE_DESCRIPTORS and TARGET_ACTIONS. " +
           'Targets like "visual-snapshot" belong to onSnapshotMerge, not this table.',
       );
@@ -564,7 +530,7 @@ export function isMergeSupported(sourceId: string, targetId: string): boolean {
   return !!MERGE_SPECS[sourceId]?.[targetId];
 }
 
-/** Template vars for newHint / cardHint / *HintNote UI strings. */
+/** Template vars for model-facing newHint / cardHint strings. */
 export type MergeHintTemplateVars = {
   sourceData?: string;
   brandName?: string;
@@ -577,11 +543,6 @@ function applyMergeHintTemplateVars(template: string, vars?: MergeHintTemplateVa
     .replace(/\{sourceData\}/g, vars.sourceData ?? "")
     .replace(/\{brandName\}/g, vars.brandName ?? "")
     .replace(/\{brandDescription\}/g, vars.brandDescription ?? "");
-}
-
-// getMergeHint: slot-drop UI line (prefers newHintNote when set).
-export function getMergeHint(sourceId: string, targetId: string, vars?: MergeHintTemplateVars): string {
-  return resolveMergeUiHint("slot", sourceId, targetId, vars);
 }
 
 // ── Hint resolution ───────────────────────────────────────────────────────────
@@ -609,43 +570,19 @@ export function resolveMergeHint(
   return coalesceMergeHint(resolved, "Combine cards");
 }
 
-/**
- * User-visible merge hint for a drop scenario. Uses newHintNote / cardHintNote when set; otherwise
- * the same resolution as resolveMergeHint (model-facing newHint / cardHint).
- */
-export function resolveMergeUiHint(
-  mode: "slot" | "card",
-  sourceId: string,
-  targetId: string,
-  vars?: MergeHintTemplateVars,
-): string {
-  const spec = MERGE_SPECS[sourceId]?.[targetId];
-  if (!spec) return "Combine cards";
-  if (mode === "slot") {
-    const note = spec.newHintNote;
-    if (typeof note === "string" && note.trim().length > 0) {
-      return coalesceMergeHint(applyMergeHintTemplateVars(note, vars), "Combine cards");
-    }
-    return resolveMergeHint("slot", sourceId, targetId, vars);
-  }
-  const note = spec.cardHintNote;
-  if (typeof note === "string" && note.trim().length > 0) {
-    return coalesceMergeHint(applyMergeHintTemplateVars(note, vars), "Combine cards");
-  }
-  return resolveMergeHint("card", sourceId, targetId, vars);
-}
-
 // ── Source data formatter ─────────────────────────────────────────────────────
 //
 // Serializes a source variation's data into the {sourceData} template variable
 // used by resolveMergeHint in card-to-card mode.
 
-export function formatSourceForHint(sourceId: string, data: unknown): string {
+export function formatSourceForHint(sourceId: string, data: unknown, targetId?: string): string {
   switch (sourceId) {
     case "color-palette":
       return Array.isArray(data) ? (data as string[]).join(", ") : "";
     case "font": {
       const f = data as { titleFont?: string; bodyFont?: string } | null;
+      // A logo wordmark can only render one typeface — always use the heading/title font.
+      if (targetId === "logo") return f?.titleFont ?? "";
       return [f?.titleFont, f?.bodyFont].filter(Boolean).join(", ");
     }
     default:
@@ -819,6 +756,10 @@ export function buildEditImagePrompt(opts: EditPromptOpts): string {
     }
     textGuard.push("Do not alter letterforms, spelling, wording, or text layout.");
     prompt = `${prompt}. ${textGuard.join(" ")}`;
+  }
+
+  if (opts.cardType === "logo") {
+    prompt = `${prompt} Keep the background pure white and unchanged; apply the recolor only to the logo mark and wordmark itself, and preserve their exact shapes, composition, and layout.`;
   }
 
   return prompt;

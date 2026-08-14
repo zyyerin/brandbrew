@@ -7,6 +7,7 @@ import { GenerationDetailsPanel } from "../GenerationDetailsPanel";
 import { NoodleConnections } from "./NoodleConnections";
 import type { SnapshotItem } from "../../types/project";
 import type { SlotPosition } from "../curation-board";
+import { openImageInNewTab } from "../../utils/open-image-viewer";
 
 /** 对齐缩略图内圆点与 noodle 端口：2×addPadding + 2×portRadius = 14（与原先视觉一致） */
 const SNAPSHOT_DOT_CENTER_OFFSET = LAYOUT.slot.addPadding * 2 + LAYOUT.connection.portRadius * 2;
@@ -363,7 +364,7 @@ export function VisualSnapshotPanel({
                         onDoubleClick={(e) => {
                           e.stopPropagation();
                           if (snap.imageUrl) {
-                            window.open(snap.imageUrl, "_blank", "noopener,noreferrer");
+                            openImageInNewTab(snap.imageUrl, "Visual Snapshot");
                           }
                         }}
                         className="relative w-full rounded-lg overflow-hidden transition-all block"

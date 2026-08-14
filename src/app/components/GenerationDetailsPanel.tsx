@@ -1,6 +1,7 @@
 import React, { type ReactNode, useRef, useState, useLayoutEffect } from "react";
 import { Cpu, FileText, Sparkles, Upload, X, MessageSquare, Tag, Layers, Pencil, GitFork, BookOpen, Info } from "lucide-react";
 import { CANVAS, LAYOUT, TYPE } from "../utils/design-tokens";
+import { openImageInNewTab } from "../utils/open-image-viewer";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -316,7 +317,7 @@ export function GenerationDetailsPanel({
                     <button
                       key={`${i}-${url}`}
                       type="button"
-                      onClick={(e) => { e.stopPropagation(); window.open(url, "_blank", "noopener,noreferrer"); }}
+                      onClick={(e) => { e.stopPropagation(); openImageInNewTab(url, "Input Image"); }}
                       className="w-8 h-8 rounded overflow-hidden border border-border/60 bg-muted/40 hover:border-blue-400 hover:shadow-sm transition-all"
                       title="Open input image"
                     >

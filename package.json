@@ -9,7 +9,9 @@
     "deploy": "supabase functions deploy server --no-verify-jwt",
     "deploy:note": "INTENTIONAL --no-verify-jwt: JWT is manually verified in auth-middleware.tsx via supabase.auth.getUser(). Platform-level check would be redundant. See auth-middleware.tsx for details.",
     "typecheck": "tsc --noEmit",
-    "check:quality": "npm run typecheck && npm run build",
+    "test:logo-prompts": "node --test tests/logo-prompts.test.ts",
+    "test:merge-ui-hints": "node --test tests/merge-ui-hints.test.ts",
+    "check:quality": "npm run typecheck && npm run test:logo-prompts && npm run test:merge-ui-hints && npm run build",
     "eval:model": "node scripts/eval-model.mjs",
     "check:predeploy": "npm run check:quality && npm run eval:model"
   },

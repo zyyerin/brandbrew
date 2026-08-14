@@ -96,7 +96,15 @@ export function usePipelineDebugger() {
     (stageId: string, newRequest: Record<string, unknown>) => {
       setStageLogs((prev) =>
         prev.map((log) =>
-          log.id === stageId ? { ...log, request: newRequest } : log,
+          log.id === stageId
+            ? {
+                ...log,
+                request: newRequest,
+                promptTemplates: log.stage
+                  ? getStagePromptTemplates(log.stage, newRequest)
+                  : log.promptTemplates,
+              }
+            : log,
         ),
       );
       if (gateRef.current) {

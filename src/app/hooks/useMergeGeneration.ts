@@ -302,6 +302,7 @@ export function useMergeGeneration({
                 ...stage1Req,
                 colorPalette: pfResult.colorPalette,
                 font: pfResult.font,
+                logoComposition: pfResult.logoComposition,
               };
               const lsResult = await withDebugLog(
                 debugInterceptor,
@@ -325,10 +326,16 @@ export function useMergeGeneration({
                   model: targetId === "logo"
                     ? (lsResult.logoModel ?? lsResult._meta?.model)
                     : (lsResult.artStyleModel ?? lsResult._meta?.model),
+                  ...(targetId === "logo"
+                    ? { logoComposition: lsResult.logoComposition ?? pfResult.logoComposition }
+                    : {}),
                   pipelineSeed: {
                     visualConcept,
                     colorPalette: pfResult.colorPalette,
                     font: pfResult.font,
+                    ...(targetId === "logo"
+                      ? { logoComposition: lsResult.logoComposition ?? pfResult.logoComposition }
+                      : {}),
                     application: brief.applications?.[0] ?? "brand application",
                   },
                 },
@@ -379,7 +386,7 @@ export function useMergeGeneration({
               : null;
 
             const cardHint = resolveMergeHint("card", sourceId, targetId, {
-              sourceData: formatSourceForHint(sourceId, getVariationData(sourceEid, sourceVarId)),
+              sourceData: formatSourceForHint(sourceId, getVariationData(sourceEid, sourceVarId), targetId),
               brandName: brief.name,
               brandDescription: brief.description,
             });

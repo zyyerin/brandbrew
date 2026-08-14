@@ -148,11 +148,14 @@ export interface VariationMeta {
   sourceVariationId?: string;
   /** The visual-concept variation that drove this element's generation (for noodle connections). */
   sourceConceptVariationId?: string;
+  /** Art Director's structured choice for the generated logo lockup. */
+  logoComposition?: import("@server-shared/logo-prompts.ts").LogoComposition;
   /** Cached structured inputs from pipeline stages for reuse in no-target merges. */
   pipelineSeed?: {
     visualConcept?: VisualConceptData;
     colorPalette?: ColorPaletteData;
     font?: FontData;
+    logoComposition?: import("@server-shared/logo-prompts.ts").LogoComposition;
     application?: string;
   };
 }

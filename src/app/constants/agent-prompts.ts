@@ -10,6 +10,11 @@ import {
   RULE_VISUAL_CONCEPT,
   VISUAL_CONCEPT_TASK_DESCRIPTION,
 } from "@server-shared/strategist-prompts.ts";
+import { PALETTE_FONTS_TASK_DESCRIPTION } from "@server-shared/art-director-prompts.ts";
+import {
+  buildLogoImagePrompt,
+  type LogoComposition,
+} from "@server-shared/logo-prompts.ts";
 
 // ─── Personas ─────────────────────────────────────────────────────────────────
 
@@ -31,21 +36,7 @@ Rules:
 - ${RULE_OUTPUT_JSON}
 - ${RULE_VISUAL_CONCEPT}`;
 
-export const PALETTE_FONTS_PROMPT = `Given the brand brief and visual concept, design a color palette and typography system.
-Return ONLY valid JSON with this exact structure:
-{
-  "colorPalette": ["#RRGGBB", ...],
-  "font": {
-    "titleFont": "Google Fonts display/heading font name",
-    "bodyFont": "Google Fonts body font name"
-  }
-}
-Rules:
-- Color palette: 3 to 5 harmonious hex colors that reflect the brand mood and visual concept direction.
-- Colors should form a usable system: 1 primary, 1-2 secondary, 1-2 neutral/accent.
-- Font names must be real Google Fonts. Choose fonts that embody the brand personality.
-- The title font should have strong character; the body font should be highly readable.
-- Typography and color choices must reinforce the visual concept's aesthetic direction.`;
+export const PALETTE_FONTS_PROMPT = PALETTE_FONTS_TASK_DESCRIPTION;
 
 // ─── Image prompt builder (mirrors art-director.tsx buildCreativeBrief) ──────
 
@@ -59,6 +50,7 @@ export function buildCreativeBriefPreview(
     colorPalette?: string[];
     newHint?: string;
     font?: { titleFont: string; bodyFont: string };
+    logoComposition?: LogoComposition;
   },
 ): string {
   const name       = ctx.brandName ?? "the brand";
@@ -72,13 +64,15 @@ export function buildCreativeBriefPreview(
 
   switch (cardType) {
     case "logo":
-      return (
-        `${focus}Brand logo design concept for "${name}". ` +
-        `${conceptStr ? `Visual concept: ${conceptStr}. ` : ""}` +
-        `${palette}` +
-        `Minimal clean graphic, white background, professional brand mark, ` +
-        `no photorealism, no text labels, vector illustration style.`
-      );
+      return buildLogoImagePrompt({
+        brandName: ctx.brandName,
+        brandDescription: ctx.brandDescription,
+        visualConcept: ctx.visualConcept,
+        colorPalette: ctx.colorPalette,
+        newHint: ctx.newHint,
+        titleFont: ctx.font?.titleFont,
+        logoComposition: ctx.logoComposition,
+      });
     case "art-style":
       return (
         `${focus}Art style reference image for "${name}" brand. ` +
@@ -134,6 +128,8 @@ export function getStagePromptTemplates(
         visualConcept: request.visualConcept as { concept: string; description: string } | undefined,
         keywords: request.keywords as string[] | undefined,
         colorPalette: request.colorPalette as string[] | undefined,
+        font: request.font as { titleFont: string; bodyFont: string } | undefined,
+        logoComposition: request.logoComposition as LogoComposition | undefined,
       };
       return {
         persona: ART_DIRECTOR_PERSONA,

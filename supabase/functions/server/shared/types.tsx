@@ -2,8 +2,12 @@
 // shared/types.tsx — Shared type definitions for the agent system
 // ─────────────────────────────────────────────────────────────────────────────
 
+import type { LogoComposition } from "./logo-prompts.ts";
+
+export type { LogoComposition, LogoCompositionMode } from "./logo-prompts.ts";
+
 export type MergeSpec = {
-  /** Model-facing slot-merge / primary hint; UI prefers `newHintNote` when set (see resolveMergeUiHint). */
+  /** Model-facing slot-merge / primary hint. */
   newHint: string;
   /**
    * Instruction for card-to-card (img2img edit) merges.
@@ -11,16 +15,6 @@ export type MergeSpec = {
    * Falls back to newHint when not set.
    */
   cardHint?: string;
-  /**
-   * Optional short copy for slot-drop UI (toast / queue affordance only).
-   * Supports {sourceData}, {brandName}, {brandDescription}. Falls back to resolved newHint when unset.
-   */
-  newHintNote?: string;
-  /**
-   * Optional short copy for card-to-card merge UI (toast only).
-   * Same template variables as cardHint. Falls back to resolveMergeHint("card", …) when unset.
-   */
-  cardHintNote?: string;
   allowedFields?: string[];
   /** Full LLM instruction for text-target merges (brand-strategist /merge and visual-designer /vision-merge). */
   instruction?: string;
@@ -138,6 +132,7 @@ export type ImagePromptContext = {
   newHint?: string;
   titleFont?: string;
   bodyFont?: string;
+  logoComposition?: LogoComposition;
   aspectRatio?: string;
   /** Touchpoint name for application mockup generation (e.g. "Business Card", "Packaging") */
   application?: string;
