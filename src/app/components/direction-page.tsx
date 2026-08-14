@@ -28,7 +28,13 @@ const DEFAULT_CONTEXT_APPLICATIONS = [
   "social media post",
   "website hero section",
 ] as const;
-const CONTEXT_IMAGE_CONCURRENCY = 3;
+
+/** Upper bound on how many touchpoints get a mockup, regardless of brief length. */
+const MAX_CONTEXT_APPLICATIONS = 4;
+
+// Matching the cap means all mockups run in a single wave instead of two, which
+// halves the wait. Well within the server's 20 requests/minute per-user limit.
+const CONTEXT_IMAGE_CONCURRENCY = MAX_CONTEXT_APPLICATIONS;
 
 const DEFAULT_CONTEXT_DESCRIPTION =
   "Real-world application of the identity system across digital and physical touchpoints.";
@@ -283,7 +289,7 @@ export function DirectionPage({
           project.brandBrief.current.applications && project.brandBrief.current.applications.length > 0
             ? project.brandBrief.current.applications
             : DEFAULT_CONTEXT_APPLICATIONS
-        ).slice(0, 4);
+        ).slice(0, MAX_CONTEXT_APPLICATIONS);
 
         // Seed imageSlots from any already-generated images passed in (partial cache re-entry).
         const imageSlots: Array<string | null> = existingImages

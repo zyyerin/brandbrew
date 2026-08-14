@@ -1,8 +1,9 @@
 import { useState, useCallback, useRef } from "react";
 import type { ElementId, Variation, VariationMeta } from "../types/project";
 import { IMAGE_ELEMENT_IDS, getActiveElementData, getCheckedElementData } from "../types/project";
-import { generateBrandImage, generateMergeImage, commentEditImage, designPaletteAndFonts, designLogoAndStyle } from "../utils/generate-image";
+import { generateBrandImage, generateMergeImage, commentEditImage, designPaletteAndFonts, designLogo, designArtStyle } from "../utils/generate-image";
 import type { ImageCardType } from "../utils/generate-image";
+import type { LogoComposition } from "@server-shared/logo-prompts.ts";
 import { isMergeSupported, resolveMergeHint, formatSourceForHint } from "@server-shared/merge-specs.tsx";
 import {
   performMerge,
@@ -304,42 +305,60 @@ export function useMergeGeneration({
                 font: pfResult.font,
                 logoComposition: pfResult.logoComposition,
               };
-              const lsResult = await withDebugLog(
-                debugInterceptor,
-                {
-                  label: `Pipeline Merge: ${sourceId} -> ${targetId} (stage 2/2)`,
-                  agent: "art-director",
-                  endpoint: "art-director/design-logo-style",
-                  request: stage2Req as Record<string, unknown>,
-                },
-                () => designLogoAndStyle(stage2Req),
-              );
-
-              const finalImageUrl = targetId === "logo"
-                ? lsResult.logoImageUrl
-                : lsResult.artStyleImageUrl;
-              if (!finalImageUrl) return;
-              mergeResult = {
-                imageUrl: finalImageUrl,
+              // Only the dropped target is kept, so request that image alone
+              // instead of generating both and discarding one.
+              const buildStagedMergeResult = (
+                imageUrl: string,
+                model: string | undefined,
+                meta: VariationMeta | undefined,
+                logoComposition?: LogoComposition,
+              ) => ({
+                imageUrl,
                 _meta: {
-                  ...lsResult._meta,
-                  model: targetId === "logo"
-                    ? (lsResult.logoModel ?? lsResult._meta?.model)
-                    : (lsResult.artStyleModel ?? lsResult._meta?.model),
-                  ...(targetId === "logo"
-                    ? { logoComposition: lsResult.logoComposition ?? pfResult.logoComposition }
-                    : {}),
+                  ...meta,
+                  model,
+                  ...(logoComposition ? { logoComposition } : {}),
                   pipelineSeed: {
                     visualConcept,
                     colorPalette: pfResult.colorPalette,
                     font: pfResult.font,
-                    ...(targetId === "logo"
-                      ? { logoComposition: lsResult.logoComposition ?? pfResult.logoComposition }
-                      : {}),
+                    ...(logoComposition ? { logoComposition } : {}),
                     application: brief.applications?.[0] ?? "brand application",
                   },
                 },
+              });
+              const stage2Log = {
+                label: `Pipeline Merge: ${sourceId} -> ${targetId} (stage 2/2)`,
+                agent: "art-director" as const,
+                request: stage2Req as Record<string, unknown>,
               };
+
+              if (targetId === "logo") {
+                const drawn = await withDebugLog(
+                  debugInterceptor,
+                  { ...stage2Log, endpoint: "art-director/design-logo" },
+                  () => designLogo(stage2Req),
+                );
+                if (!drawn.logoImageUrl) return;
+                mergeResult = buildStagedMergeResult(
+                  drawn.logoImageUrl,
+                  drawn.logoModel ?? drawn._meta?.model,
+                  drawn._meta,
+                  drawn.logoComposition ?? pfResult.logoComposition,
+                );
+              } else {
+                const drawn = await withDebugLog(
+                  debugInterceptor,
+                  { ...stage2Log, endpoint: "art-director/design-art-style" },
+                  () => designArtStyle(stage2Req),
+                );
+                if (!drawn.artStyleImageUrl) return;
+                mergeResult = buildStagedMergeResult(
+                  drawn.artStyleImageUrl,
+                  drawn.artStyleModel ?? drawn._meta?.model,
+                  drawn._meta,
+                );
+              }
             } else {
             // Queue-slot drop → simple merge via visual-designer
             const sourceData = getVariationData(sourceEid, sourceVarId);

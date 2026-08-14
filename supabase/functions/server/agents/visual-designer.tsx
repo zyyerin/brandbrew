@@ -45,6 +45,7 @@ import {
 } from "../shared/merge-specs.tsx";
 import { resolveAspectRatio } from "../shared/image-config.tsx";
 import { buildBriefIdentityContextText, normalizeShortContext } from "../shared/brand-context.ts";
+import { createTimer, logTimingReport } from "../shared/timing.ts";
 
 const visualDesigner = new Hono();
 
@@ -278,9 +279,12 @@ function buildSnapshotPrompt(ctx: SnapshotPromptContext): string {
 // otherwise falls back to the legacy client-supplied prompt string.
 
 visualDesigner.post("/visual-snapshot", async (c) => {
+  const timer = createTimer("visual-snapshot");
   try {
     const startTime = Date.now();
+    const closeParse = timer.open("request.parseBody");
     const body = await c.req.json();
+    closeParse();
     if (!hasShortContext(body)) {
       return c.json({ error: "brandContextShort is required" }, 400);
     }
@@ -327,8 +331,8 @@ visualDesigner.post("/visual-snapshot", async (c) => {
     }
 
     // Fetch each reference image URL into base64 for Gemini
-    for (const url of referenceImageUrls ?? []) {
-      const fetched = await fetchImageAsBase64(url);
+    for (const [refIndex, url] of ((referenceImageUrls ?? []) as string[]).entries()) {
+      const fetched = await fetchImageAsBase64(url, timer.child(`ref${refIndex + 1}`));
       if ("error" in fetched) {
         console.log(`[visual-designer] Skipping reference image (fetch failed): ${fetched.error}`);
         continue;
@@ -372,6 +376,7 @@ visualDesigner.post("/visual-snapshot", async (c) => {
         cardType: cardType ?? "visual-snapshot",
         refImages: images,
         aspectRatio: effectiveAR,
+        timer: timer.child("gen"),
       });
     } catch (err) {
       const errMsg = String(err);
@@ -407,6 +412,7 @@ visualDesigner.post("/visual-snapshot", async (c) => {
             cardType: cardType ?? "visual-snapshot",
             refImages: candidate.images,
             aspectRatio: effectiveAR,
+            timer: timer.child(`fallback-${candidate.mode}`),
           });
           fallbackMode = candidate.mode;
           recovered = true;
@@ -430,9 +436,11 @@ visualDesigner.post("/visual-snapshot", async (c) => {
       console.log(`[visual-designer] Visual snapshot warnings: ${genResult.errors.join(" | ")}`);
     }
 
-    const imageUrl = await uploadAndSignImage(genResult.b64, genResult.mimeType, cardType ?? "visual-snapshot", c.req.header("X-Project-Id"));
+    const imageUrl = await uploadAndSignImage(genResult.b64, genResult.mimeType, cardType ?? "visual-snapshot", c.req.header("X-Project-Id"), timer);
     const generationTime = Date.now() - startTime;
     const usedModel = genResult.usedModel;
+    const timings = timer.report();
+    logTimingReport(timings);
 
     return c.json({
       imageUrl,
@@ -441,11 +449,13 @@ visualDesigner.post("/visual-snapshot", async (c) => {
         prompt,
         model: usedModel,
         generationTime,
+        timings,
         ingredients: [brandName].filter(Boolean),
       },
     });
   } catch (err) {
     console.error("[visual-designer] visual-snapshot error:", (err as Error)?.stack ?? String(err));
+    logTimingReport(timer.report());
     return c.json(buildErrorPayload("Visual snapshot image generation failed", err), 500);
   }
 });
@@ -455,9 +465,12 @@ visualDesigner.post("/visual-snapshot", async (c) => {
 // using the brand's visual snapshot (if provided) as a reference.
 
 visualDesigner.post("/context", async (c) => {
+  const timer = createTimer("context");
   try {
     const startTime = Date.now();
+    const closeParse = timer.open("request.parseBody");
     const body = await c.req.json();
+    closeParse();
     const {
       application,
       prompt,
@@ -489,8 +502,8 @@ visualDesigner.post("/context", async (c) => {
     }
 
     const images: Array<{ b64: string; mimeType: string }> = [];
-    for (const url of referenceImageUrls ?? []) {
-      const fetched = await fetchImageAsBase64(url);
+    for (const [refIndex, url] of (referenceImageUrls ?? []).entries()) {
+      const fetched = await fetchImageAsBase64(url, timer.child(`ref${refIndex + 1}`));
       if ("error" in fetched) {
         console.log(`[visual-designer] Skipping context ref image (fetch failed): ${fetched.error}`);
         continue;
@@ -521,6 +534,7 @@ visualDesigner.post("/context", async (c) => {
         cardType: "application",
         refImages: images,
         aspectRatio: effectiveAR,
+        timer: timer.child("gen"),
       });
     } catch (err) {
       try {
@@ -531,10 +545,13 @@ visualDesigner.post("/context", async (c) => {
           cardType: "application",
           refImages: [],
           aspectRatio: effectiveAR,
+          timer: timer.child("gen-noRefs"),
         });
       } catch (retryErr) {
         const warning = retryErr instanceof Error ? retryErr.message : String(retryErr);
         console.warn(`[visual-designer] Context generation skipped for "${application}": ${warning}`);
+        const timings = timer.report();
+        logTimingReport(timings);
         return c.json({
           imageUrl: null,
           warning,
@@ -542,6 +559,7 @@ visualDesigner.post("/context", async (c) => {
             agent: "visual-designer-context",
             ...(isDevMode() && { prompt: effectivePrompt }),
             generationTime: Date.now() - startTime,
+            timings,
             ingredients: [brandName, application].filter(Boolean),
           },
         });
@@ -557,9 +575,12 @@ visualDesigner.post("/context", async (c) => {
       genResult.mimeType,
       "brand-context",
       c.req.header("X-Project-Id"),
+      timer,
     );
     const generationTime = Date.now() - startTime;
     const usedModel = genResult.usedModel;
+    const timings = timer.report();
+    logTimingReport(timings);
 
     return c.json({
       imageUrl,
@@ -568,11 +589,13 @@ visualDesigner.post("/context", async (c) => {
         ...(isDevMode() && { prompt: effectivePrompt }),
         model: usedModel,
         generationTime,
+        timings,
         ingredients: [brandName, application].filter(Boolean),
       },
     });
   } catch (err) {
     console.error("[visual-designer] context error:", (err as Error)?.stack ?? String(err));
+    logTimingReport(timer.report());
     return c.json(buildErrorPayload("Context image generation failed", err), 500);
   }
 });

@@ -6,6 +6,7 @@
 import { jsonrepair } from "https://esm.sh/jsonrepair@3.12.0";
 import { getSupabaseClient } from "../supabase-client.tsx";
 import { buildImageBaseName } from "./storage-paths.ts";
+import type { Timer } from "./timing.ts";
 import type {
   GeminiTextConfig,
   ImageResult,
@@ -19,6 +20,19 @@ export const PRO_IMAGE_MODEL = "gemini-3-pro-image-preview";
 export const FLASH_IMAGE_MODEL = "gemini-3.1-flash-image-preview";
 
 const PRO_CARD_TYPES = new Set(["art-style", "visual-snapshot", "application"]);
+
+// Supabase Edge Functions are killed at ~150 s wall clock (HTTP 546). A single
+// 80 s attempt plus one 80 s fallback exceeds that budget, so the platform can
+// terminate the isolate before any error handling or timing log runs. Keep this
+// configurable so the per-attempt budget can be tuned to fit the wall clock.
+const DEFAULT_IMAGE_TIMEOUT_MS = 80_000;
+
+function imageTimeoutMs(): number {
+  const raw = (globalThis as { Deno?: { env?: { get?: (key: string) => string | undefined } } })
+    .Deno?.env?.get?.("IMAGE_TIMEOUT_MS");
+  const parsed = raw ? Number.parseInt(raw, 10) : Number.NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_IMAGE_TIMEOUT_MS;
+}
 
 function isProImageEnabled(): boolean {
   const denoEnv = (globalThis as { Deno?: { env?: { get?: (key: string) => string | undefined } } }).Deno?.env;
@@ -50,13 +64,34 @@ export function getLastUsedImageModel() {
 
 // ── Bucket helper ────────────────────────────────────────────────────────────
 
+// Bucket state is stable for the lifetime of an isolate, so the listBuckets
+// round-trip only needs to happen once per cold start rather than per upload.
+let bucketReady = false;
+
 async function ensureBucket(supabase: ReturnType<typeof getSupabaseClient>) {
+  if (bucketReady) return;
+
   const { data: buckets } = await supabase.storage.listBuckets();
-  const exists = (buckets as any[])?.some((b) => b.name === BUCKET_NAME);
-  if (!exists) {
-    const { error } = await supabase.storage.createBucket(BUCKET_NAME);
-    if (error) console.log("Bucket creation error:", error.message);
+  const existing = (buckets as any[])?.find((b) => b.name === BUCKET_NAME);
+
+  // Image URLs are persisted inside saved projects and exported directions, so
+  // they must outlive any signed-URL expiry — the bucket has to be public.
+  if (!existing) {
+    const { error } = await supabase.storage.createBucket(BUCKET_NAME, { public: true });
+    if (error) {
+      console.log("Bucket creation error:", error.message);
+      return;
+    }
+  } else if (!existing.public) {
+    const { error } = await supabase.storage.updateBucket(BUCKET_NAME, { public: true });
+    if (error) {
+      console.log("Bucket visibility update error:", error.message);
+      return;
+    }
+    console.log(`[storage] Bucket ${BUCKET_NAME} switched to public`);
   }
+
+  bucketReady = true;
 }
 
 // ── JSON parsing with code-fence stripping ────────────────────────────────────
@@ -309,9 +344,11 @@ function isAllowedImageUrl(urlString: string): boolean {
   }
 }
 
-async function fetchImageAsBase64Once(url: string): Promise<ImageResult | ImageError> {
+async function fetchImageAsBase64Once(url: string, timer?: Timer): Promise<ImageResult | ImageError> {
   try {
+    const closeHttp = timer?.open("refImage.http");
     const res = await fetch(url, { signal: AbortSignal.timeout(15_000) });
+    closeHttp?.(`HTTP ${res.status}`);
     if (!res.ok) {
       return { error: `fetchImage → HTTP ${res.status}` };
     }
@@ -323,14 +360,19 @@ async function fetchImageAsBase64Once(url: string): Promise<ImageResult | ImageE
       }
     }
     const mimeType = res.headers.get("content-type") ?? "image/png";
+    const closeDownload = timer?.open("refImage.download");
     const arrayBuf = await res.arrayBuffer();
+    closeDownload?.(`${arrayBuf.byteLength}B`);
     if (arrayBuf.byteLength > MAX_IMAGE_BYTES) {
       return { error: "fetchImage → response too large" };
     }
+    const closeEncode = timer?.open("refImage.base64Encode");
     const bytes = new Uint8Array(arrayBuf);
     let binary = "";
     for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
-    return { b64: btoa(binary), mimeType };
+    const b64 = btoa(binary);
+    closeEncode?.(`${bytes.length}B`);
+    return { b64, mimeType };
   } catch (err: unknown) {
     return { error: `fetchImage → ${String(err)}` };
   }
@@ -338,11 +380,12 @@ async function fetchImageAsBase64Once(url: string): Promise<ImageResult | ImageE
 
 export async function fetchImageAsBase64(
   url: string,
+  timer?: Timer,
 ): Promise<ImageResult | ImageError> {
   if (!isAllowedImageUrl(url)) {
     return { error: "fetchImage → URL not allowed" };
   }
-  const first = await fetchImageAsBase64Once(url);
+  const first = await fetchImageAsBase64Once(url, timer);
   if (!("error" in first)) return first;
 
   // A transient network blip / storage hiccup here silently degrades the
@@ -350,8 +393,9 @@ export async function fetchImageAsBase64(
   // reference image), which the user perceives as an unrelated / inconsistent
   // result. One short-backoff retry avoids giving up on a single flaky fetch.
   console.warn(`[gemini] fetchImageAsBase64 first attempt failed (${first.error}), retrying once…`);
+  timer?.mark("refImage.retryBackoff", 500, first.error);
   await new Promise((resolve) => setTimeout(resolve, 500));
-  return fetchImageAsBase64Once(url);
+  return fetchImageAsBase64Once(url, timer);
 }
 
 // ── Imagen :predict caller ───────────────────────────────────────────────────
@@ -425,11 +469,14 @@ export async function callGeminiGenerateContent(
   model: string,
   prompt: string,
   aspectRatio?: string,
+  timer?: Timer,
 ): Promise<ImageResult | ImageError> {
   try {
+    const timeoutMs = imageTimeoutMs();
     const generationConfig: any = { responseModalities: ["IMAGE", "TEXT"] };
     const finalPrompt = withAspectHint(prompt, aspectRatio);
 
+    const closeHttp = timer?.open("model.http");
     const res = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
       {
@@ -439,16 +486,19 @@ export async function callGeminiGenerateContent(
           contents: [{ parts: [{ text: `Generate an image: ${finalPrompt}` }] }],
           generationConfig,
         }),
-        signal: AbortSignal.timeout(80_000),
+        signal: AbortSignal.timeout(timeoutMs),
       },
     );
+    closeHttp?.(`HTTP ${res.status}`);
 
     if (!res.ok) {
       const errText = await res.text();
       return { error: `${model} :generateContent → HTTP ${res.status}: ${errText.slice(0, 300)}` };
     }
 
+    const closeRead = timer?.open("model.readBody");
     const data = await res.json();
+    closeRead?.();
     const parts: any[] = data.candidates?.[0]?.content?.parts ?? [];
     const imagePart = parts.find((p: any) => p.inlineData?.data);
 
@@ -463,7 +513,7 @@ export async function callGeminiGenerateContent(
   } catch (err: unknown) {
     const name = (err as Error)?.name ?? "";
     if (name === "AbortError" || name === "TimeoutError") {
-      return { error: `${model} :generateContent → timed out (80 s)` };
+      return { error: `${model} :generateContent → timed out (${timeoutMs} ms)` };
     }
     return { error: `${model} :generateContent → fetch error: ${String(err)}` };
   }
@@ -477,8 +527,10 @@ export async function callGeminiGenerateContentWithImages(
   prompt: string,
   images: Array<{ b64: string; mimeType: string }>,
   aspectRatio?: string,
+  timer?: Timer,
 ): Promise<ImageResult | ImageError> {
   try {
+    const timeoutMs = imageTimeoutMs();
     const finalPrompt = withAspectHint(prompt, aspectRatio);
     const parts: any[] = [];
     for (const img of images) {
@@ -493,25 +545,33 @@ export async function callGeminiGenerateContentWithImages(
 
     const generationConfig: any = { responseModalities: ["IMAGE", "TEXT"] };
 
+    const closeSerialize = timer?.open("model.serializeRequest");
+    const requestBody = JSON.stringify({
+      contents: [{ parts }],
+      generationConfig,
+    });
+    closeSerialize?.(`${requestBody.length}B`);
+
+    const closeHttp = timer?.open("model.http");
     const res = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [{ parts }],
-          generationConfig,
-        }),
-        signal: AbortSignal.timeout(80_000),
+        body: requestBody,
+        signal: AbortSignal.timeout(timeoutMs),
       },
     );
+    closeHttp?.(`HTTP ${res.status}`);
 
     if (!res.ok) {
       const errText = await res.text();
       return { error: `${model} :generateContent(multiRef) → HTTP ${res.status}: ${errText.slice(0, 300)}` };
     }
 
+    const closeRead = timer?.open("model.readBody");
     const data = await res.json();
+    closeRead?.();
     const responseParts: any[] = data.candidates?.[0]?.content?.parts ?? [];
     const imagePart = responseParts.find((p: any) => p.inlineData?.data);
 
@@ -526,7 +586,7 @@ export async function callGeminiGenerateContentWithImages(
   } catch (err: unknown) {
     const name = (err as Error)?.name ?? "";
     if (name === "AbortError" || name === "TimeoutError") {
-      return { error: `${model} :generateContent(multiRef) → timed out (80 s)` };
+      return { error: `${model} :generateContent(multiRef) → timed out (${timeoutMs} ms)` };
     }
     return { error: `${model} :generateContent(multiRef) → fetch error: ${String(err)}` };
   }
@@ -544,8 +604,10 @@ export async function callGeminiImageEdit(
   extraMimeType = "image/png",
   aspectRatio?: string,
   referenceImage?: { b64: string; mimeType: string },
+  timer?: Timer,
 ): Promise<ImageResult | ImageError> {
   try {
+    const timeoutMs = imageTimeoutMs();
     const finalPrompt = withAspectHint(prompt, aspectRatio);
     const requestParts: any[] = [];
     if (referenceImage) {
@@ -559,6 +621,7 @@ export async function callGeminiImageEdit(
 
     const generationConfig: any = { responseModalities: ["IMAGE", "TEXT"] };
 
+    const closeHttp = timer?.open("model.http");
     const res = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
       {
@@ -568,16 +631,19 @@ export async function callGeminiImageEdit(
           contents: [{ parts: requestParts }],
           generationConfig,
         }),
-        signal: AbortSignal.timeout(80_000),
+        signal: AbortSignal.timeout(timeoutMs),
       },
     );
+    closeHttp?.(`HTTP ${res.status}`);
 
     if (!res.ok) {
       const errText = await res.text();
       return { error: `${model} :imageEdit → HTTP ${res.status}: ${errText.slice(0, 300)}` };
     }
 
+    const closeRead = timer?.open("model.readBody");
     const data = await res.json();
+    closeRead?.();
     const responseParts: any[] = data.candidates?.[0]?.content?.parts ?? [];
     const imagePart = responseParts.find((p: any) => p.inlineData?.data);
 
@@ -592,7 +658,7 @@ export async function callGeminiImageEdit(
   } catch (err: unknown) {
     const name = (err as Error)?.name ?? "";
     if (name === "AbortError" || name === "TimeoutError") {
-      return { error: `${model} :imageEdit → timed out (80 s)` };
+      return { error: `${model} :imageEdit → timed out (${timeoutMs} ms)` };
     }
     return { error: `${model} :imageEdit → fetch error: ${String(err)}` };
   }
@@ -614,6 +680,8 @@ export type GenerateImageOpts = {
   aspectRatio?: string;
   /** Use this specific model instead of the PRIORITY_IMAGE_MODELS waterfall. */
   modelOverride?: string;
+  /** Collects per-attempt wall-clock spans. Pass a child timer for concurrent branches. */
+  timer?: Timer;
 };
 
 export async function generateImage(
@@ -621,7 +689,7 @@ export async function generateImage(
   prompt: string,
   opts: GenerateImageOpts = {},
 ): Promise<{ b64: string; mimeType: string; errors: string[]; usedModel: string }> {
-  const { cardType, sourceImage, paletteImage, referenceImage, refImages, aspectRatio, modelOverride } = opts;
+  const { cardType, sourceImage, paletteImage, referenceImage, refImages, aspectRatio, modelOverride, timer } = opts;
   const hasRefs = refImages && refImages.length > 0;
   const errors: string[] = [];
   const proEnabled = isProImageEnabled();
@@ -637,12 +705,23 @@ export async function generateImage(
 
   console.log(`[gemini] generateImage → cardType=${cardType ?? "unknown"} ENABLE_PRO=${proEnabled} modelOverride=${modelOverride ?? "none"}`);
 
-  for (const model of modelsToTry) {
+  for (const [index, model] of modelsToTry.entries()) {
     console.log(`Trying ${model.strategy}: ${model.shortName}`);
     let attempt: ImageResult | ImageError;
 
+    // Attempt label keeps the waterfall position and a short model tag, so a
+    // fallback attempt is visible as a separate span instead of being folded
+    // into one opaque duration.
+    const modelTag = model.shortName.includes("pro")
+      ? "pro"
+      : model.shortName.includes("flash")
+        ? "flash"
+        : model.shortName;
+    const attemptTimer = timer?.child(`try${index + 1}-${modelTag}`);
+    const closeAttempt = attemptTimer?.open("total");
+
     if (hasRefs && model.strategy === "gemini-generateContent") {
-      attempt = await callGeminiGenerateContentWithImages(apiKey, model.shortName, prompt, refImages, aspectRatio);
+      attempt = await callGeminiGenerateContentWithImages(apiKey, model.shortName, prompt, refImages, aspectRatio, attemptTimer);
     } else if (sourceImage && model.strategy === "gemini-generateContent") {
       attempt = await callGeminiImageEdit(
         apiKey, model.shortName, prompt,
@@ -650,18 +729,21 @@ export async function generateImage(
         paletteImage?.b64, paletteImage?.mimeType,
         aspectRatio,
         referenceImage,
+        attemptTimer,
       );
     } else if (model.strategy === "imagen-predict") {
       attempt = await callImagenPredict(apiKey, model.shortName, prompt, aspectRatio);
     } else {
-      attempt = await callGeminiGenerateContent(apiKey, model.shortName, prompt, aspectRatio);
+      attempt = await callGeminiGenerateContent(apiKey, model.shortName, prompt, aspectRatio, attemptTimer);
     }
 
     if ("error" in attempt) {
       console.log(`  ✗ ${attempt.error}`);
+      closeAttempt?.("failed");
       errors.push(attempt.error);
     } else {
       console.log(`  ✓ Success with ${model.shortName}`);
+      closeAttempt?.(`ok ${model.shortName} ${attempt.b64.length}B-b64`);
       lastUsedImageModel = { shortName: model.shortName, strategy: model.strategy };
       return { ...attempt, errors, usedModel: model.shortName };
     }
@@ -675,6 +757,19 @@ export async function generateImage(
 function isCosConfigured(): boolean {
   const env = (globalThis as any).Deno?.env;
   return !!(env?.get?.("COS_SECRET_ID") && env?.get?.("COS_SECRET_KEY") && env?.get?.("COS_BUCKET") && env?.get?.("COS_REGION"));
+}
+
+/**
+ * Which object store receives generated images. COS lives in a different region
+ * from the Edge Function, so the cross-region leg can dominate the request;
+ * this switch allows measuring and choosing between the two backends without a
+ * redeploy. Defaults to the historical behaviour (COS when configured).
+ */
+function preferredStorageBackend(): "cos" | "supabase" {
+  const raw = (globalThis as any).Deno?.env?.get?.("STORAGE_BACKEND")?.trim?.().toLowerCase?.();
+  if (raw === "supabase") return "supabase";
+  if (raw === "cos") return "cos";
+  return isCosConfigured() ? "cos" : "supabase";
 }
 
 function getCosConfig() {
@@ -797,48 +892,57 @@ async function uploadToCos(buffer: Uint8Array, mimeType: string, fileName: strin
 }
 
 // ── Upload image and return a public URL ─────────────────────────────────────
-// Uses Tencent Cloud COS when configured, falls back to Supabase Storage.
+// Backend is chosen by STORAGE_BACKEND (see preferredStorageBackend). Both paths
+// return a non-expiring public URL: a COS CDN URL, or a Supabase Storage public
+// object URL. Nothing here returns a signed URL — saved projects and exported
+// directions keep these URLs indefinitely, so they must not expire.
 
 export async function uploadAndSignImage(
   b64: string,
   mimeType: string,
   cardType: string,
   projectId?: string,
+  timer?: Timer,
 ): Promise<string> {
+  const closeDecode = timer?.open("upload.base64Decode");
   const binary = atob(b64);
   const buffer = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) buffer[i] = binary.charCodeAt(i);
+  closeDecode?.(`${buffer.length}B`);
 
   const baseName = buildImageBaseName(cardType, mimeType);
   const fileName = projectId ? `projects/${projectId}/${baseName}` : baseName;
 
   // ── Tencent Cloud COS (preferred when configured) ────────────────────────
-  if (isCosConfigured()) {
+  if (preferredStorageBackend() === "cos" && isCosConfigured()) {
+    const closeCos = timer?.open("upload.cosPut");
     const url = await uploadToCos(buffer, mimeType, fileName);
+    closeCos?.(`${buffer.length}B`);
     console.log(`Image ready (COS): ${fileName}`);
     return url;
   }
 
   // ── Supabase Storage fallback ────────────────────────────────────────────
   const supabase = getSupabaseClient();
+  const closeBucket = timer?.open("upload.ensureBucket");
   await ensureBucket(supabase);
+  closeBucket?.();
 
+  const closeUpload = timer?.open("upload.storagePut");
   const { error: uploadError } = await supabase.storage
     .from(BUCKET_NAME)
     .upload(fileName, buffer, { contentType: mimeType });
+  closeUpload?.(`${buffer.length}B`);
 
   if (uploadError) {
     throw new Error(`Storage upload error: ${uploadError.message}`);
   }
 
-  const { data: signed, error: signError } = await supabase.storage
-    .from(BUCKET_NAME)
-    .createSignedUrl(fileName, 60 * 60 * 24 * 7);
-
-  if (signError || !signed?.signedUrl) {
-    throw new Error(`Failed to create signed URL: ${signError?.message}`);
+  const { data: pub } = supabase.storage.from(BUCKET_NAME).getPublicUrl(fileName);
+  if (!pub?.publicUrl) {
+    throw new Error(`Failed to resolve public URL for ${fileName}`);
   }
 
   console.log(`Image ready: ${fileName}`);
-  return signed.signedUrl;
+  return pub.publicUrl;
 }

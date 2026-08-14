@@ -2,7 +2,7 @@ import { useState, useCallback } from "react";
 import { toast } from "sonner";
 import type { ProjectData, ElementId, Variation, VariationMeta, PipelineStage, VisualConceptData, ColorPaletteData, FontData } from "../types/project";
 import { generateVisualConcept } from "../utils/generate-brand";
-import { designPaletteAndFonts, designLogoAndStyle } from "../utils/generate-image";
+import { designPaletteAndFonts, designLogo, designArtStyle } from "../utils/generate-image";
 import { sortColorPaletteForHarmony } from "../utils/helpers";
 import { addVariationToProject } from "../utils/variation-helpers";
 import type { UseGenerationBaseParams } from "../utils/variation-helpers";
@@ -19,6 +19,23 @@ export interface PipelineBriefInput {
   targetAudience: string;
   keywords: string[];
   applications?: string[];
+}
+
+/**
+ * Runs tasks concurrently, or one after another when `sequential` is set. The
+ * debug panel gates a single paused stage at a time, so stepping through the
+ * pipeline has to serialize stages that would otherwise overlap.
+ */
+async function allSettledMaybeSequential(
+  tasks: (() => Promise<void>)[],
+  sequential: boolean,
+): Promise<PromiseSettledResult<void>[]> {
+  if (!sequential) return await Promise.allSettled(tasks.map((run) => run()));
+  const results: PromiseSettledResult<void>[] = [];
+  for (const run of tasks) {
+    results.push(...(await Promise.allSettled([run()])));
+  }
+  return results;
 }
 
 export interface UsePipelineReturn {
@@ -54,6 +71,29 @@ export function usePipeline({
         createdAt: new Date(),
         meta,
       });
+
+      // Auto-select the generated visual set only once every snapshot-required
+      // element exists, preventing noodles from mixing old and new cards. The
+      // drawing stage calls this per image, so whichever arrives last commits
+      // the selection.
+      const requiredSelectionIds: ElementId[] = ["color-palette", "font", "logo", "art-style"];
+      const selectGeneratedSetWhenComplete = (project: ProjectData): ProjectData => {
+        const isComplete = requiredSelectionIds.every((eid) =>
+          project.elements[eid].variations.some((v) => v.id === `${eid}-${genTs}`),
+        );
+        if (!isComplete) return project;
+
+        const nextElements = { ...project.elements };
+        for (const eid of requiredSelectionIds) {
+          const varId = `${eid}-${genTs}`;
+          (nextElements as Record<string, unknown>)[eid] = {
+            ...nextElements[eid],
+            activeVariationId: varId,
+            checkedVariationId: varId,
+          };
+        }
+        return { ...project, elements: nextElements };
+      };
 
       try {
         // Step 0: Strategist → Visual Concept
@@ -180,7 +220,8 @@ export function usePipeline({
           return next;
         });
 
-        // Step 2: Art Director → Logo + Art Style
+        // Step 2: Art Director → Logo + Art Style, as two independent requests
+        // so the logo (fast) is not held back by the art style (slow).
         setDisplayPhase("drawing");
         const lsRequest = {
           ...designCtx,
@@ -207,93 +248,86 @@ export function usePipeline({
             application: briefContext.applications?.[0],
           },
         };
-        const lsResult = await withPipelineStage(
+        const commitDrawnCard = (
+          elementId: "logo" | "art-style",
+          imageUrl: string,
+          meta: VariationMeta,
+        ) => {
+          setProject((prev) =>
+            selectGeneratedSetWhenComplete(
+              addVariationToProject(prev, elementId, makeVar(elementId, { imageUrl }, meta), false),
+            ),
+          );
+        };
+
+        const runLogoTask = () => withPipelineStage(
           debugInterceptor,
           {
             id: `stage-${genTs}-2`,
             stage: "drawing",
             agent: "art-director",
-            endpoint: "art-director/design-logo-style",
+            endpoint: "art-director/design-logo",
             request: lsRequest,
           },
           async (finalReq) => {
-            const result = await designLogoAndStyle(finalReq as typeof lsRequest, { signal });
-            const missingTargets = [
-              !result.logoImageUrl && "logo",
-              !result.artStyleImageUrl && "art-style",
-            ].filter(Boolean);
-
-            if (missingTargets.length > 0) {
-              const details = result.errors?.length ? `: ${result.errors.join(" | ")}` : "";
-              throw new Error(`Drawing stage did not return ${missingTargets.join(" and ")}${details}`);
-            }
-
-            return result as typeof result & {
-              logoImageUrl: string;
-              artStyleImageUrl: string;
-            };
+            const result = await designLogo(finalReq as typeof lsRequest, { signal });
+            if (!result.logoImageUrl) throw new Error("Drawing stage did not return a logo");
+            return result;
           },
+        ).then((result) => {
+          throwIfAborted();
+          const model = result.logoModel ?? result._meta?.model;
+          commitDrawnCard("logo", result.logoImageUrl!, {
+            ...(result._meta ?? {}),
+            ...(model ? { model } : {}),
+            sourceConceptVariationId: vcVariationId,
+            logoComposition: result.logoComposition ?? pfResult.logoComposition,
+          });
+        });
+
+        const runArtStyleTask = () => withPipelineStage(
+          debugInterceptor,
+          {
+            id: `stage-${genTs}-3`,
+            stage: "drawing",
+            agent: "art-director",
+            endpoint: "art-director/design-art-style",
+            request: lsRequest,
+          },
+          async (finalReq) => {
+            const result = await designArtStyle(finalReq as typeof lsRequest, { signal });
+            if (!result.artStyleImageUrl) throw new Error("Drawing stage did not return an art style");
+            return result;
+          },
+        ).then((result) => {
+          throwIfAborted();
+          const model = result.artStyleModel ?? result._meta?.model;
+          commitDrawnCard("art-style", result.artStyleImageUrl!, {
+            ...(result._meta ?? {}),
+            ...(model ? { model } : {}),
+            sourceConceptVariationId: vcVariationId,
+          });
+        });
+
+        const drawnCards = await allSettledMaybeSequential(
+          [runLogoTask, runArtStyleTask],
+          Boolean(debugInterceptor?.enabled),
         );
         throwIfAborted();
 
-        setProject((prev) => {
-          const effectiveLogoComposition = lsResult.logoComposition ?? pfResult.logoComposition;
-          const effectiveLogoModel = lsResult.logoModel ?? lsResult._meta?.model;
-          const logoMeta: VariationMeta = {
-            ...(lsResult._meta ?? {}),
-            ...(effectiveLogoModel ? { model: effectiveLogoModel } : {}),
-            sourceConceptVariationId: vcVariationId,
-            logoComposition: effectiveLogoComposition,
-          };
-          const artStyleMeta = lsResult._meta
-            ? { ...lsResult._meta, model: lsResult.artStyleModel ?? lsResult._meta.model, sourceConceptVariationId: vcVariationId }
-            : lsResult.artStyleModel
-              ? { model: lsResult.artStyleModel, sourceConceptVariationId: vcVariationId }
-              : { sourceConceptVariationId: vcVariationId };
-          let next = addVariationToProject(
-            prev,
-            "logo",
-            makeVar("logo", { imageUrl: lsResult.logoImageUrl }, logoMeta),
-            false,
-          );
-          next = addVariationToProject(
-            next,
-            "art-style",
-            makeVar("art-style", { imageUrl: lsResult.artStyleImageUrl }, artStyleMeta),
-            false,
-          );
+        const drawingFailures = drawnCards
+          .filter((r): r is PromiseRejectedResult => r.status === "rejected")
+          .map((r) => r.reason);
 
-          // Auto-select the generated visual set only after all snapshot-required
-          // elements exist, preventing noodles from mixing old and new cards.
-          const nextElements = { ...next.elements };
-          const generatedSelectionIds: Partial<Record<ElementId, string>> = {
-            "color-palette": `color-palette-${genTs}`,
-            font: `font-${genTs}`,
-            logo: `logo-${genTs}`,
-            "art-style": `art-style-${genTs}`,
-          };
-          const requiredSelectionIds: ElementId[] = ["color-palette", "font", "logo", "art-style"];
-          const hasFullGeneratedSelection = requiredSelectionIds.every((eid) => {
-            const varId = generatedSelectionIds[eid];
-            return Boolean(varId && nextElements[eid].variations.some((v) => v.id === varId));
-          });
+        // One image failing no longer discards the other: it is already on the
+        // board, and the missing one leaves the set unselected on purpose.
+        if (drawingFailures.length === drawnCards.length) throw drawingFailures[0];
+        if (drawingFailures.length > 0) {
+          console.error("Drawing stage partially failed:", drawingFailures[0]);
+          toast.error(getUserFacingApiErrorMessage(drawingFailures[0]));
+        }
 
-          if (hasFullGeneratedSelection) {
-            for (const eid of requiredSelectionIds) {
-              const slot = nextElements[eid];
-              const varId = generatedSelectionIds[eid]!;
-              (nextElements as Record<string, unknown>)[eid] = {
-                ...slot,
-                activeVariationId: varId,
-                checkedVariationId: varId,
-              };
-            }
-          }
-
-          next = { ...next, elements: nextElements, phase: "curating" };
-          return next;
-        });
-
+        setProject((prev) => ({ ...prev, phase: "curating" }));
         setDisplayPhase("synthesizing");
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);

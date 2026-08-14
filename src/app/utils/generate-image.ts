@@ -6,7 +6,8 @@ import type { MergeBrandContext, MergeResult } from "./variation-helpers";
 import { isMergeSupported } from "@server-shared/merge-specs.tsx";
 
 const IMAGE_GEN_TIMEOUT_MS = 180_000;
-const ART_DIRECTOR_LOGO_STYLE_TIMEOUT_MS = 210_000;
+// One image per request only needs room for a single model attempt plus upload.
+const ART_DIRECTOR_SINGLE_IMAGE_TIMEOUT_MS = 120_000;
 const ART_DIRECTOR_LAYOUT_TIMEOUT_MS = 180_000;
 
 export type ImageCardType =
@@ -186,13 +187,16 @@ export interface PaletteFontsResult {
   _meta?: VariationMeta;
 }
 
-export interface LogoStyleResult {
-  artStyleImageUrl?: string | null;
+export interface LogoResult {
   logoImageUrl?: string | null;
-  artStyleModel?: string;
   logoModel?: string;
   logoComposition?: LogoComposition;
-  errors?: string[];
+  _meta?: VariationMeta;
+}
+
+export interface ArtStyleResult {
+  artStyleImageUrl?: string | null;
+  artStyleModel?: string;
   _meta?: VariationMeta;
 }
 
@@ -230,10 +234,16 @@ export async function designPaletteAndFonts(
   };
 }
 
-export async function designLogoAndStyle(
+/**
+ * The logo and the art style are always requested as two independent calls, so
+ * each image can be shown as soon as it is ready, and callers that only need
+ * one of them don't pay for the other.
+ */
+async function designDrawingStageCard<T>(
+  route: "art-director/design-logo" | "art-director/design-art-style",
   ctx: PipelineContext,
   opts?: { signal?: AbortSignal },
-): Promise<LogoStyleResult> {
+): Promise<T> {
   const brandContext: BrandContextFull = ctx.brandContext ?? {
     name: ctx.brandName,
     tagline: ctx.tagline,
@@ -247,19 +257,25 @@ export async function designLogoAndStyle(
     logoImageUrl: ctx.logoImageUrl,
     application: ctx.application,
   };
-  const raw = await callApi<LogoStyleResult & { _meta?: VariationMeta }>(
-    "art-director/design-logo-style",
-    { body: { ...ctx, brandContext }, timeoutMs: ART_DIRECTOR_LOGO_STYLE_TIMEOUT_MS, signal: opts?.signal },
-  );
-  return {
-    artStyleImageUrl: raw.artStyleImageUrl,
-    logoImageUrl: raw.logoImageUrl,
-    artStyleModel: raw.artStyleModel,
-    logoModel: raw.logoModel,
-    logoComposition: raw.logoComposition,
-    errors: raw.errors,
-    _meta: raw._meta,
-  };
+  return await callApi<T>(route, {
+    body: { ...ctx, brandContext },
+    timeoutMs: ART_DIRECTOR_SINGLE_IMAGE_TIMEOUT_MS,
+    signal: opts?.signal,
+  });
+}
+
+export function designLogo(
+  ctx: PipelineContext,
+  opts?: { signal?: AbortSignal },
+): Promise<LogoResult> {
+  return designDrawingStageCard<LogoResult>("art-director/design-logo", ctx, opts);
+}
+
+export function designArtStyle(
+  ctx: PipelineContext,
+  opts?: { signal?: AbortSignal },
+): Promise<ArtStyleResult> {
+  return designDrawingStageCard<ArtStyleResult>("art-director/design-art-style", ctx, opts);
 }
 
 export async function designApplication(

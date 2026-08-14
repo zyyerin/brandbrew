@@ -9,6 +9,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { Hono } from "npm:hono";
+import type { Context } from "npm:hono";
 import {
   callGeminiText,
   PRO_IMAGE_MODEL,
@@ -20,6 +21,7 @@ import {
 } from "../shared/gemini.tsx";
 import type { ImagePromptContext, VisualConceptData } from "../shared/types.tsx";
 import { resolveAspectRatio } from "../shared/image-config.tsx";
+import { createTimer, logTimingReport } from "../shared/timing.ts";
 import {
   ART_DIRECTOR_VARIATION_TASK_DESCRIPTIONS,
   PALETTE_FONTS_TASK_DESCRIPTION,
@@ -201,9 +203,12 @@ function buildCreativeBrief(
 // Generates a brand image from text context only (no source image).
 
 artDirector.post("/generate", async (c) => {
+  const timer = createTimer("art-director-generate");
   try {
     const startTime = Date.now();
+    const closeParse = timer.open("request.parseBody");
     const body = await c.req.json();
+    closeParse();
     if (!hasFullContext(body)) {
       return c.json({ error: "brandContext is required" }, 400);
     }
@@ -260,14 +265,16 @@ artDirector.post("/generate", async (c) => {
     const prompt = buildCreativeBrief(cardType, ctx);
     console.log(`[art-director] Generating (txt2img) — cardType=${cardType} ar=${effectiveAR} prompt="${prompt.slice(0, 80)}…"`);
 
-    const genResult = await generateImage(apiKey, prompt, { cardType, aspectRatio: effectiveAR });
+    const genResult = await generateImage(apiKey, prompt, { cardType, aspectRatio: effectiveAR, timer });
     if (genResult.errors.length > 0) {
       console.log(`[art-director] Warning: some models failed: ${genResult.errors.join(" | ")}`);
     }
 
-    const imageUrl = await uploadAndSignImage(genResult.b64, genResult.mimeType, cardType, c.req.header("X-Project-Id"));
+    const imageUrl = await uploadAndSignImage(genResult.b64, genResult.mimeType, cardType, c.req.header("X-Project-Id"), timer);
     const generationTime = Date.now() - startTime;
     const usedModel = genResult.usedModel;
+    const timings = timer.report();
+    logTimingReport(timings);
 
     const selectedElementLabels = [
       (fullContext.name ?? brandName) && "Brand Brief",
@@ -282,6 +289,7 @@ artDirector.post("/generate", async (c) => {
         prompt,
         model: usedModel,
         generationTime,
+        timings,
         contextMode: "full",
         ingredients: buildIngredients(fullContext.name ?? brandName, vc, normalizedKeywords),
         selectedElementLabels: selectedElementLabels.length > 0 ? selectedElementLabels : undefined,
@@ -289,6 +297,7 @@ artDirector.post("/generate", async (c) => {
     });
   } catch (err) {
     console.error("[art-director] generate error:", (err as Error)?.stack ?? String(err));
+    logTimingReport(timer.report());
     return c.json({ error: `Image generation failed: ${String(err)}` }, 500);
   }
 });
@@ -388,147 +397,172 @@ artDirector.post("/design-palette-fonts", async (c) => {
   }
 });
 
-// ── Route: POST /design-logo-style ────────────────────────────────────────────
-// Step 2: Generate logo image + art style image in parallel.
-// Uses Promise.allSettled so a single failure doesn't discard the other result.
+// ── Shared: drawing-stage request parsing ─────────────────────────────────────
+// /design-logo and /design-art-style accept the same body, so they share
+// validation and prompt inputs. Returns an error message instead of throwing,
+// letting each route answer with its own 400.
 
-artDirector.post("/design-logo-style", async (c) => {
+interface DrawingStageContext {
+  baseCtx: ImagePromptContext;
+  logoComposition?: LogoComposition;
+  aspectRatioOverride?: string;
+  override?: { logoPrompt?: string; artStylePrompt?: string };
+}
+
+type DrawingStageParse =
+  | { ok: false; error: string }
+  | { ok: true; ctx: DrawingStageContext };
+
+function parseDrawingStageBody(body: Record<string, unknown>): DrawingStageParse {
+  if (!hasFullContext(body)) {
+    return { ok: false, error: "brandContext is required" };
+  }
+  if (!isMeaningfulFullContext(body)) {
+    return { ok: false, error: "brandContext must include brand name and at least one contextual field" };
+  }
+
+  const {
+    brandName, description, keywords,
+    visualConcept, colorPalette, aspectRatio, _promptOverride,
+    logoComposition: logoCompositionRaw,
+  } = body;
+  const fullContext = normalizeFullContext(body);
+  const effectiveBrandName = fullContext.name ?? brandName;
+
+  if (typeof effectiveBrandName !== "string" || !effectiveBrandName.trim()) {
+    return { ok: false, error: "brandName is required" };
+  }
+  if (keywords !== undefined && !Array.isArray(keywords)) {
+    return { ok: false, error: "keywords must be an array" };
+  }
+  if (colorPalette !== undefined && !Array.isArray(colorPalette)) {
+    return { ok: false, error: "colorPalette must be an array" };
+  }
+
+  let logoComposition: LogoComposition | undefined;
+  try {
+    logoComposition = validateOptionalLogoComposition(logoCompositionRaw);
+  } catch (err) {
+    return { ok: false, error: String((err as Error).message ?? err) };
+  }
+
+  return {
+    ok: true,
+    ctx: {
+      baseCtx: {
+        brandName: effectiveBrandName,
+        tagline: fullContext.tagline,
+        description: fullContext.description ?? (typeof description === "string" ? description : undefined),
+        targetAudience: fullContext.targetAudience,
+        visualConcept: fullContext.visualConcept ?? normalizeVisualConcept(visualConcept),
+        keywords: fullContext.keywords ?? normalizeStringArray(keywords),
+        colorPalette: fullContext.colorPalette ?? normalizeStringArray(colorPalette),
+        titleFont: fullContext.font?.titleFont,
+        bodyFont: fullContext.font?.bodyFont,
+        logoComposition,
+      },
+      logoComposition,
+      aspectRatioOverride: typeof aspectRatio === "string" ? aspectRatio : undefined,
+      override: getEffectiveOverride(_promptOverride) as
+        | { logoPrompt?: string; artStylePrompt?: string }
+        | undefined,
+    },
+  };
+}
+
+// ── Shared: one drawing-stage image ───────────────────────────────────────────
+// Backs /design-logo and /design-art-style. One image per request, so the logo
+// reaches the board as soon as it is ready instead of waiting on the slower art
+// style, and callers needing only one of them don't pay for the other.
+
+async function respondWithDrawingStageCard(
+  c: Context<{ Variables: Variables }>,
+  cardType: "logo" | "art-style",
+) {
+  const timer = createTimer(`design-${cardType}`);
   try {
     const startTime = Date.now();
+    const closeParse = timer.open("request.parseBody");
     const body = await c.req.json();
-    if (!hasFullContext(body)) {
-      return c.json({ error: "brandContext is required" }, 400);
-    }
-    if (!isMeaningfulFullContext(body)) {
-      return c.json({ error: "brandContext must include brand name and at least one contextual field" }, 400);
-    }
-    const {
-      brandName, description, keywords,
-      visualConcept, colorPalette, aspectRatio, _promptOverride,
-      logoComposition: logoCompositionRaw,
-    } = body;
-    const fullContext = normalizeFullContext(body);
-    const effectiveBrandName = fullContext.name ?? brandName;
-    const effectiveDescription = fullContext.description ?? description;
-    const effectiveTagline = fullContext.tagline;
-    const effectiveTargetAudience = fullContext.targetAudience;
+    closeParse();
 
-    if (typeof effectiveBrandName !== "string" || !effectiveBrandName.trim()) {
-      return c.json({ error: "brandName is required" }, 400);
-    }
-    if (keywords !== undefined && !Array.isArray(keywords)) {
-      return c.json({ error: "keywords must be an array" }, 400);
-    }
-    if (colorPalette !== undefined && !Array.isArray(colorPalette)) {
-      return c.json({ error: "colorPalette must be an array" }, 400);
-    }
+    const parsed = parseDrawingStageBody(body);
+    if (!parsed.ok) return c.json({ error: parsed.error }, 400);
+    const { baseCtx, logoComposition, aspectRatioOverride, override } = parsed.ctx;
 
-    const effectiveOverride = getEffectiveOverride(_promptOverride) as
-      | { logoPrompt?: string; artStylePrompt?: string }
-      | undefined;
-    const apiKey = c.get("geminiApiKey");
-    const normalizedKeywords = fullContext.keywords ?? normalizeStringArray(keywords);
-    const normalizedPalette = fullContext.colorPalette ?? normalizeStringArray(colorPalette);
-    let logoComposition: LogoComposition | undefined;
-    try {
-      logoComposition = validateOptionalLogoComposition(logoCompositionRaw);
-    } catch (err) {
-      return c.json({ error: String((err as Error).message ?? err) }, 400);
+    const aspectRatio = resolveAspectRatio(cardType, aspectRatioOverride);
+    const closePrompt = timer.open("prompt.build");
+    const overridePrompt = cardType === "logo" ? override?.logoPrompt : override?.artStylePrompt;
+    const prompt = overridePrompt ?? buildCreativeBrief(cardType, { ...baseCtx, aspectRatio });
+    closePrompt(`${prompt.length}ch`);
+
+    // Art style stays pinned to the pro model rather than running the
+    // pro→flash waterfall: two stacked model timeouts would blow past the
+    // platform's wall-clock limit and the request would die without a response.
+    const modelOverride = cardType === "art-style" ? PRO_IMAGE_MODEL : undefined;
+
+    const closeGen = timer.open("generate");
+    const generated = await generateImage(c.get("geminiApiKey"), prompt, {
+      cardType,
+      aspectRatio,
+      modelOverride,
+      timer,
+    }).finally(() => closeGen());
+
+    if (generated.errors.length > 0) {
+      console.log(`[art-director] ${cardType} generation warnings: ${generated.errors.join(" | ")}`);
     }
 
-    const logoAR     = resolveAspectRatio("logo", aspectRatio);
-    const artStyleAR = resolveAspectRatio("art-style", aspectRatio);
-
-    const vc2 = fullContext.visualConcept ?? normalizeVisualConcept(visualConcept);
-    const baseCtx = {
-      brandName: effectiveBrandName,
-      tagline: effectiveTagline,
-      description: effectiveDescription,
-      targetAudience: effectiveTargetAudience,
-      visualConcept: vc2,
-      keywords: normalizedKeywords,
-      colorPalette: normalizedPalette,
-      titleFont: fullContext.font?.titleFont,
-      bodyFont: fullContext.font?.bodyFont,
-      logoComposition,
-    };
-
-    const logoPrompt     = effectiveOverride?.logoPrompt     ?? buildCreativeBrief("logo",      { ...baseCtx, aspectRatio: logoAR });
-    const artStylePrompt = effectiveOverride?.artStylePrompt ?? buildCreativeBrief("art-style", { ...baseCtx, aspectRatio: artStyleAR });
-
-    const [logoSettled, artStyleSettled] = await Promise.allSettled([
-      generateImage(apiKey, logoPrompt,     { cardType: "logo", aspectRatio: logoAR }),
-      generateImage(apiKey, artStylePrompt, { cardType: "art-style", aspectRatio: artStyleAR, modelOverride: PRO_IMAGE_MODEL }),
-    ]);
-
-    const partialErrors: string[] = [];
-    let logoImageUrl:     string | null = null;
-    let artStyleImageUrl: string | null = null;
-    let usedModel = "unknown";
-    let logoModel: string | undefined;
-    let artStyleModel: string | undefined;
-
-    if (logoSettled.status === "fulfilled") {
-      const r = logoSettled.value;
-      if (r.errors.length > 0) console.log(`[art-director] Logo generation warnings: ${r.errors.join(" | ")}`);
-      try {
-        logoImageUrl = await uploadAndSignImage(r.b64, r.mimeType, "logo", c.req.header("X-Project-Id"));
-        logoModel = r.usedModel;
-        usedModel = r.usedModel;
-      } catch (err) {
-        console.error("[art-director] Logo upload failed:", err);
-        partialErrors.push(`logo upload: ${String(err)}`);
-      }
-    } else {
-      console.error("[art-director] Logo generation failed:", logoSettled.reason);
-      partialErrors.push(`logo: ${String(logoSettled.reason)}`);
-    }
-
-    if (artStyleSettled.status === "fulfilled") {
-      const r = artStyleSettled.value;
-      if (r.errors.length > 0) console.log(`[art-director] Art style generation warnings: ${r.errors.join(" | ")}`);
-      try {
-        artStyleImageUrl = await uploadAndSignImage(r.b64, r.mimeType, "art-style", c.req.header("X-Project-Id"));
-        artStyleModel = r.usedModel;
-        if (usedModel === "unknown") usedModel = r.usedModel;
-      } catch (err) {
-        console.error("[art-director] Art style upload failed:", err);
-        partialErrors.push(`art-style upload: ${String(err)}`);
-      }
-    } else {
-      console.error("[art-director] Art style generation failed:", artStyleSettled.reason);
-      partialErrors.push(`art-style: ${String(artStyleSettled.reason)}`);
-    }
-
-    if (!logoImageUrl && !artStyleImageUrl) {
-      return c.json({ error: `Logo & art style generation failed: ${partialErrors.join(" | ")}` }, 500);
-    }
+    const imageUrl = await uploadAndSignImage(
+      generated.b64,
+      generated.mimeType,
+      cardType,
+      c.req.header("X-Project-Id"),
+      timer,
+    );
 
     const generationTime = Date.now() - startTime;
-    console.log(`[art-director] Logo + art style designed (${generationTime}ms)`);
+    console.log(`[art-director] ${cardType} designed (${generationTime}ms)`);
+    const timings = timer.report();
+    logTimingReport(timings);
 
-    return c.json({
-      artStyleImageUrl,
-      logoImageUrl,
-      logoModel,
-      ...(logoComposition && { logoComposition }),
-      artStyleModel,
-      ...(partialErrors.length > 0 && { errors: partialErrors }),
-      _meta: {
-        agent: "art-director",
-        ...(isDevRoutesEnabled() && { prompt: `[art-style] ${artStylePrompt} | [logo] ${logoPrompt}` }),
-        model: usedModel,
-        generationTime,
-        contextMode: "full",
-        ingredients: buildIngredients(effectiveBrandName, vc2, normalizedKeywords ?? null),
-        selectedElementLabels: ["Visual Concept", "Color Palette", "Font"],
-      },
-    });
+    const _meta = {
+      agent: "art-director",
+      ...(isDevRoutesEnabled() && { prompt }),
+      model: generated.usedModel,
+      generationTime,
+      timings,
+      contextMode: "full",
+      ingredients: buildIngredients(baseCtx.brandName, baseCtx.visualConcept, baseCtx.keywords ?? null),
+      selectedElementLabels: ["Visual Concept", "Color Palette", "Font"],
+    };
+
+    return c.json(
+      cardType === "logo"
+        ? {
+            logoImageUrl: imageUrl,
+            logoModel: generated.usedModel,
+            ...(logoComposition && { logoComposition }),
+            _meta,
+          }
+        : {
+            artStyleImageUrl: imageUrl,
+            artStyleModel: generated.usedModel,
+            _meta,
+          },
+    );
   } catch (err) {
-    console.error("[art-director] design-logo-style error:", (err as Error)?.stack ?? String(err));
-    return c.json({ error: `Logo & art style generation failed: ${String(err)}` }, 500);
+    console.error(`[art-director] design-${cardType} error:`, (err as Error)?.stack ?? String(err));
+    logTimingReport(timer.report());
+    return c.json({ error: `${cardType} generation failed: ${String(err)}` }, 500);
   }
-});
+}
+
+// ── Routes: POST /design-logo, POST /design-art-style ─────────────────────────
+// Step 2, split into independent requests so each image renders on arrival.
+
+artDirector.post("/design-logo", (c) => respondWithDrawingStageCard(c, "logo"));
+artDirector.post("/design-art-style", (c) => respondWithDrawingStageCard(c, "art-style"));
 
 // ── Route: POST /design-application ──────────────────────────────────────────
 // Step 3: Generate application mockup using full visual context from prior steps.
