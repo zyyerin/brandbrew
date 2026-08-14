@@ -185,7 +185,7 @@ function buildScenarios(fx) {
       id: "logo-single",
       stage: "image",
       route: "art-director/generate",
-      note: "single logo, txt2img — flash-only baseline (logo is not a PRO_CARD_TYPE)",
+      note: "single logo, txt2img — flash baseline per IMAGE_CARD_CONFIGS",
       body: {
         cardType: "logo",
         brandContext,
@@ -199,7 +199,7 @@ function buildScenarios(fx) {
       id: "art-style-single",
       stage: "image",
       route: "art-director/generate",
-      note: "single art-style, txt2img — hits the pro-first waterfall when ENABLE_PRO=true",
+      note: "single art-style, txt2img — pro model per IMAGE_CARD_CONFIGS, no fallback",
       body: {
         cardType: "art-style",
         brandContext,
@@ -238,6 +238,26 @@ function buildScenarios(fx) {
         colorPalette: fx.colorPalette,
         font: fx.font,
       },
+    },
+    {
+      id: "application",
+      stage: "image",
+      route: "art-director/design-application",
+      note: "brand application mockup — multi-ref generation from logo + art style",
+      skipIf: () => (!fx.logoUrl || !fx.artStyleUrl)
+        && "needs both logo and art-style images (run logo-split / art-style-split first)",
+      body: () => ({
+        brandContext,
+        brandName: fx.brandName,
+        description: fx.description,
+        keywords: fx.keywords,
+        visualConcept: fx.visualConcept,
+        colorPalette: fx.colorPalette,
+        font: fx.font,
+        application: fx.applications[0],
+        artStyleImageUrl: fx.artStyleUrl,
+        logoImageUrl: fx.logoUrl,
+      }),
     },
     {
       id: "snapshot",

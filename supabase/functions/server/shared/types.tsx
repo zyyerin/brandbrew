@@ -136,6 +136,12 @@ export type ImagePromptContext = {
   aspectRatio?: string;
   /** Touchpoint name for application mockup generation (e.g. "Business Card", "Packaging") */
   application?: string;
+  /**
+   * When true, color/typeface specification strings are omitted from the
+   * application prompt — the reference images already carry that information,
+   * and restating hex codes or font names is what gets printed onto packaging.
+   */
+  hasVisualRefs?: boolean;
 };
 
 export type GeminiTextConfig = {

@@ -11,10 +11,8 @@ import {
   VISUAL_CONCEPT_TASK_DESCRIPTION,
 } from "@server-shared/strategist-prompts.ts";
 import { PALETTE_FONTS_TASK_DESCRIPTION } from "@server-shared/art-director-prompts.ts";
-import {
-  buildLogoImagePrompt,
-  type LogoComposition,
-} from "@server-shared/logo-prompts.ts";
+import { buildCreativeBrief } from "@server-shared/art-director-image-prompts.ts";
+import type { LogoComposition } from "@server-shared/logo-prompts.ts";
 
 // ─── Personas ─────────────────────────────────────────────────────────────────
 
@@ -38,7 +36,7 @@ Rules:
 
 export const PALETTE_FONTS_PROMPT = PALETTE_FONTS_TASK_DESCRIPTION;
 
-// ─── Image prompt builder (mirrors art-director.tsx buildCreativeBrief) ──────
+// ─── Image prompt builder (same function the art-director agent uses) ────────
 
 export function buildCreativeBriefPreview(
   cardType: string,
@@ -53,48 +51,17 @@ export function buildCreativeBriefPreview(
     logoComposition?: LogoComposition;
   },
 ): string {
-  const name       = ctx.brandName ?? "the brand";
-  const vc         = ctx.visualConcept;
-  const conceptStr = vc ? `${vc.concept}. ${vc.description}` : "";
-  const kwds       = (ctx.keywords ?? []).join(", ");
-  const focus      = ctx.newHint ? `Creative direction: ${ctx.newHint}. ` : "";
-  const palette    = (ctx.colorPalette ?? []).length > 0
-    ? `Brand colors: ${ctx.colorPalette!.join(", ")}. `
-    : "";
-
-  switch (cardType) {
-    case "logo":
-      return buildLogoImagePrompt({
-        brandName: ctx.brandName,
-        brandDescription: ctx.brandDescription,
-        visualConcept: ctx.visualConcept,
-        colorPalette: ctx.colorPalette,
-        newHint: ctx.newHint,
-        titleFont: ctx.font?.titleFont,
-        logoComposition: ctx.logoComposition,
-      });
-    case "art-style":
-      return (
-        `${focus}Art style reference image for "${name}" brand. ` +
-        `${conceptStr ? `Visual concept: ${conceptStr}. ` : ""}` +
-        `${kwds ? `Keywords: ${kwds}. ` : ""}` +
-        `${palette}` +
-        `Create a visual art direction reference board showing the brand's aesthetic style, ` +
-        `mood, texture, and visual language.`
-      );
-    case "application": {
-      return (
-        `${focus}Brand application mockup for "${name}". ` +
-        `${conceptStr ? `Visual concept: ${conceptStr}. ` : ""}` +
-        `${palette}` +
-        `Show the brand identity applied to a realistic touchpoint. ` +
-        `Use the brand's colors, typography, and visual style. ` +
-        `Clean studio photography, white background, professional product mockup.`
-      );
-    }
-    default:
-      return `Professional brand design image for "${name}". ${conceptStr}. Minimal, modern.`;
-  }
+  return buildCreativeBrief(cardType, {
+    brandName: ctx.brandName,
+    description: ctx.brandDescription,
+    visualConcept: ctx.visualConcept,
+    keywords: ctx.keywords,
+    colorPalette: ctx.colorPalette,
+    newHint: ctx.newHint,
+    titleFont: ctx.font?.titleFont,
+    bodyFont: ctx.font?.bodyFont,
+    logoComposition: ctx.logoComposition,
+  });
 }
 
 // ─── Per-stage prompt metadata ────────────────────────────────────────────────

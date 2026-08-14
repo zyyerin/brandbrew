@@ -6,6 +6,7 @@
 import { jsonrepair } from "https://esm.sh/jsonrepair@3.12.0";
 import { getSupabaseClient } from "../supabase-client.tsx";
 import { buildImageBaseName } from "./storage-paths.ts";
+import { resolveImageModel } from "./image-config.tsx";
 import type { Timer } from "./timing.ts";
 import type {
   GeminiTextConfig,
@@ -16,15 +17,10 @@ import type {
 // ── Constants ────────────────────────────────────────────────────────────────
 
 export const TEXT_MODEL = "gemini-3-flash-preview";
-export const PRO_IMAGE_MODEL = "gemini-3-pro-image-preview";
-export const FLASH_IMAGE_MODEL = "gemini-3.1-flash-image-preview";
 
-const PRO_CARD_TYPES = new Set(["art-style", "visual-snapshot", "application"]);
-
-// Supabase Edge Functions are killed at ~150 s wall clock (HTTP 546). A single
-// 80 s attempt plus one 80 s fallback exceeds that budget, so the platform can
-// terminate the isolate before any error handling or timing log runs. Keep this
-// configurable so the per-attempt budget can be tuned to fit the wall clock.
+// Supabase Edge Functions are killed at ~150 s wall clock (HTTP 546), and each
+// request now makes exactly one model attempt, so this budget only has to leave
+// room for the surrounding upload. Keep it configurable for tuning.
 const DEFAULT_IMAGE_TIMEOUT_MS = 80_000;
 
 function imageTimeoutMs(): number {
@@ -34,29 +30,9 @@ function imageTimeoutMs(): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_IMAGE_TIMEOUT_MS;
 }
 
-function isProImageEnabled(): boolean {
-  const denoEnv = (globalThis as { Deno?: { env?: { get?: (key: string) => string | undefined } } }).Deno?.env;
-  const raw = denoEnv?.get?.("ENABLE_PRO") ?? denoEnv?.get?.("ENABLE_PRO_IMAGE_FOR_KEY_CARDS");
-  return raw === "true";
-}
-
-// Image models: try Pro first for quality, then Flash if Pro fails (e.g. quota or model not enabled).
-export const PRIORITY_IMAGE_MODELS = [
-  // Flag out pro for developing purposes! the model is too expensive to run when developing.
-  // !!!
-  // {
-  //   shortName: "gemini-3-pro-image-preview",
-  //   strategy: "gemini-generateContent" as const,
-  // },
-  {
-    shortName: FLASH_IMAGE_MODEL,
-    strategy: "gemini-generateContent" as const,
-  },
-];
-
 const BUCKET_NAME = "make-e35291a5-brand-images";
 
-let lastUsedImageModel: { shortName: string; strategy: string } | null = null;
+let lastUsedImageModel: string | null = null;
 
 export function getLastUsedImageModel() {
   return lastUsedImageModel;
@@ -471,8 +447,8 @@ export async function callGeminiGenerateContent(
   aspectRatio?: string,
   timer?: Timer,
 ): Promise<ImageResult | ImageError> {
+  const timeoutMs = imageTimeoutMs();
   try {
-    const timeoutMs = imageTimeoutMs();
     const generationConfig: any = { responseModalities: ["IMAGE", "TEXT"] };
     const finalPrompt = withAspectHint(prompt, aspectRatio);
 
@@ -529,8 +505,8 @@ export async function callGeminiGenerateContentWithImages(
   aspectRatio?: string,
   timer?: Timer,
 ): Promise<ImageResult | ImageError> {
+  const timeoutMs = imageTimeoutMs();
   try {
-    const timeoutMs = imageTimeoutMs();
     const finalPrompt = withAspectHint(prompt, aspectRatio);
     const parts: any[] = [];
     for (const img of images) {
@@ -606,8 +582,8 @@ export async function callGeminiImageEdit(
   referenceImage?: { b64: string; mimeType: string },
   timer?: Timer,
 ): Promise<ImageResult | ImageError> {
+  const timeoutMs = imageTimeoutMs();
   try {
-    const timeoutMs = imageTimeoutMs();
     const finalPrompt = withAspectHint(prompt, aspectRatio);
     const requestParts: any[] = [];
     if (referenceImage) {
@@ -664,11 +640,15 @@ export async function callGeminiImageEdit(
   }
 }
 
-// ── Image generation waterfall (tries models in priority order) ──────────────
+// ── Image generation ─────────────────────────────────────────────────────────
 // Unified entry point for all image generation modes:
 //   - refImages[]   → multi-reference guided generation
 //   - sourceImage   → img2img editing (with optional paletteImage)
 //   - neither       → txt2img generation
+//
+// The model comes from IMAGE_CARD_CONFIGS via the card type — one attempt, no
+// fallback to a different model. A failure surfaces to the caller so it is
+// visible in the UI, instead of quietly returning a lower-tier image.
 
 export type GenerateImageOpts = {
   cardType?: string;
@@ -678,8 +658,6 @@ export type GenerateImageOpts = {
   referenceImage?: { b64: string; mimeType: string };
   refImages?: Array<{ b64: string; mimeType: string }>;
   aspectRatio?: string;
-  /** Use this specific model instead of the PRIORITY_IMAGE_MODELS waterfall. */
-  modelOverride?: string;
   /** Collects per-attempt wall-clock spans. Pass a child timer for concurrent branches. */
   timer?: Timer;
 };
@@ -688,68 +666,43 @@ export async function generateImage(
   apiKey: string,
   prompt: string,
   opts: GenerateImageOpts = {},
-): Promise<{ b64: string; mimeType: string; errors: string[]; usedModel: string }> {
-  const { cardType, sourceImage, paletteImage, referenceImage, refImages, aspectRatio, modelOverride, timer } = opts;
+): Promise<{ b64: string; mimeType: string; usedModel: string }> {
+  const { cardType, sourceImage, paletteImage, referenceImage, refImages, aspectRatio, timer } = opts;
   const hasRefs = refImages && refImages.length > 0;
-  const errors: string[] = [];
-  const proEnabled = isProImageEnabled();
+  const model = resolveImageModel(cardType);
 
-  const modelsToTry = modelOverride
-    ? [{ shortName: modelOverride, strategy: "gemini-generateContent" as const }]
-    : (proEnabled && cardType && PRO_CARD_TYPES.has(cardType))
-      ? [
-        { shortName: PRO_IMAGE_MODEL, strategy: "gemini-generateContent" as const },
-        { shortName: FLASH_IMAGE_MODEL, strategy: "gemini-generateContent" as const },
-      ]
-    : PRIORITY_IMAGE_MODELS;
+  const mode = hasRefs ? "multiRef" : sourceImage ? "img2img" : "txt2img";
+  console.log(`[gemini] generateImage → cardType=${cardType} model=${model} mode=${mode}`);
 
-  console.log(`[gemini] generateImage → cardType=${cardType ?? "unknown"} ENABLE_PRO=${proEnabled} modelOverride=${modelOverride ?? "none"}`);
+  const attemptTimer = timer?.child(`model-${model.includes("pro") ? "pro" : "flash"}`);
+  const closeAttempt = attemptTimer?.open("total");
 
-  for (const [index, model] of modelsToTry.entries()) {
-    console.log(`Trying ${model.strategy}: ${model.shortName}`);
-    let attempt: ImageResult | ImageError;
-
-    // Attempt label keeps the waterfall position and a short model tag, so a
-    // fallback attempt is visible as a separate span instead of being folded
-    // into one opaque duration.
-    const modelTag = model.shortName.includes("pro")
-      ? "pro"
-      : model.shortName.includes("flash")
-        ? "flash"
-        : model.shortName;
-    const attemptTimer = timer?.child(`try${index + 1}-${modelTag}`);
-    const closeAttempt = attemptTimer?.open("total");
-
-    if (hasRefs && model.strategy === "gemini-generateContent") {
-      attempt = await callGeminiGenerateContentWithImages(apiKey, model.shortName, prompt, refImages, aspectRatio, attemptTimer);
-    } else if (sourceImage && model.strategy === "gemini-generateContent") {
-      attempt = await callGeminiImageEdit(
-        apiKey, model.shortName, prompt,
-        sourceImage.b64, sourceImage.mimeType,
-        paletteImage?.b64, paletteImage?.mimeType,
-        aspectRatio,
-        referenceImage,
-        attemptTimer,
-      );
-    } else if (model.strategy === "imagen-predict") {
-      attempt = await callImagenPredict(apiKey, model.shortName, prompt, aspectRatio);
-    } else {
-      attempt = await callGeminiGenerateContent(apiKey, model.shortName, prompt, aspectRatio, attemptTimer);
-    }
-
-    if ("error" in attempt) {
-      console.log(`  ✗ ${attempt.error}`);
-      closeAttempt?.("failed");
-      errors.push(attempt.error);
-    } else {
-      console.log(`  ✓ Success with ${model.shortName}`);
-      closeAttempt?.(`ok ${model.shortName} ${attempt.b64.length}B-b64`);
-      lastUsedImageModel = { shortName: model.shortName, strategy: model.strategy };
-      return { ...attempt, errors, usedModel: model.shortName };
-    }
+  let attempt: ImageResult | ImageError;
+  if (hasRefs) {
+    attempt = await callGeminiGenerateContentWithImages(apiKey, model, prompt, refImages, aspectRatio, attemptTimer);
+  } else if (sourceImage) {
+    attempt = await callGeminiImageEdit(
+      apiKey, model, prompt,
+      sourceImage.b64, sourceImage.mimeType,
+      paletteImage?.b64, paletteImage?.mimeType,
+      aspectRatio,
+      referenceImage,
+      attemptTimer,
+    );
+  } else {
+    attempt = await callGeminiGenerateContent(apiKey, model, prompt, aspectRatio, attemptTimer);
   }
 
-  throw new Error(`All image models failed: ${errors.join(" | ")}`);
+  if ("error" in attempt) {
+    console.log(`  ✗ ${attempt.error}`);
+    closeAttempt?.("failed");
+    throw new Error(`Image generation failed (cardType=${cardType}, model=${model}): ${attempt.error}`);
+  }
+
+  console.log(`  ✓ Success with ${model}`);
+  closeAttempt?.(`ok ${model} ${attempt.b64.length}B-b64`);
+  lastUsedImageModel = model;
+  return { ...attempt, usedModel: model };
 }
 
 // ── Tencent Cloud COS upload helpers ─────────────────────────────────────────

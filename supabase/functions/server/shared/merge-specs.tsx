@@ -38,6 +38,7 @@ import type {
   VisualConceptData,
 } from "./types.tsx";
 import { buildVisualConceptContextText } from "./brand-context.ts";
+import { buildImageTextPolicy, formatColorSchemeSpec, formatTypefaceCharacterSpec } from "./image-text-policy.ts";
 import { SUPPORTED_MERGE_PAIRS } from "./merge-pairs.ts";
 import { buildPrompt } from "./prompt-builder.ts";
 import { RULE_OUTPUT_JSON } from "./prompt-rules.ts";
@@ -380,10 +381,12 @@ export function formatMergeBoardPromptContext(
       parts.push(`Logo reference: ${truncateUrlForPrompt(be.logoInspiration.imageUrl)}`);
     }
     if (be.colorPalette?.length) {
-      parts.push(`Use color scheme: ${be.colorPalette.slice(0, 8).join(", ")}`);
+      const colorSpec = formatColorSchemeSpec(be.colorPalette.slice(0, 8));
+      if (colorSpec) parts.push(colorSpec);
     }
     if (be.font && (be.font.titleFont || be.font.bodyFont)) {
-      parts.push(`Use fonts: ${be.font.titleFont || "N/A"} / ${be.font.bodyFont || "N/A"}`);
+      const fontSpec = formatTypefaceCharacterSpec(be.font.titleFont, be.font.bodyFont);
+      if (fontSpec) parts.push(fontSpec);
     }
   }
 
@@ -741,7 +744,7 @@ export function buildEditImagePrompt(opts: EditPromptOpts): string {
   } else if (opts.hasReferenceImage) {
     prompt = `${hint}. Use the first image as reference, edit the second image accordingly.`;
   } else if (opts.colorPaletteHex?.length) {
-    prompt = `${hint}. Use colors: ${opts.colorPaletteHex.join(", ")}`;
+    prompt = `${hint}. ${formatColorSchemeSpec(opts.colorPaletteHex)}`;
   } else {
     prompt = `Edit the image: ${hint}.`;
   }
@@ -760,6 +763,15 @@ export function buildEditImagePrompt(opts: EditPromptOpts): string {
 
   if (opts.cardType === "logo") {
     prompt = `${prompt} Keep the background pure white and unchanged; apply the recolor only to the logo mark and wordmark itself, and preserve their exact shapes, composition, and layout.`;
+  }
+
+  if (opts.cardType === "art-style") {
+    prompt = `${prompt} ${buildImageTextPolicy({ preserveExistingText: true })}`;
+  } else if (opts.cardType === "application") {
+    prompt = `${prompt} ${buildImageTextPolicy({
+      renderable: [opts.brandName, opts.tagline],
+      preserveExistingText: true,
+    })}`;
   }
 
   return prompt;
@@ -793,12 +805,17 @@ export function buildExtractPalettePrompt(
 export function formatSourceTextData(sourceId: string | undefined, data: unknown): string {
   if (data === undefined || data === null) return "";
   switch (sourceId) {
-    case "color-palette":
-      return Array.isArray(data) ? `, palette: [${data.join(", ")}]` : "";
+    case "color-palette": {
+      const spec = Array.isArray(data) ? formatColorSchemeSpec(data as string[]) : "";
+      return spec ? ` ${spec}` : "";
+    }
     case "font": {
       const f = data as Record<string, unknown>;
-      const parts = [f.titleFont, f.bodyFont].filter(Boolean).join(" / ");
-      return parts ? `, typography: ${parts}` : "";
+      const spec = formatTypefaceCharacterSpec(
+        typeof f.titleFont === "string" ? f.titleFont : undefined,
+        typeof f.bodyFont === "string" ? f.bodyFont : undefined,
+      );
+      return spec ? ` ${spec}` : "";
     }
     default:
       return "";

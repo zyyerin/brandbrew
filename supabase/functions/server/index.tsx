@@ -12,7 +12,6 @@ import * as kv from "./kv_store.tsx";
 import { getSupabaseClient } from "./supabase-client.tsx";
 import {
   TEXT_MODEL,
-  PRIORITY_IMAGE_MODELS,
   getLastUsedImageModel,
   uploadAndSignImage,
 } from "./shared/gemini.tsx";
@@ -148,14 +147,9 @@ app.get(`${PREFIX}/dev-info`, (c) => {
   if (Deno.env.get("ENABLE_DEV_ROUTES") !== "true") return c.json({ error: "Not found" }, 404);
   return c.json({
     textModel: TEXT_MODEL,
-    imageModel: getLastUsedImageModel() ?? null,
-    discoveredModels: PRIORITY_IMAGE_MODELS.map((m) => ({
-      shortName: m.shortName,
-      strategy: m.strategy,
-    })),
+    lastUsedImageModel: getLastUsedImageModel() ?? null,
     agents: ["brand-strategist", "art-director", "visual-designer"],
     imageCardConfigs: IMAGE_CARD_CONFIGS,
-    cacheSource: "fixed-priority",
   });
 });
 
@@ -389,8 +383,8 @@ app.post(`${PREFIX}/generate-image`, async (c) => {
   const referenceImageUrls = body.referenceImageUrls as string[] | undefined;
   const paletteImageBase64 = body.paletteImageBase64 as string | undefined;
 
-  // Visual Snapshot: only via multi-ref path (generateImage with refImages → PRIORITY_IMAGE_MODELS).
-  // Never route VS to art-director so we never use txt2img or wrong model for snapshots.
+  // Visual Snapshot: only via the multi-ref path (generateImage with refImages).
+  // Never route VS to art-director so we never use txt2img for snapshots.
   if (cardType === "visual-snapshot") {
     const hasVisualSnapshotInputs =
       (referenceImageUrls && referenceImageUrls.length > 0) || !!paletteImageBase64;

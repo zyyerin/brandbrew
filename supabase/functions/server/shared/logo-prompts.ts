@@ -1,3 +1,8 @@
+import {
+  buildImageTextPolicy,
+  formatColorSchemeSpec,
+} from "./image-text-policy.ts";
+
 export const LOGO_COMPOSITION_MODES = [
   "symbol-wordmark-horizontal",
   "symbol-wordmark-stacked",
@@ -71,9 +76,7 @@ function buildLegacyLogoPrompt(ctx: LogoPromptContext): string {
   const focus = ctx.newHint
     ? `Creative direction: ${formatSentence(ctx.newHint)} `
     : "";
-  const palette = (ctx.colorPalette ?? []).length > 0
-    ? `Brand colors: ${ctx.colorPalette!.join(", ")}. `
-    : "";
+  const palette = formatColorSchemeSpec(ctx.colorPalette);
   const motif = ctx.visualConcept?.concept?.trim()
     ? `Visual motif: ${formatSentence(ctx.visualConcept.concept)} `
     : "";
@@ -82,7 +85,7 @@ function buildLegacyLogoPrompt(ctx: LogoPromptContext): string {
     `${focus}Design a logo mark for a brand about: `
     + `${formatSentence(description ?? name)} `
     + `${motif}`
-    + `${palette}`
+    + `${palette ? `${palette} ` : ""}`
     + `Rules: `
     + `Purely graphic symbol — absolutely NO text, NO letters, NO words, NO characters. `
     + `NOT an illustration, NOT a scene, NOT a mascot, NOT a badge, NOT a detailed drawing. `
@@ -97,7 +100,7 @@ function buildCompositionInstruction(
   switch (composition.mode) {
     case "symbol-wordmark-horizontal": {
       const typeface = titleFont?.trim()
-        ? `Use the visual character of the selected title typeface "${titleFont.trim()}" for the wordmark.`
+        ? `Use the visual character of the selected title typeface ${titleFont.trim()} for the wordmark.`
         : "Use the visual character of the selected display typeface for the wordmark.";
       return (
         `Create a horizontal combination mark: place one simple abstract symbol on the left `
@@ -106,7 +109,7 @@ function buildCompositionInstruction(
     }
     case "symbol-wordmark-stacked": {
       const typeface = titleFont?.trim()
-        ? `Use the visual character of the selected title typeface "${titleFont.trim()}" for the wordmark.`
+        ? `Use the visual character of the selected title typeface ${titleFont.trim()} for the wordmark.`
         : "Use the visual character of the selected display typeface for the wordmark.";
       return (
         `Create a stacked combination mark: place one simple abstract symbol above `
@@ -129,9 +132,7 @@ export function buildLogoImagePrompt(ctx: LogoPromptContext): string {
   const focus = ctx.newHint
     ? `Creative direction: ${formatSentence(ctx.newHint)} `
     : "";
-  const palette = (ctx.colorPalette ?? []).length > 0
-    ? `Brand colors: ${ctx.colorPalette!.join(", ")}. `
-    : "";
+  const palette = formatColorSchemeSpec(ctx.colorPalette);
   const conceptText = concept?.concept?.trim()
     ? `Visual concept: ${formatSentence(concept.concept)} `
     : "";
@@ -140,17 +141,18 @@ export function buildLogoImagePrompt(ctx: LogoPromptContext): string {
     ctx.titleFont,
   );
 
-  return (
-    `${focus}Design exactly one finished logo lockup for the brand "${name}". `
-    + `${conceptText}`
-    + `${palette}`
-    + `Logo composition decision: ${ctx.logoComposition.mode}. `
-    + `Brand-specific rationale: ${formatSentence(ctx.logoComposition.rationale)} `
-    + `${compositionInstruction} `
-    + `Rules: Render the brand name exactly as "${name}", once and only once. `
-    + `Show no tagline, subtitle, explanation, label, or any other text or characters. `
-    + `Create one cohesive lockup only — no logo sheet, no alternate variants, and no application mockup. `
-    + `Use a minimal flat vector style on a pure white background with generous padding. `
-    + `Any symbol must be simple and abstract — not an illustration, scene, mascot, badge, or detailed drawing.`
-  );
+  return [
+    `${focus}Design exactly one finished logo lockup for the brand "${name}". `,
+    conceptText,
+    palette ? `${palette} ` : "",
+    `Logo composition decision: ${ctx.logoComposition.mode}. `,
+    `Brand-specific rationale: ${formatSentence(ctx.logoComposition.rationale)} `,
+    `${compositionInstruction} `,
+    `Rules: Render the brand name exactly as "${name}", once and only once. `,
+    `Show no tagline, subtitle, explanation, label, or any other text or characters. `,
+    `Create one cohesive lockup only — no logo sheet, no alternate variants, and no application mockup. `,
+    `Use a minimal flat vector style on a pure white background with generous padding. `,
+    `Any symbol must be simple and abstract — not an illustration, scene, mascot, badge, or detailed drawing. `,
+    buildImageTextPolicy({ renderable: [ctx.brandName] }),
+  ].join("");
 }

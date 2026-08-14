@@ -44,6 +44,7 @@ import {
   normalizeMergeBoardFromBody,
 } from "../shared/merge-specs.tsx";
 import { resolveAspectRatio } from "../shared/image-config.tsx";
+import { buildImageTextPolicy, formatColorSchemeSpec, formatTypefaceCharacterSpec } from "../shared/image-text-policy.ts";
 import { buildBriefIdentityContextText, normalizeShortContext } from "../shared/brand-context.ts";
 import { createTimer, logTimingReport } from "../shared/timing.ts";
 
@@ -188,9 +189,6 @@ visualDesigner.post("/edit", async (c) => {
     console.log(`[visual-designer] Editing (${mode}) — cardType=${cardType} ar=${effectiveAR} prompt="${prompt.slice(0, 80)}…"`);
 
     const genResult = await generateImage(apiKey, prompt, { cardType, sourceImage, paletteImage, referenceImage, aspectRatio: effectiveAR });
-    if (genResult.errors.length > 0) {
-      console.log(`[visual-designer] Warning: some models failed: ${genResult.errors.join(" | ")}`);
-    }
 
     const imageUrl = await uploadAndSignImage(genResult.b64, genResult.mimeType, cardType, c.req.header("X-Project-Id"));
     const generationTime = Date.now() - startTime;
@@ -243,11 +241,6 @@ interface SnapshotPromptContext {
 }
 
 function buildSnapshotPrompt(ctx: SnapshotPromptContext): string {
-  const paletteText = (ctx.colorPalette ?? []).length > 0
-    ? `Color Palette: ${ctx.colorPalette!.join(", ")}.`
-    : "";
-  const fontText = [ctx.font1, ctx.font2].filter(Boolean).join(", ");
-
   const roles = ctx.referenceImageRoles ?? [];
   const compositionLines: string[] = [];
   let compIdx = 1;
@@ -264,12 +257,31 @@ function buildSnapshotPrompt(ctx: SnapshotPromptContext): string {
       console.warn(`[visual-designer] buildSnapshotPrompt: unexpected referenceImageRoles entry "${role}" (Image ${n}); no composition bullet`);
     }
   }
-  if (paletteText) compositionLines.push(`- ${paletteText}`);
-  if (fontText) compositionLines.push(`- Fonts: ${fontText}`);
+  // Palette and typography stay out of the composition bullets. Listed there as
+  // grid assets they invited a swatch strip and a type specimen compartment,
+  // which is how hex codes and font names got printed into the snapshot — and
+  // from there inherited by every mockup that uses the snapshot as reference.
+  const specLines: string[] = [];
+  // Hex and font names stay out of the prompt when a visual already carries
+  // them. Restating them as text is how they get drawn as swatch labels and
+  // type specimens inside the snapshot, then inherited by mockups.
+  if (!ctx.hasPalette) {
+    const colorSpec = formatColorSchemeSpec(ctx.colorPalette);
+    if (colorSpec) specLines.push(colorSpec);
+  }
+  if (!roles.includes("logo")) {
+    const fontSpec = formatTypefaceCharacterSpec(ctx.font1, ctx.font2);
+    if (fontSpec) specLines.push(fontSpec);
+  }
 
   const intro =
-    "A clean and structured modular brand identity snapshot presented in a bento box grid of distinct, separated compartments. No text labels. The composition features diverse assets:";
-  return [intro, compositionLines.join("\n")].join("\n\n");
+    "A clean and structured modular brand identity snapshot presented in a bento box grid of distinct, separated compartments. The composition features diverse assets:";
+  return [
+    intro,
+    compositionLines.join("\n"),
+    specLines.join("\n"),
+    buildImageTextPolicy({ renderable: [ctx.brandName] }),
+  ].filter((part) => part.trim().length > 0).join("\n\n");
 }
 
 // ── Route: POST /visual-snapshot ─────────────────────────────────────────────
@@ -432,10 +444,6 @@ visualDesigner.post("/visual-snapshot", async (c) => {
       throw new Error("Visual snapshot generation produced no result");
     }
 
-    if (genResult.errors.length > 0) {
-      console.log(`[visual-designer] Visual snapshot warnings: ${genResult.errors.join(" | ")}`);
-    }
-
     const imageUrl = await uploadAndSignImage(genResult.b64, genResult.mimeType, cardType ?? "visual-snapshot", c.req.header("X-Project-Id"), timer);
     const generationTime = Date.now() - startTime;
     const usedModel = genResult.usedModel;
@@ -519,6 +527,8 @@ visualDesigner.post("/context", async (c) => {
       effectivePrompt =
         `${effectivePrompt}\n\nBrand description: ${brandDescriptionForPrompt}`;
     }
+    // Appended after any client-supplied prompt so legacy callers are covered too.
+    effectivePrompt = `${effectivePrompt}\n\n${buildImageTextPolicy({ renderable: [brandName] })}`;
 
     console.log(
       `[visual-designer] Generating context mockup — application=${application} ar=${effectiveAR} refs=${images.length} prompt="${effectivePrompt.slice(0, 80)}…"`,
@@ -564,10 +574,6 @@ visualDesigner.post("/context", async (c) => {
           },
         });
       }
-    }
-
-    if (genResult.errors.length > 0) {
-      console.log(`[visual-designer] Context warnings: ${genResult.errors.join(" | ")}`);
     }
 
     const imageUrl = await uploadAndSignImage(
@@ -734,28 +740,39 @@ visualDesigner.post("/merge-generate", async (c) => {
           refImageGuide,
         });
 
+    const textPolicy = cardType === "art-style"
+      ? buildImageTextPolicy()
+      : cardType === "application"
+        ? buildImageTextPolicy({
+            renderable: [brandName],
+            preserveExistingText: true,
+          })
+        : cardType === "logo"
+          ? buildImageTextPolicy({
+              renderable: [brandName],
+              preserveExistingText: true,
+            })
+          : "";
+    const promptWithPolicy = textPolicy ? `${prompt}\n\n${textPolicy}` : prompt;
+
     const mode = useBoardInlineImages
       ? `multi-ref(${refImages.length})`
       : sourceImage
         ? "img2img"
         : "txt2img";
-    console.log(`[visual-designer] Merge-generate (${mode}) — cardType=${cardType} ar=${effectiveAR} prompt="${prompt.slice(0, 80)}…"`);
+    console.log(`[visual-designer] Merge-generate (${mode}) — cardType=${cardType} ar=${effectiveAR} prompt="${promptWithPolicy.slice(0, 80)}…"`);
 
     const genResult = useBoardInlineImages && refImages.length > 0
-      ? await generateImage(apiKey, prompt, {
+      ? await generateImage(apiKey, promptWithPolicy, {
         cardType,
         refImages,
         aspectRatio: effectiveAR,
       })
-      : await generateImage(apiKey, prompt, {
+      : await generateImage(apiKey, promptWithPolicy, {
         cardType,
         sourceImage,
         aspectRatio: effectiveAR,
       });
-    if (genResult.errors.length > 0) {
-      console.log(`[visual-designer] Merge-generate warnings: ${genResult.errors.join(" | ")}`);
-    }
-
     const imageUrl = await uploadAndSignImage(genResult.b64, genResult.mimeType, cardType, c.req.header("X-Project-Id"));
     const generationTime = Date.now() - startTime;
     const usedModel = genResult.usedModel;
@@ -764,7 +781,7 @@ visualDesigner.post("/merge-generate", async (c) => {
       imageUrl,
       _meta: {
         agent: "visual-designer",
-        prompt,
+        prompt: promptWithPolicy,
         promptKey: `${sourceId ?? "?"}->${cardType}:merge-generate`,
         model: usedModel,
         generationTime,
@@ -803,18 +820,28 @@ visualDesigner.post("/wordmark", async (c) => {
 
     const effectiveAR = resolveAspectRatio("wordmark", aspectRatio);
     const name = brandName ?? "the brand";
-    const font = effectiveTitleFont ?? "a display typeface";
 
-    // Concise prompt: one sentence, brand name + font
+    // Concise prompt: one sentence, brand name + font. The typeface is named
+    // unquoted and framed as a character reference, since only the brand name
+    // belongs in the artwork as literal text.
     const hint = newHint ? `${newHint}. ` : "";
-    const prompt = `${hint}Brand wordmark logo for "${name}" in ${font} typeface`;
+    const typefaceClause = effectiveTitleFont
+      ? `with the visual character of the ${effectiveTitleFont} typeface`
+      : "with the visual character of a display typeface";
+    const prompt = [
+      `${hint}Brand wordmark logo for "${name}" ${typefaceClause}`,
+      // A wordmark is text by definition, so the policy is only safe to apply
+      // when there is a real brand name to whitelist.
+      brandName ? buildImageTextPolicy({ renderable: [brandName] }) : "",
+    ].filter(Boolean).join(". ");
 
     console.log(`[visual-designer] Generating wordmark (txt2img) — font=${effectiveTitleFont} ar=${effectiveAR} prompt="${prompt.slice(0, 80)}…"`);
 
-    const genResult = await generateImage(apiKey, prompt, { cardType, aspectRatio: effectiveAR });
-    if (genResult.errors.length > 0) {
-      console.log(`[visual-designer] Wordmark warnings: ${genResult.errors.join(" | ")}`);
-    }
+    // The request body carries cardType "logo" (this route is reached by forwarding
+    // from /generate-image), so the wordmark card type is named explicitly here to
+    // pick up its own model and aspect ratio. Storage naming stays on "logo"
+    // because the result lands in the logo slot.
+    const genResult = await generateImage(apiKey, prompt, { cardType: "wordmark", aspectRatio: effectiveAR });
 
     const imageUrl = await uploadAndSignImage(genResult.b64, genResult.mimeType, cardType ?? "logo", c.req.header("X-Project-Id"));
     const generationTime = Date.now() - startTime;

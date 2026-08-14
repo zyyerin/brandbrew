@@ -1,29 +1,21 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { RefreshCw, ChevronDown, ChevronUp, X, Cpu, Image, Wifi, WifiOff, List } from "lucide-react";
+import { RefreshCw, ChevronDown, ChevronUp, X, Cpu, Image, WifiOff, List } from "lucide-react";
 import { callApi } from "../utils/apiClient";
 import { Skeleton } from "./ui/skeleton";
 
+interface ImageCardConfigInfo {
+  model: string;
+  aspectRatio: string;
+  displayRatio: number;
+}
+
 interface DevInfo {
   textModel: string;
-  imageModel: { shortName: string; strategy: string } | null;
-  discoveredModels: { shortName: string; strategy: string }[] | null;
-  cacheSource: "discovered" | "hardcoded" | "uncached";
-  cacheAgeSeconds: number | null;
-  cacheTtlSeconds: number;
+  lastUsedImageModel: string | null;
+  imageCardConfigs: Record<string, ImageCardConfigInfo> | null;
 }
 
 type FetchState = "idle" | "loading" | "ok" | "error";
-
-const STRATEGY_LABELS: Record<string, string> = {
-  "imagen-predict":           "Imagen :predict",
-  "gemini-generateContent":   "Gemini :generateContent",
-};
-
-const CACHE_COLORS: Record<string, string> = {
-  discovered: "#22c55e",
-  hardcoded:  "#f59e0b",
-  uncached:   "#94a3b8",
-};
 
 export function DevPanel() {
   const [visible, setVisible] = useState(true);
@@ -106,12 +98,6 @@ export function DevPanel() {
   useEffect(() => { fetchInfo(); }, [fetchInfo]);
 
   if (!visible) return null;
-
-  const cacheColor = info ? CACHE_COLORS[info.cacheSource] : "#94a3b8";
-  const cacheLabel =
-    info?.cacheSource === "discovered" ? "auto-discovered" :
-    info?.cacheSource === "hardcoded"  ? "hardcoded fallback" :
-    "not cached";
 
   return (
     <div
@@ -228,20 +214,13 @@ export function DevPanel() {
           {/* Image model */}
           <Section icon={<Image size={11} color="#f59e0b" />} label="IMAGE MODEL">
             {info ? (
-              info.imageModel ? (
-                <>
-                  <Row
-                    label="last used"
-                    value={info.imageModel.shortName}
-                    valueColor="#fbbf24"
-                    wrap
-                  />
-                  <Row
-                    label="strategy"
-                    value={STRATEGY_LABELS[info.imageModel.strategy] ?? info.imageModel.strategy}
-                    valueColor="#94a3b8"
-                  />
-                </>
+              info.lastUsedImageModel ? (
+                <Row
+                  label="last used"
+                  value={info.lastUsedImageModel}
+                  valueColor="#fbbf24"
+                  wrap
+                />
               ) : (
                 <div style={{ color: "#64748b", fontSize: 10 }}>
                   no image generated yet
@@ -252,59 +231,54 @@ export function DevPanel() {
             )}
           </Section>
 
-          {/* Discovery queue */}
-          {info?.discoveredModels && info.discoveredModels.length > 0 && (
-            <Section icon={<Wifi size={11} color="#38bdf8" />} label="DISCOVERY QUEUE">
-              <Row
-                label="source"
-                value={cacheLabel}
-                valueColor={cacheColor}
-              />
-              {info.cacheAgeSeconds !== null && (
-                <Row
-                  label="cache age"
-                  value={`${info.cacheAgeSeconds}s / ${info.cacheTtlSeconds}s TTL`}
-                  valueColor="#94a3b8"
-                />
-              )}
+          {/* Model per card type */}
+          {info?.imageCardConfigs && Object.keys(info.imageCardConfigs).length > 0 && (
+            <Section icon={<List size={11} color="#38bdf8" />} label="MODEL BY CARD">
               <div style={{ marginTop: 5, display: "flex", flexDirection: "column", gap: 2 }}>
-                {info.discoveredModels.map((m, i) => (
-                  <div
-                    key={m.shortName}
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 5,
-                      opacity: i === 0 ? 1 : 0.5,
-                    }}
-                  >
-                    <span
-                      style={{
-                        width: 5,
-                        height: 5,
-                        borderRadius: "50%",
-                        background: i === 0 ? "#22c55e" : "#334155",
-                        flexShrink: 0,
-                      }}
-                    />
-                    <span
-                      style={{
-                        color: i === 0 ? "#e2e8f0" : "#64748b",
-                        fontSize: 10,
-                        whiteSpace: "nowrap",
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                        flex: 1,
-                      }}
-                      title={m.shortName}
+                {Object.entries(info.imageCardConfigs).map(([cardType, config]) => {
+                  const isPro = config.model.includes("pro");
+                  return (
+                    <div
+                      key={cardType}
+                      style={{ display: "flex", alignItems: "center", gap: 5 }}
+                      title={config.model}
                     >
-                      {m.shortName}
-                    </span>
-                    <span style={{ color: "#475569", fontSize: 9, flexShrink: 0 }}>
-                      {m.strategy === "imagen-predict" ? "img" : "gc"}
-                    </span>
-                  </div>
-                ))}
+                      <span
+                        style={{
+                          width: 5,
+                          height: 5,
+                          borderRadius: "50%",
+                          background: isPro ? "#a78bfa" : "#334155",
+                          flexShrink: 0,
+                        }}
+                      />
+                      <span
+                        style={{
+                          color: "#e2e8f0",
+                          fontSize: 10,
+                          whiteSpace: "nowrap",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          flex: 1,
+                        }}
+                      >
+                        {cardType}
+                      </span>
+                      <span
+                        style={{
+                          color: isPro ? "#a78bfa" : "#475569",
+                          fontSize: 9,
+                          flexShrink: 0,
+                        }}
+                      >
+                        {isPro ? "pro" : "flash"}
+                      </span>
+                      <span style={{ color: "#475569", fontSize: 9, flexShrink: 0 }}>
+                        {config.aspectRatio}
+                      </span>
+                    </div>
+                  );
+                })}
               </div>
             </Section>
           )}

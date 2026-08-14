@@ -82,7 +82,9 @@ test("builds a horizontal combination-mark prompt with the title font", () => {
   assert.match(prompt, /horizontal combination mark/);
   assert.match(prompt, /symbol on the left/);
   assert.match(prompt, /wordmark on the right/);
-  assert.match(prompt, /selected title typeface "Fraunces"/);
+  assert.match(prompt, /selected title typeface Fraunces/);
+  assert.doesNotMatch(prompt, /"Fraunces"/);
+  assert.doesNotMatch(prompt, /Brand colors:/);
   assert.match(prompt, /Visual concept: Guiding light\./);
   assert.doesNotMatch(prompt, /Brand description/);
   assert.doesNotMatch(prompt, /A navigation platform for independent teams/);
@@ -99,7 +101,7 @@ test("builds a stacked combination-mark prompt with the title font", () => {
   assert.match(prompt, /stacked combination mark/);
   assert.match(prompt, /symbol above/);
   assert.match(prompt, /wordmark below/);
-  assert.match(prompt, /selected title typeface "Fraunces"/);
+  assert.match(prompt, /selected title typeface Fraunces/);
   assertSharedRules(prompt);
 });
 

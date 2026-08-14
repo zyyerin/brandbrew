@@ -12,7 +12,6 @@ import { Hono } from "npm:hono";
 import type { Context } from "npm:hono";
 import {
   callGeminiText,
-  PRO_IMAGE_MODEL,
   TEXT_MODEL,
   generateImage,
   fetchImageAsBase64,
@@ -35,8 +34,8 @@ import {
   buildFullContextText,
   normalizeFullContext,
 } from "../shared/brand-context.ts";
+import { buildCreativeBrief } from "../shared/art-director-image-prompts.ts";
 import {
-  buildLogoImagePrompt,
   validateLogoComposition,
   validateOptionalLogoComposition,
   type LogoComposition,
@@ -141,64 +140,6 @@ function buildDevDebugPayload(rawGeminiText?: string): { _debug?: { rawText: str
   return { _debug: { rawText: rawGeminiText.slice(0, 500) } };
 }
 
-// ── Creative brief builder (text → image prompt) ─────────────────────────────
-
-function buildCreativeBrief(
-  cardType: string,
-  ctx: ImagePromptContext,
-): string {
-  const name       = ctx.brandName ?? "the brand";
-  const description = ctx.description ?? ctx.brandDescription;
-  const tagline    = ctx.tagline ? `Tagline: "${ctx.tagline}". ` : "";
-  const audience   = ctx.targetAudience ? `Target audience: ${ctx.targetAudience}. ` : "";
-  const vc         = ctx.visualConcept;
-  const conceptStr = vc ? `${vc.concept}. ${vc.description}` : "";
-  const kwds       = (ctx.keywords ?? []).join(", ");
-  const focus      = ctx.newHint ? `Creative direction: ${ctx.newHint}. ` : "";
-  const palette    = (ctx.colorPalette ?? []).length > 0
-    ? `Brand colors: ${ctx.colorPalette!.join(", ")}. `
-    : "";
-
-  switch (cardType) {
-    case "logo":
-      return buildLogoImagePrompt(ctx);
-    case "art-style":
-      return (
-        `${focus}Art style reference image for "${name}" brand. ` +
-        `${description ? `Brand description: ${description}. ` : ""}` +
-        `${tagline}${audience}` +
-        `${conceptStr ? `Visual concept: ${conceptStr}. ` : ""}` +
-        `${kwds ? `Keywords: ${kwds}. ` : ""}` +
-        `${palette}` +
-        `Create a graphic style board that defines the brand's 2D visual language: ` +
-        `shape grammar, pattern rhythm, contrast hierarchy, and abstract textures. ` +
-        `Flat or semi-flat composition, poster-like design layout. ` +
-        `No photorealism, no people, no products, no environments, no text labels.`
-      );
-    case "application": {
-      const touchpoint = ctx.application ?? "brand packaging";
-      const fontHint = ctx.titleFont && ctx.bodyFont
-        ? ` Typography: "${ctx.titleFont}" for headings, "${ctx.bodyFont}" for body.`
-        : ctx.titleFont
-          ? ` Typography: "${ctx.titleFont}".`
-          : "";
-      return (
-        `${focus}Brand application mockup: ${touchpoint} for "${name}". ` +
-        `${description ? `Brand description: ${description}. ` : ""}` +
-        `${tagline}${audience}` +
-        `${conceptStr ? `Visual concept: ${conceptStr}. ` : ""}` +
-        `${palette}` +
-        `Show the brand identity applied to a realistic ${touchpoint}. ` +
-        `Use the brand's colors, typography, and visual style. ` +
-        `Clean studio photography, white background, professional product mockup.` +
-        `${fontHint}`
-      );
-    }
-    default:
-      return `Professional brand design image for "${name}". ${conceptStr}. Minimal, modern.`;
-  }
-}
-
 // ── Route: POST /generate ────────────────────────────────────────────────────
 // Generates a brand image from text context only (no source image).
 
@@ -266,9 +207,6 @@ artDirector.post("/generate", async (c) => {
     console.log(`[art-director] Generating (txt2img) — cardType=${cardType} ar=${effectiveAR} prompt="${prompt.slice(0, 80)}…"`);
 
     const genResult = await generateImage(apiKey, prompt, { cardType, aspectRatio: effectiveAR, timer });
-    if (genResult.errors.length > 0) {
-      console.log(`[art-director] Warning: some models failed: ${genResult.errors.join(" | ")}`);
-    }
 
     const imageUrl = await uploadAndSignImage(genResult.b64, genResult.mimeType, cardType, c.req.header("X-Project-Id"), timer);
     const generationTime = Date.now() - startTime;
@@ -496,22 +434,12 @@ async function respondWithDrawingStageCard(
     const prompt = overridePrompt ?? buildCreativeBrief(cardType, { ...baseCtx, aspectRatio });
     closePrompt(`${prompt.length}ch`);
 
-    // Art style stays pinned to the pro model rather than running the
-    // pro→flash waterfall: two stacked model timeouts would blow past the
-    // platform's wall-clock limit and the request would die without a response.
-    const modelOverride = cardType === "art-style" ? PRO_IMAGE_MODEL : undefined;
-
     const closeGen = timer.open("generate");
     const generated = await generateImage(c.get("geminiApiKey"), prompt, {
       cardType,
       aspectRatio,
-      modelOverride,
       timer,
     }).finally(() => closeGen());
-
-    if (generated.errors.length > 0) {
-      console.log(`[art-director] ${cardType} generation warnings: ${generated.errors.join(" | ")}`);
-    }
 
     const imageUrl = await uploadAndSignImage(
       generated.b64,
@@ -612,6 +540,25 @@ artDirector.post("/design-application", async (c) => {
     const vc3 = fullContext.visualConcept ?? normalizeVisualConcept(visualConcept);
     const normalizedPalette = fullContext.colorPalette ?? normalizeStringArray(colorPalette);
     const normalizedFont = fullContext.font ?? font;
+    // Fetch reference images before building the prompt: when they load, hex
+    // codes and font names stay out of the text so they are not printed on pack.
+    const refUrls = [artStyleImageUrl, logoImageUrl].filter(
+      (u): u is string => typeof u === "string" && u.length > 0,
+    );
+    const refImages: Array<{ b64: string; mimeType: string }> = [];
+    if (refUrls.length > 0) {
+      // Wrapped rather than passed directly: map would hand the array index to
+      // the second parameter (timer), which then throws inside the fetch helper.
+      const fetchResults = await Promise.all(refUrls.map((url) => fetchImageAsBase64(url)));
+      for (const r of fetchResults) {
+        if (!("error" in r)) {
+          refImages.push(r);
+        } else {
+          console.log(`[art-director] Reference image fetch skipped: ${r.error}`);
+        }
+      }
+    }
+
     const ctx: ImagePromptContext = {
       brandName: effectiveBrandName,
       tagline: effectiveTagline,
@@ -624,6 +571,7 @@ artDirector.post("/design-application", async (c) => {
       application: fullContext.application ?? application,
       titleFont: normalizedFont?.titleFont,
       bodyFont: normalizedFont?.bodyFont,
+      hasVisualRefs: refImages.length > 0,
     };
 
     const applicationPrompt = effectiveOverride?.applicationPrompt
@@ -631,31 +579,11 @@ artDirector.post("/design-application", async (c) => {
 
     console.log(`[art-director] Generating application — touchpoint="${application}" ar=${effectiveAR} prompt="${applicationPrompt.slice(0, 80)}…"`);
 
-    // Fetch reference images in parallel; silently skip any that fail to load.
-    const refUrls = [artStyleImageUrl, logoImageUrl].filter(
-      (u): u is string => typeof u === "string" && u.length > 0,
-    );
-    const refImages: Array<{ b64: string; mimeType: string }> = [];
-    if (refUrls.length > 0) {
-      const fetchResults = await Promise.all(refUrls.map(fetchImageAsBase64));
-      for (const r of fetchResults) {
-        if (!("error" in r)) {
-          refImages.push(r);
-        } else {
-          console.log(`[art-director] Reference image fetch skipped: ${r.error}`);
-        }
-      }
-    }
-
     const genResult = await generateImage(apiKey, applicationPrompt, {
       cardType: "application",
       refImages: refImages.length > 0 ? refImages : undefined,
       aspectRatio: effectiveAR,
     });
-
-    if (genResult.errors.length > 0) {
-      console.log(`[art-director] Application generation warnings: ${genResult.errors.join(" | ")}`);
-    }
 
     const applicationImageUrl = await uploadAndSignImage(genResult.b64, genResult.mimeType, "application", c.req.header("X-Project-Id"));
     const generationTime = Date.now() - startTime;
