@@ -60,8 +60,8 @@ export function buildApplicationImagePrompt(ctx: ImagePromptContext): string {
 
   const specLines = hasVisualRefs
     ? [
-        "Match the color, graphic language, and mark from the reference images.",
-        "Do not copy incidental lettering from the references except the brand mark.",
+        "The reference images are a brand identity board. Take color, graphic motifs, the mark, and lettering style from them.",
+        "Do not reprint the board on the product: no bento grid, no swatch legends, no type-specimen sheets, no hex codes, no typeface names.",
       ]
     : [
         formatColorSchemeSpec(ctx.colorPalette),
@@ -74,6 +74,7 @@ export function buildApplicationImagePrompt(ctx: ImagePromptContext): string {
     `Show the brand identity applied to a physical ${touchpoint}. Clean studio photography, white background, professional product mockup.`,
     ...specLines,
     buildImageTextPolicy({
+      purpose: "packaging",
       renderable: [ctx.brandName, ctx.tagline],
       preserveExistingText: hasVisualRefs,
     }),

@@ -766,9 +766,10 @@ export function buildEditImagePrompt(opts: EditPromptOpts): string {
   }
 
   if (opts.cardType === "art-style") {
-    prompt = `${prompt} ${buildImageTextPolicy({ preserveExistingText: true })}`;
+    prompt = `${prompt} ${buildImageTextPolicy({ purpose: "graphic", preserveExistingText: true })}`;
   } else if (opts.cardType === "application") {
     prompt = `${prompt} ${buildImageTextPolicy({
+      purpose: "packaging",
       renderable: [opts.brandName, opts.tagline],
       preserveExistingText: true,
     })}`;

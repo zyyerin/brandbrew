@@ -44,7 +44,8 @@ import {
   normalizeMergeBoardFromBody,
 } from "../shared/merge-specs.tsx";
 import { resolveAspectRatio } from "../shared/image-config.tsx";
-import { buildImageTextPolicy, formatColorSchemeSpec, formatTypefaceCharacterSpec } from "../shared/image-text-policy.ts";
+import { buildImageTextPolicy } from "../shared/image-text-policy.ts";
+import { buildSnapshotPrompt } from "../shared/snapshot-prompts.ts";
 import { buildBriefIdentityContextText, normalizeShortContext } from "../shared/brand-context.ts";
 import { createTimer, logTimingReport } from "../shared/timing.ts";
 
@@ -222,67 +223,6 @@ visualDesigner.post("/edit", async (c) => {
     return c.json(buildErrorPayload("Image editing failed", err), 500);
   }
 });
-
-// ── Snapshot prompt builder ──────────────────────────────────────────────────
-// Builds a structured art-director-grade prompt for the visual snapshot route.
-// Composition bullets use referenceImageRoles order (parallel to ref images). Optional legacy:
-// paletteImageBase64 prepends a swatch as Image 1 before URL refs.
-
-interface SnapshotPromptContext {
-  brandName?: string;
-  brandDescription?: string;
-  keywords?: string[];
-  visualConcept?: { concept: string; description: string };
-  colorPalette?: string[];
-  font1?: string;
-  font2?: string;
-  hasPalette: boolean;
-  referenceImageRoles?: string[];
-}
-
-function buildSnapshotPrompt(ctx: SnapshotPromptContext): string {
-  const roles = ctx.referenceImageRoles ?? [];
-  const compositionLines: string[] = [];
-  let compIdx = 1;
-  if (ctx.hasPalette) compIdx++;
-  for (const role of roles) {
-    const n = compIdx++;
-    if (role === "art-style") {
-      compositionLines.push(
-        `- extracting and remixing individual graphic elements from Image ${n}`,
-      );
-    } else if (role === "logo") {
-      compositionLines.push(`- the Logo (Image ${n})`);
-    } else {
-      console.warn(`[visual-designer] buildSnapshotPrompt: unexpected referenceImageRoles entry "${role}" (Image ${n}); no composition bullet`);
-    }
-  }
-  // Palette and typography stay out of the composition bullets. Listed there as
-  // grid assets they invited a swatch strip and a type specimen compartment,
-  // which is how hex codes and font names got printed into the snapshot — and
-  // from there inherited by every mockup that uses the snapshot as reference.
-  const specLines: string[] = [];
-  // Hex and font names stay out of the prompt when a visual already carries
-  // them. Restating them as text is how they get drawn as swatch labels and
-  // type specimens inside the snapshot, then inherited by mockups.
-  if (!ctx.hasPalette) {
-    const colorSpec = formatColorSchemeSpec(ctx.colorPalette);
-    if (colorSpec) specLines.push(colorSpec);
-  }
-  if (!roles.includes("logo")) {
-    const fontSpec = formatTypefaceCharacterSpec(ctx.font1, ctx.font2);
-    if (fontSpec) specLines.push(fontSpec);
-  }
-
-  const intro =
-    "A clean and structured modular brand identity snapshot presented in a bento box grid of distinct, separated compartments. The composition features diverse assets:";
-  return [
-    intro,
-    compositionLines.join("\n"),
-    specLines.join("\n"),
-    buildImageTextPolicy({ renderable: [ctx.brandName] }),
-  ].filter((part) => part.trim().length > 0).join("\n\n");
-}
 
 // ── Route: POST /visual-snapshot ─────────────────────────────────────────────
 // Generates a visual snapshot from reference image URLs (client: logo then art-style)
@@ -522,13 +462,16 @@ visualDesigner.post("/context", async (c) => {
     const effectiveAR = resolveAspectRatio("brand-context", aspectRatio);
     let effectivePrompt =
       prompt ??
-      `Create a curated brand application mockup of ${application}${brandName ? ` for "${brandName}"` : ""}. Apply the reference visual selectively across the composition, varying the scale between full-bleed macro moments and smaller intentional placements. Keep the result presentation-ready, realistic, and cohesive. Avoid redundant tiled patterns, watermarks, dense illegible text, and split-screen collage layouts.`;
+      `Create a curated brand application mockup of ${application}${brandName ? ` for "${brandName}"` : ""}. The reference is a brand identity board: extract color, graphic motifs, and lettering style from it and apply them to the physical ${application}. Vary scale between full-bleed moments and smaller placements. Keep the result presentation-ready, realistic, and cohesive. Avoid reprinting the board as a collage, tiled patterns, watermarks, or dense illegible text.`;
     if (brandDescriptionForPrompt) {
       effectivePrompt =
         `${effectivePrompt}\n\nBrand description: ${brandDescriptionForPrompt}`;
     }
-    // Appended after any client-supplied prompt so legacy callers are covered too.
-    effectivePrompt = `${effectivePrompt}\n\n${buildImageTextPolicy({ renderable: [brandName] })}`;
+    effectivePrompt = `${effectivePrompt}\n\n${buildImageTextPolicy({
+      purpose: "packaging",
+      renderable: [brandName],
+      preserveExistingText: images.length > 0,
+    })}`;
 
     console.log(
       `[visual-designer] Generating context mockup — application=${application} ar=${effectiveAR} refs=${images.length} prompt="${effectivePrompt.slice(0, 80)}…"`,
@@ -741,9 +684,10 @@ visualDesigner.post("/merge-generate", async (c) => {
         });
 
     const textPolicy = cardType === "art-style"
-      ? buildImageTextPolicy()
+      ? buildImageTextPolicy({ purpose: "graphic" })
       : cardType === "application"
         ? buildImageTextPolicy({
+            purpose: "packaging",
             renderable: [brandName],
             preserveExistingText: true,
           })

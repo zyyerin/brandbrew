@@ -16,7 +16,8 @@
 export interface ImageTextPolicyOptions {
   /**
    * Literal strings allowed to appear in the artwork. When empty, the policy
-   * forbids text outright — unless `preserveExistingText` is set.
+   * forbids text outright — unless `preserveExistingText` is set or `purpose`
+   * is `identity-board` (specimens are allowed there).
    */
   renderable?: (string | undefined | null)[];
   /**
@@ -25,6 +26,13 @@ export interface ImageTextPolicyOptions {
    * wordmark, so the policy caps new text instead of banning it.
    */
   preserveExistingText?: boolean;
+  /**
+   * graphic: no lettering (art-style).
+   * identity-board: snapshot/kit — live type specimens are wanted; hex and
+   *   font names are not.
+   * packaging: mockup — only pack copy; do not photocopy the identity board.
+   */
+  purpose?: "graphic" | "identity-board" | "packaging";
   /** Extra clauses appended to the never-render list. */
   alsoForbid?: string[];
 }
@@ -88,16 +96,44 @@ export function formatTypefaceCharacterSpec(
 
 function buildAllowClause(options: ImageTextPolicyOptions): string {
   const renderable = cleanList(options.renderable ?? []);
+  const quoted = renderable.map((v) => `"${v}"`).join(" and ");
+
+  if (options.purpose === "identity-board") {
+    const named = quoted
+      ? `Live lettering should include ${quoted} plus short type specimens such as Aa, a headline word, and a body-copy line.`
+      : "Live lettering should include short type specimens such as Aa, a headline word, and a body-copy line.";
+    return `${named} Fill every compartment; do not leave blank or white-only panels.`;
+  }
+
+  if (options.purpose === "packaging") {
+    const copy = quoted
+      ? `The only pack copy that may appear is ${quoted}.`
+      : "Add no pack copy.";
+    const keep = options.preserveExistingText
+      ? "Keep the brand mark already present in the reference images. "
+      : "";
+    return `${keep}${copy} Treat any reference as a brand identity board to extract from, not artwork to reprint: take color, motif, and lettering style, but do not reproduce the board — no bento grid, no swatch legends, no type-specimen sheets, no hex codes, no typeface names.`;
+  }
 
   if (options.preserveExistingText) {
-    return renderable.length > 0
-      ? `Keep the text already present in the source image and add no new text beyond ${renderable.map((v) => `"${v}"`).join(" and ")}.`
+    return quoted
+      ? `Keep the text already present in the source image and add no new text beyond ${quoted}.`
       : "Keep the text already present in the source image and add no new text.";
   }
 
-  return renderable.length > 0
-    ? `The only literal text that may appear is ${renderable.map((v) => `"${v}"`).join(" and ")}.`
+  return quoted
+    ? `The only literal text that may appear is ${quoted}.`
     : "Render no text, letters, or numbers at all.";
+}
+
+function buildPurposeLead(purpose: ImageTextPolicyOptions["purpose"]): string {
+  if (purpose === "identity-board") {
+    return "This is a filled brand identity board: compartments hold visual assets, including live lettering specimens. Hex values and typeface names are drawing specs, not captions.";
+  }
+  if (purpose === "packaging") {
+    return "This is a product mockup. Color and typography values are drawing specs, not copy to print on the pack.";
+  }
+  return "Text policy: the color and typography values above are specifications for how to draw, not content to write.";
 }
 
 /**
@@ -107,7 +143,7 @@ function buildAllowClause(options: ImageTextPolicyOptions): string {
 export function buildImageTextPolicy(options: ImageTextPolicyOptions = {}): string {
   const forbidden = [...NEVER_RENDER, ...(options.alsoForbid ?? [])];
   return [
-    "Text policy: the color and typography values above are specifications for how to draw, not content to write.",
+    buildPurposeLead(options.purpose),
     buildAllowClause(options),
     `Never render as visible text: ${forbidden.join("; ")}.`,
   ].join(" ");
