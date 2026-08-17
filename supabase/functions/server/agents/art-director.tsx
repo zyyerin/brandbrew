@@ -492,6 +492,57 @@ async function respondWithDrawingStageCard(
 artDirector.post("/design-logo", (c) => respondWithDrawingStageCard(c, "logo"));
 artDirector.post("/design-art-style", (c) => respondWithDrawingStageCard(c, "art-style"));
 
+// Backward compat: the currently deployed Netlify client still POSTs the
+// combined route after brief generate. Keep the old payload shape until that
+// frontend is redeployed onto /design-logo + /design-art-style.
+artDirector.post("/design-logo-style", async (c) => {
+  const startTime = Date.now();
+  const body = await c.req.json();
+  const payload = JSON.stringify(body);
+  const headers = new Headers();
+  headers.set("Content-Type", "application/json");
+  for (const name of ["Authorization", "X-Access-Token", "X-Project-Id"]) {
+    const value = c.req.header(name);
+    if (value) headers.set(name, value);
+  }
+
+  const [logoRes, artStyleRes] = await Promise.all([
+    artDirector.request("/design-logo", { method: "POST", headers, body: payload }),
+    artDirector.request("/design-art-style", { method: "POST", headers, body: payload }),
+  ]);
+
+  const logoJson = await logoRes.json().catch(() => ({} as Record<string, unknown>));
+  const artJson = await artStyleRes.json().catch(() => ({} as Record<string, unknown>));
+  const logoImageUrl = typeof logoJson.logoImageUrl === "string" ? logoJson.logoImageUrl : null;
+  const artStyleImageUrl = typeof artJson.artStyleImageUrl === "string" ? artJson.artStyleImageUrl : null;
+  const partialErrors: string[] = [];
+  if (!logoRes.ok) partialErrors.push(`logo: ${String(logoJson.error ?? logoRes.status)}`);
+  if (!artStyleRes.ok) partialErrors.push(`art-style: ${String(artJson.error ?? artStyleRes.status)}`);
+
+  if (!logoImageUrl && !artStyleImageUrl) {
+    const status = logoRes.status === 400 && artStyleRes.status === 400 ? 400 : 500;
+    return c.json({
+      error: `Logo & art style generation failed: ${partialErrors.join(" | ")}`,
+    }, status);
+  }
+
+  return c.json({
+    artStyleImageUrl,
+    logoImageUrl,
+    logoModel: logoJson.logoModel,
+    ...(logoJson.logoComposition ? { logoComposition: logoJson.logoComposition } : {}),
+    artStyleModel: artJson.artStyleModel,
+    ...(partialErrors.length > 0 && { errors: partialErrors }),
+    _meta: {
+      agent: "art-director",
+      model: logoJson.logoModel ?? artJson.artStyleModel ?? "unknown",
+      generationTime: Date.now() - startTime,
+      contextMode: "full",
+      ...(logoJson._meta && typeof logoJson._meta === "object" ? logoJson._meta : {}),
+    },
+  });
+});
+
 // ── Route: POST /design-application ──────────────────────────────────────────
 // Step 3: Generate application mockup using full visual context from prior steps.
 // artStyleImageUrl and logoImageUrl are fetched as base64 and passed to Gemini
