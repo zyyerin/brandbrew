@@ -20,6 +20,7 @@ interface QueueAffordanceSlotProps {
 }
 
 export function QueueAffordanceSlot({
+  isHovered,
   isMerge,
   hintText,
   colors,
@@ -46,14 +47,26 @@ export function QueueAffordanceSlot({
     >
       {isMerge ? (
         <div
-          className="absolute inset-0 z-30 rounded-xl transition-all duration-150 pointer-events-none"
+          className="absolute inset-0 z-30 rounded-xl flex items-center justify-center px-2 transition-all duration-150 pointer-events-none"
           style={{
             background: "var(--bb-ai-active-bg)",
-            boxShadow: "var(--bb-ai-ring-shadow)",
+            boxShadow: isHovered ? "var(--bb-ai-ring-shadow)" : undefined,
             borderRadius: 12,
             backdropFilter: "blur(1px)",
           }}
-        />
+        >
+          <span
+            className="text-center"
+            style={{
+              fontSize: TYPE.size.baseLg,
+              fontWeight: TYPE.weight.bold,
+              lineHeight: TYPE.leading.snug,
+              color: "var(--bb-ai-active-ring)",
+            }}
+          >
+            {hintText}
+          </span>
+        </div>
       ) : (
         <div
           className="absolute inset-0 z-30 rounded-xl flex flex-col items-center justify-center gap-2 transition-all duration-150"

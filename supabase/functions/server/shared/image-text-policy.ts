@@ -27,7 +27,6 @@ export interface ImageTextPolicyOptions {
    */
   preserveExistingText?: boolean;
   /**
-   * graphic: no lettering (art-style).
    * identity-board: snapshot/kit — live type specimens are wanted; hex and
    *   font names are not.
    * packaging: mockup — only pack copy; do not photocopy the identity board.
@@ -66,14 +65,27 @@ const SPEC_FIELD_LABELS = [
   "Keywords:",
 ];
 
+export type ColorSchemeApplyTo = "any" | "logo-mark";
+
 /**
  * Color as a drawing instruction, not a caption. Hex values stay unquoted so
  * they are less likely to be copied onto the image as swatch labels.
+ * `logo-mark` keeps light palette colors off the canvas — they are inks, not paper.
  */
-export function formatColorSchemeSpec(colors?: (string | undefined | null)[] | null): string {
+export function formatColorSchemeSpec(
+  colors?: (string | undefined | null)[] | null,
+  opts?: { applyTo?: ColorSchemeApplyTo },
+): string {
   const cleaned = cleanList(colors ?? []);
   if (cleaned.length === 0) return "";
-  return `Apply this color scheme as fills and inks only — do not write the values: ${cleaned.join(", ")}.`;
+  const values = cleaned.join(", ");
+  if (opts?.applyTo === "logo-mark") {
+    return (
+      `Apply this color scheme as fills and inks of the mark and wordmark only — `
+      + `never as the canvas, paper, or background, and do not write the values: ${values}.`
+    );
+  }
+  return `Apply this color scheme as fills and inks only — do not write the values: ${values}.`;
 }
 
 /**

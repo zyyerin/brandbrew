@@ -12,8 +12,8 @@ import { toMergePairKey } from "../supabase/functions/server/shared/merge-pairs.
 
 const EXPECTED_HINTS = {
   "color-palette→font": {
-    slot: "Create typography from palette",
-    card: "Match typography to palette",
+    slot: "Create font pairing inspired by colors",
+    card: "Match font pairing to colors",
   },
   "color-palette→logo": {
     slot: "Create logo from palette",
@@ -40,8 +40,8 @@ const EXPECTED_HINTS = {
     card: "Match palette to logo",
   },
   "logo→font": {
-    slot: "Create typography from logo",
-    card: "Match typography to logo",
+    slot: "Create font pairing from logo",
+    card: "Match font pairing to logo",
   },
   "logo→art-style": {
     slot: "Create art style from logo",
@@ -52,8 +52,8 @@ const EXPECTED_HINTS = {
     card: "Match palette to art style",
   },
   "art-style→font": {
-    slot: "Create typography from art style",
-    card: "Match typography to art style",
+    slot: "Create font pairing from art style",
+    card: "Match font pairing to art style",
   },
   "art-style→logo": {
     slot: "Create logo from art style",

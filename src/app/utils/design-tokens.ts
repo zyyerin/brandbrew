@@ -76,6 +76,10 @@ export const LAYOUT = {
     paddingTop: 24,
     /** Bottom padding (canvas px) */
     paddingBottom: 8,
+    /** Hover scroll-chevron diameter (canvas px; inverse-zoom scaled in UI) */
+    scrollButtonSize: 32,
+    /** Inset of scroll chevrons from the filmstrip fade/content edge (canvas px) */
+    scrollButtonInset: 8,
   },
 
   /** Variation card slots */
@@ -109,11 +113,11 @@ export const LAYOUT = {
   /** Floating popups and tooltips */
   popup: {
     /** Minimum height for popup/tooltip panels (screen px) */
-    minHeight: 120,
+    minHeight: 240,
     /** Vertical offset between trigger element and popup (screen px) */
     offset: 8,
     /** Width of the generation details floating popup (screen px) */
-    detailsWidth: 254,
+    detailsWidth: 320,
     /** Gap between the overlay panel and the generation details popup (screen px) */
     detailsGap: 12,
   },

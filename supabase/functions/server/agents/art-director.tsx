@@ -33,10 +33,13 @@ import {
 import {
   buildFullContextText,
   normalizeFullContext,
+  omitTaglineForLogo,
 } from "../shared/brand-context.ts";
 import { buildCreativeBrief } from "../shared/art-director-image-prompts.ts";
 import {
-  validateLogoComposition,
+  assignedLogoCompositionBlock,
+  attachAssignedLogoComposition,
+  pickLogoCompositionMode,
   validateOptionalLogoComposition,
   type LogoComposition,
 } from "../shared/logo-prompts.ts";
@@ -188,7 +191,7 @@ artDirector.post("/generate", async (c) => {
       return c.json({ error: String((err as Error).message ?? err) }, 400);
     }
 
-    const ctx: ImagePromptContext = {
+    const ctx: ImagePromptContext = omitTaglineForLogo(cardType, {
       brandName: fullContext.name ?? brandName,
       tagline: fullContext.tagline,
       description: fullContext.description ?? brandDescription,
@@ -201,7 +204,7 @@ artDirector.post("/generate", async (c) => {
       bodyFont: fullContext.font?.bodyFont,
       logoComposition,
       aspectRatio: effectiveAR,
-    };
+    });
 
     const prompt = buildCreativeBrief(cardType, ctx);
     console.log(`[art-director] Generating (txt2img) — cardType=${cardType} ar=${effectiveAR} prompt="${prompt.slice(0, 80)}…"`);
@@ -254,7 +257,7 @@ artDirector.post("/design-palette-fonts", async (c) => {
     if (!isMeaningfulFullContext(body)) {
       return c.json({ error: "brandContext must include brand name and at least one contextual field" }, 400);
     }
-    const { brandName, keywords, visualConcept, excludedPalettes, excludedFonts, _promptOverride } = body;
+    const { brandName, keywords, visualConcept, excludedPalettes, excludedFonts, excludedCompositions, _promptOverride } = body;
     const fullContext = normalizeFullContext(body);
     const effectiveBrandName = fullContext.name ?? brandName;
     const effectiveVisualConcept = fullContext.visualConcept ?? normalizeVisualConcept(visualConcept);
@@ -294,6 +297,12 @@ artDirector.post("/design-palette-fonts", async (c) => {
       );
     }
 
+    const excludedModes = Array.isArray(excludedCompositions)
+      ? excludedCompositions.filter((mode: unknown): mode is string => typeof mode === "string")
+      : [];
+    const assignedMode = pickLogoCompositionMode(excludedModes);
+    extraBlocks.push(assignedLogoCompositionBlock(assignedMode));
+
     const fullPrompt = effectiveOverride?.fullPrompt ?? buildPrompt({
       persona: effectiveOverride?.persona ?? PERSONA_ART_DIRECTOR,
       taskDescription: effectiveOverride?.taskPrompt ?? PALETTE_FONTS_TASK_DESCRIPTION,
@@ -308,7 +317,7 @@ artDirector.post("/design-palette-fonts", async (c) => {
       font: { titleFont: string; bodyFont: string };
       logoComposition?: unknown;
     }>(_rawGeminiText, "design-palette-fonts");
-    const logoComposition = validateLogoComposition(result.logoComposition);
+    const logoComposition = attachAssignedLogoComposition(result.logoComposition, assignedMode);
     const generationTime = Date.now() - startTime;
     console.log(`[art-director] Palette + fonts designed (${generationTime}ms)`);
 
@@ -318,7 +327,7 @@ artDirector.post("/design-palette-fonts", async (c) => {
       logoComposition,
       _meta: {
         agent: "art-director",
-        ...(isDevRoutesEnabled() && { prompt: fullPrompt }),
+        prompt: fullPrompt,
         model: TEXT_MODEL,
         generationTime,
         contextMode: "full",
@@ -426,7 +435,8 @@ async function respondWithDrawingStageCard(
 
     const parsed = parseDrawingStageBody(body);
     if (!parsed.ok) return c.json({ error: parsed.error }, 400);
-    const { baseCtx, logoComposition, aspectRatioOverride, override } = parsed.ctx;
+    const { logoComposition, aspectRatioOverride, override } = parsed.ctx;
+    const baseCtx = omitTaglineForLogo(cardType, parsed.ctx.baseCtx);
 
     const aspectRatio = resolveAspectRatio(cardType, aspectRatioOverride);
     const closePrompt = timer.open("prompt.build");
@@ -456,7 +466,7 @@ async function respondWithDrawingStageCard(
 
     const _meta = {
       agent: "art-director",
-      ...(isDevRoutesEnabled() && { prompt }),
+      prompt,
       model: generated.usedModel,
       generationTime,
       timings,
@@ -648,7 +658,7 @@ artDirector.post("/design-application", async (c) => {
       applicationImageUrl,
       _meta: {
         agent: "art-director",
-        ...(isDevRoutesEnabled() && { prompt: applicationPrompt }),
+        prompt: applicationPrompt,
         model: usedModel,
         generationTime,
         contextMode: "full",
@@ -718,7 +728,7 @@ artDirector.post("/variation", async (c) => {
       ...variation,
       _meta: {
         agent: "art-director",
-        ...(isDevRoutesEnabled() && { prompt: fullPrompt }),
+        prompt: fullPrompt,
         model: TEXT_MODEL,
         generationTime,
         contextMode: "full",

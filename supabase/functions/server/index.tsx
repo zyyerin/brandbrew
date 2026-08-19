@@ -18,6 +18,7 @@ import {
 import { IMAGE_CARD_CONFIGS } from "./shared/image-config.tsx";
 
 import { requireAuth, projectStorageKey } from "./auth-middleware.tsx";
+import { resolveCorsAllowOrigin } from "./cors-origin.ts";
 import strategist from "./agents/brand-strategist.tsx";
 import artDirector from "./agents/art-director.tsx";
 import visualDesigner from "./agents/visual-designer.tsx";
@@ -30,11 +31,13 @@ const app = new Hono();
 app.use("*", logger(console.log));
 
 // ── CORS ─────────────────────────────────────────────────────────────────────
-// Set CORS_ORIGIN secret (production only) to your deployed frontend URL, e.g.:
+// Set CORS_ORIGIN to the deployed frontend URL(s):
 //   supabase secrets set CORS_ORIGIN="https://your-app.netlify.app"
-// Local dev: leave unset — falls back to wildcard so any localhost port works.
+// Loopback origins (localhost / 127.0.0.1 / ::1, any port) are always allowed so
+// `npm run dev` can call this same deployed function. If the secret is unset,
+// the request origin is reflected (credentials-safe equivalent of '*').
 const _rawCorsOrigin = Deno.env.get("CORS_ORIGIN");
-if (!_rawCorsOrigin) console.warn("[server] CORS_ORIGIN not set — falling back to wildcard origin");
+if (!_rawCorsOrigin) console.warn("[server] CORS_ORIGIN not set — reflecting request origin");
 
 function normalizeCorsOrigin(value: string): string | null {
   const candidate = value.trim();
@@ -67,9 +70,8 @@ const ALLOWED_ORIGINS = [
 app.use(
   "/*",
   cors({
-    // An explicitly configured but invalid/empty allowlist denies every
-    // browser origin. Only a completely unset secret uses the local-dev '*'.
-    origin: _rawCorsOrigin ? ALLOWED_ORIGINS : "*",
+    origin: (origin) =>
+      resolveCorsAllowOrigin(origin, ALLOWED_ORIGINS, Boolean(_rawCorsOrigin)),
     allowHeaders: ["Content-Type", "Authorization", "X-Access-Token", "X-Project-Id"],
     allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     exposeHeaders: ["Content-Length"],
@@ -321,17 +323,6 @@ app.post(`${PREFIX}/generate-card-variation`, async (c) => {
   return res;
 });
 
-app.post(`${PREFIX}/merge-cards`, async (c) => {
-  console.log("[compat] /merge-cards → /visual-designer/merge");
-  const body = await c.req.json();
-  const res = await app.request(`${PREFIX}/visual-designer/merge`, {
-    method: "POST",
-    headers: c.req.raw.headers,
-    body: JSON.stringify(body),
-  });
-  return res;
-});
-
 app.post(`${PREFIX}/comment-modify`, async (c) => {
   console.log("[compat] /comment-modify → /visual-designer/comment-modify");
   const body = await c.req.json();
@@ -366,17 +357,6 @@ app.post(`${PREFIX}/generate-guideline`, async (c) => {
   return res;
 });
 
-app.post(`${PREFIX}/extract-palette`, async (c) => {
-  console.log("[compat] /extract-palette → /visual-designer/extract-palette");
-  const body = await c.req.json();
-  const res = await app.request(`${PREFIX}/visual-designer/extract-palette`, {
-    method: "POST",
-    headers: c.req.raw.headers,
-    body: JSON.stringify(body),
-  });
-  return res;
-});
-
 app.post(`${PREFIX}/generate-image`, async (c) => {
   const body = await c.req.json();
   const cardType = body.cardType as string | undefined;
@@ -403,15 +383,7 @@ app.post(`${PREFIX}/generate-image`, async (c) => {
     return res;
   }
 
-  if (body.titleFont && cardType === "logo") {
-    console.log("[compat] /generate-image (wordmark) → /visual-designer/wordmark");
-    const res = await app.request(`${PREFIX}/visual-designer/wordmark`, {
-      method: "POST",
-      headers: c.req.raw.headers,
-      body: JSON.stringify(body),
-    });
-    return res;
-  } else if (body.sourceImageUrl) {
+  if (body.sourceImageUrl) {
     console.log("[compat] /generate-image (img2img) → /visual-designer/edit");
     const res = await app.request(`${PREFIX}/visual-designer/edit`, {
       method: "POST",

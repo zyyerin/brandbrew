@@ -8,13 +8,12 @@ import {
 import { GenerationDetailsPanel } from "../GenerationDetailsPanel";
 import type { VariationState, EditVariant, VariationMeta } from "./types";
 import { VariationStateOverlay } from "./VariationStateOverlay";
-import { TYPE, CANVAS, adaptiveSize } from "../../utils/design-tokens";
+import { LAYOUT, TYPE, CANVAS, adaptiveSize } from "../../utils/design-tokens";
 import { usePopupPosition } from "./usePopupPosition";
 import { useCanvasZoom } from "../../contexts/CanvasZoomContext";
 import { cancelAllCardEdits } from "./useCardEditing";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
 
-const POPUP_WIDTH = 254;
 const VIEWPORT_PADDING = 16;
 const POPUP_HEADER_HEIGHT = 48; // GenerationDetailsPanel header height
 
@@ -103,7 +102,7 @@ export function ElementWrapper({
     infoBtnRef,
     showMeta,
     handleCloseMeta,
-    { width: POPUP_WIDTH, maxHeight: 9999, padding: VIEWPORT_PADDING },
+    { width: LAYOUT.popup.detailsWidth, maxHeight: 9999, padding: VIEWPORT_PADDING },
   );
 
   const borderWidth = adaptiveSize(1, zoom, 0.5, 3);
@@ -234,7 +233,7 @@ export function ElementWrapper({
         <div
           ref={metaRef}
           data-no-card-toggle
-          className="fixed z-[9999] bg-white rounded-xl border border-border/60 shadow-xl overflow-hidden flex flex-col backdrop-blur-md"
+          className="fixed z-[9999] bg-white rounded-xl border border-border/60 shadow-xl flex flex-col overflow-y-auto backdrop-blur-md"
           style={{
             top: popupPos.top,
             left: popupPos.left,

@@ -1,16 +1,20 @@
 import { useState, useCallback, useRef } from "react";
+import { toast } from "sonner";
 import type { ElementId, Variation, VariationMeta } from "../types/project";
 import { IMAGE_ELEMENT_IDS, getActiveElementData, getCheckedElementData } from "../types/project";
-import { generateBrandImage, generateMergeImage, commentEditImage, designPaletteAndFonts, designLogo, designArtStyle } from "../utils/generate-image";
-import type { ImageCardType } from "../utils/generate-image";
-import type { LogoComposition } from "@server-shared/logo-prompts.ts";
-import { isMergeSupported, resolveMergeHint, formatSourceForHint } from "@server-shared/merge-specs.tsx";
 import {
-  performMerge,
-  performPaletteExtraction,
-  performVisionTextMerge,
+  generateTxt2Img,
+  generateImg2Img,
+  commentEditImage,
+  performTxt2Txt,
+  performImg2Txt,
   performCommentModify,
 } from "../utils/generate-image";
+import type { ImageCardType } from "../utils/generate-image";
+import { resolveMergeKind } from "@server-shared/merge-routes.ts";
+import { resolveMergeHint, formatSourceForHint } from "@server-shared/merge-specs.tsx";
+import { omitTaglineForLogo } from "@server-shared/brand-context.ts";
+import { omitsCurrentPaletteInSlotExtract } from "@server-shared/merge-text.ts";
 import type { MergeBrandContext } from "../utils/variation-helpers";
 import { normalizeAndSortColorPalette, paletteToBase64 } from "../utils/helpers";
 import {
@@ -24,19 +28,28 @@ import {
   createVariation,
 } from "../utils/variation-helpers";
 import type { UseGenerationBaseParams } from "../utils/variation-helpers";
-import { debugAgentForGenerateImage, withDebugLog } from "../utils/debug-interceptor-utils";
-
-// ── Types ────────────────────────────────────────────────────────────────────
+import { withDebugLog } from "../utils/debug-interceptor-utils";
 
 export interface UseMergeGenerationReturn {
   mergingVariationIds: Set<string>;
   setMergingVariationIds: React.Dispatch<React.SetStateAction<Set<string>>>;
   mergingElementTypes: Set<string>;
-  handleMerge: (sourceId: string, targetId: string, sourceVarId?: string, targetVarId?: string) => Promise<void>;
+  handleMergeSlot: (sourceId: string, targetId: string, sourceVarId?: string) => Promise<void>;
+  handleMergeCard: (
+    sourceId: string,
+    targetId: string,
+    sourceVarId: string | undefined,
+    targetVarId: string,
+  ) => Promise<void>;
   handleCommentModify: (targetId: string, comment: string, targetVarId?: string) => Promise<void>;
 }
 
-// ── Hook ─────────────────────────────────────────────────────────────────────
+const ELEMENT_TO_CONTEXT_FIELD: Record<string, keyof MergeBrandContext> = {
+  "color-palette": "colorPalette",
+  font: "font",
+  logo: "logoInspiration",
+  "art-style": "artStyle",
+};
 
 export function useMergeGeneration({
   projectRef,
@@ -49,9 +62,10 @@ export function useMergeGeneration({
   const mergeInFlightRef = useRef<Set<string>>(new Set());
   const commentInFlightRef = useRef<Set<string>>(new Set());
 
-  const handleMerge = useCallback(
+  const runMerge = useCallback(
     async (sourceId: string, targetId: string, sourceVarId?: string, targetVarId?: string) => {
-      if (!isMergeSupported(sourceId, targetId)) return;
+      const kind = resolveMergeKind(sourceId, targetId, targetVarId);
+      if (!kind) return;
       if (mergeInFlightRef.current.has(targetId)) return;
       mergeInFlightRef.current.add(targetId);
 
@@ -83,29 +97,16 @@ export function useMergeGeneration({
       const getVariationData = (eid: ElementId, varId?: string) => {
         const slot = projectRef.current.elements[eid];
         if (varId) {
-          const v = slot.variations.find((v) => v.id === varId);
+          const v = slot.variations.find((found) => found.id === varId);
           if (v) return v.data;
         }
         return getCheckedElementData(projectRef.current.elements, eid);
       };
       const getVariation = (eid: ElementId, varId?: string): Variation | null => {
         const slot = projectRef.current.elements[eid];
-        if (varId) return slot.variations.find((v) => v.id === varId) ?? null;
+        if (varId) return slot.variations.find((found) => found.id === varId) ?? null;
         if (!slot.checkedVariationId) return null;
-        return slot.variations.find((v) => v.id === slot.checkedVariationId) ?? null;
-      };
-
-      const slotMergeVars = !IMAGE_ELEMENT_IDS.has(sourceEid)
-        ? { sourceData: formatSourceForHint(sourceId, getVariationData(sourceEid, sourceVarId)) }
-        : undefined;
-      const hint = resolveMergeHint("slot", sourceId, targetId, slotMergeVars);
-
-      const ELEMENT_TO_CONTEXT_FIELD: Record<string, keyof MergeBrandContext> = {
-        "visual-concept": "visualConcept",
-        "color-palette": "colorPalette",
-        "font": "font",
-        "logo": "logoInspiration",
-        "art-style": "artStyle",
+        return slot.variations.find((found) => found.id === slot.checkedVariationId) ?? null;
       };
 
       const overrideContextField = (ctx: MergeBrandContext, eid: string, varId?: string) => {
@@ -116,34 +117,63 @@ export function useMergeGeneration({
         if (data != null) (ctx as Record<string, unknown>)[field] = data;
       };
 
-      const normalizeVisualConcept = (raw: unknown): { concept: string; description: string } | undefined => {
-        if (!raw) return undefined;
-        if (typeof raw === "object" && "concept" in (raw as object) && "description" in (raw as object)) {
-          const concept = (raw as { concept?: unknown }).concept;
-          const description = (raw as { description?: unknown }).description;
-          if (typeof concept === "string" && typeof description === "string") {
-            return { concept, description };
-          }
+      const addMergeVariation = (data: unknown, meta?: VariationMeta) => {
+        const variation = createVariation({
+          prefix: "merge",
+          data,
+          source: "merge",
+          meta,
+          counterRef: generationCounterRef,
+        });
+        const outcome = addVariationIfNew(setProject, targetEid, variation);
+        if (outcome === "duplicate") {
+          toast("A matching card is already in the queue");
         }
-        if (typeof raw === "string" && raw.trim()) {
-          return { concept: raw.trim(), description: "" };
-        }
-        return undefined;
       };
 
-      try {
-        const p = projectRef.current;
-        const brief = p.brandBrief.current;
+      const slotHint = resolveMergeHint(
+        "slot",
+        sourceId,
+        targetId,
+        !IMAGE_ELEMENT_IDS.has(sourceEid)
+          ? { sourceData: formatSourceForHint(sourceId, getVariationData(sourceEid, sourceVarId)) }
+          : undefined,
+      );
 
-        if (IMAGE_ELEMENT_IDS.has(sourceEid) && targetId === "color-palette") {
-          const sourceVariation = getVariation(sourceEid, sourceVarId);
-          const cachedPalette = !targetVarId && sourceId !== "visual-snapshot"
-            ? sourceVariation?.meta?.pipelineSeed?.colorPalette
-            : undefined;
+      const runTxt2Txt = async () => {
+        const p = projectRef.current;
+        const mergeContext = buildMergeFullBrandContext(p);
+        overrideContextField(mergeContext, sourceId, sourceVarId);
+        overrideContextField(mergeContext, targetId, targetVarId);
+        const { patch, _meta: mergeMeta } = await withDebugLog(
+          debugInterceptor,
+          {
+            label: `Merge: ${slotHint}`,
+            agent: "visual-designer",
+            endpoint: "visual-designer/txt2txt",
+            request: { sourceId, targetId, brandData: mergeContext },
+          },
+          () => performTxt2Txt(sourceId, targetId, mergeContext),
+        );
+        if (!patch) return;
+        const mergeData = extractMergeData(targetEid, patch);
+        if (mergeData == null) return;
+        const variationData = targetEid === "color-palette"
+          ? normalizeAndSortColorPalette(mergeData)
+          : mergeData;
+        addMergeVariation(variationData, mergeMeta);
+      };
+
+      const runImg2Txt = async () => {
+        const p = projectRef.current;
+        const sourceVariation = getVariation(sourceEid, sourceVarId);
+        const canSeed = !targetVarId && sourceId !== "visual-snapshot";
+
+        if (targetEid === "color-palette") {
+          const cachedPalette = canSeed ? sourceVariation?.meta?.pipelineSeed?.colorPalette : undefined;
           if (cachedPalette?.length) {
             const normalizedPalette = normalizeAndSortColorPalette(cachedPalette);
             if (normalizedPalette == null) return;
-            const directMeta = sourceVariation?.meta;
             await withDebugLog(
               debugInterceptor,
               {
@@ -158,307 +188,185 @@ export function useMergeGeneration({
                   seededFields: ["colorPalette"],
                 },
               },
-              async () => ({
-                usedSeed: true,
-                seededFields: ["colorPalette"],
-              }),
+              async () => ({ usedSeed: true, seededFields: ["colorPalette"] }),
             );
-            const variation = createVariation({
-              prefix: "merge",
-              data: normalizedPalette,
-              source: "merge",
-              meta: directMeta,
-              counterRef: generationCounterRef,
-            });
-            addVariationIfNew(setProject, "color-palette", variation);
+            addMergeVariation(normalizedPalette, sourceVariation?.meta);
             return;
           }
-          // image → color-palette: extract palette from source image
-          const sourceData = getVariationData(sourceEid, sourceVarId) as { imageUrl: string } | null;
-          const sourceImageUrl = sourceData?.imageUrl;
-          if (!sourceImageUrl) return;
-          const mergeContext = buildMergeFullBrandContext(p);
-          // For card-to-card drops, use the specific target card's palette as the
-          // current color scheme constraint, not the active variation's palette.
-          overrideContextField(mergeContext, targetId, targetVarId);
-          const { patch, _meta: extractMeta } = await withDebugLog(
-            debugInterceptor,
-            { label: `Merge: ${hint}`, agent: "visual-designer", endpoint: "extract-palette", request: { sourceId, sourceImageUrl, brandData: mergeContext } },
-            () => performPaletteExtraction(sourceId, sourceImageUrl, mergeContext),
-          );
-          if (patch) {
-            const rawPalette = (patch as Record<string, unknown>).colorPalette;
-            const normalized = normalizeAndSortColorPalette(rawPalette);
-            if (normalized != null) {
-              const variation = createVariation({ prefix: "merge", data: normalized, source: "merge", meta: extractMeta, counterRef: generationCounterRef });
-              addVariationIfNew(setProject, "color-palette", variation);
-            }
-          }
-        } else if (IMAGE_ELEMENT_IDS.has(sourceEid) && !IMAGE_ELEMENT_IDS.has(targetEid)) {
-          const sourceVariation = getVariation(sourceEid, sourceVarId);
-          const cachedSeed = !targetVarId && sourceId !== "visual-snapshot"
-            ? sourceVariation?.meta?.pipelineSeed
-            : undefined;
-          if (cachedSeed) {
-            const directData =
-              targetEid === "visual-concept" ? cachedSeed.visualConcept :
-              targetEid === "font" ? cachedSeed.font :
-              targetEid === "color-palette" ? cachedSeed.colorPalette :
-              undefined;
-            if (directData != null) {
-              const normalized = targetEid === "color-palette"
-                ? normalizeAndSortColorPalette(directData)
-                : directData;
-              if (targetEid === "color-palette" && normalized == null) return;
-              const directMeta = sourceVariation?.meta;
-              const seededField = targetEid === "visual-concept"
-                ? "visualConcept"
-                : targetEid === "font"
-                  ? "font"
-                  : "colorPalette";
-              await withDebugLog(
-                debugInterceptor,
-                {
-                  label: `Seed Merge: ${sourceId} -> ${targetId}`,
-                  agent: "local",
-                  endpoint: "seed-cache/direct-merge",
-                  request: {
-                    sourceId,
-                    targetId,
-                    sourceVarId,
-                    mode: "pipeline-seed",
-                    seededFields: [seededField],
-                  },
-                },
-                async () => ({
-                  usedSeed: true,
-                  seededFields: [seededField],
-                }),
-              );
-              const variation = createVariation({
-                prefix: "merge",
-                data: normalized,
-                source: "merge",
-                meta: directMeta,
-                counterRef: generationCounterRef,
-              });
-              addVariationIfNew(setProject, targetEid, variation);
-              return;
-            }
-          }
-          // image → text element: vision-text merge
-          const sourceData = getVariationData(sourceEid, sourceVarId) as { imageUrl: string } | null;
-          const sourceImageUrl = sourceData?.imageUrl;
-          if (!sourceImageUrl) return;
-          const mergeContext = buildMergeFullBrandContext(p);
-          overrideContextField(mergeContext, targetId, targetVarId);
-          const { patch, _meta: visionMergeMeta } = await withDebugLog(
-            debugInterceptor,
-            { label: `Merge: ${hint}`, agent: "visual-designer", endpoint: "visual-designer/vision-merge", request: { sourceId, targetId, sourceImageUrl, brandData: mergeContext } },
-            () => performVisionTextMerge(sourceId, targetId, sourceImageUrl, mergeContext),
-          );
-          if (patch) {
-            const mergeData = extractMergeData(targetEid, patch);
-            if (mergeData != null) {
-              const variationData = targetEid === "color-palette" ? normalizeAndSortColorPalette(mergeData) : mergeData;
-              const variation = createVariation({ prefix: "merge", data: variationData, source: "merge", meta: visionMergeMeta, counterRef: generationCounterRef });
-              addVariationIfNew(setProject, targetEid, variation);
-            }
-          }
-        } else if (IMAGE_ELEMENT_IDS.has(targetEid)) {
-          // * → image element: image generation / img2img
-          const isWordmarkMerge = sourceId === "font" && targetId === "logo";
-          let mergeResult: { imageUrl: string; _meta?: VariationMeta };
-          const sourceVariation = getVariation(sourceEid, sourceVarId);
-
-          if (!targetVarId && !isWordmarkMerge) {
-            // Queue-slot drop: visual-concept -> logo/art-style should follow
-            // art-director's staged route (palette/font -> style) but only
-            // expose the final requested output to the queue.
-            if (sourceId === "visual-concept" && (targetId === "art-style" || targetId === "logo")) {
-              const sourceData = getVariationData(sourceEid, sourceVarId);
-              const visualConcept = normalizeVisualConcept(sourceData);
-              if (!visualConcept) return;
-
-              const stage1Req = {
-                brandName: brief.name,
-                tagline: brief.tagline,
-                description: brief.description,
-                targetAudience: brief.targetAudience,
-                keywords: brief.keywords,
-                visualConcept,
-              };
-              const pfResult = await withDebugLog(
-                debugInterceptor,
-                {
-                  label: `Pipeline Merge: ${sourceId} -> ${targetId} (stage 1/2)`,
-                  agent: "art-director",
-                  endpoint: "art-director/design-palette-fonts",
-                  request: stage1Req as Record<string, unknown>,
-                },
-                () => designPaletteAndFonts(stage1Req),
-              );
-
-              const stage2Req = {
-                ...stage1Req,
-                colorPalette: pfResult.colorPalette,
-                font: pfResult.font,
-                logoComposition: pfResult.logoComposition,
-              };
-              // Only the dropped target is kept, so request that image alone
-              // instead of generating both and discarding one.
-              const buildStagedMergeResult = (
-                imageUrl: string,
-                model: string | undefined,
-                meta: VariationMeta | undefined,
-                logoComposition?: LogoComposition,
-              ) => ({
-                imageUrl,
-                _meta: {
-                  ...meta,
-                  model,
-                  ...(logoComposition ? { logoComposition } : {}),
-                  pipelineSeed: {
-                    visualConcept,
-                    colorPalette: pfResult.colorPalette,
-                    font: pfResult.font,
-                    ...(logoComposition ? { logoComposition } : {}),
-                    application: brief.applications?.[0] ?? "brand application",
-                  },
-                },
-              });
-              const stage2Log = {
-                label: `Pipeline Merge: ${sourceId} -> ${targetId} (stage 2/2)`,
-                agent: "art-director" as const,
-                request: stage2Req as Record<string, unknown>,
-              };
-
-              if (targetId === "logo") {
-                const drawn = await withDebugLog(
-                  debugInterceptor,
-                  { ...stage2Log, endpoint: "art-director/design-logo" },
-                  () => designLogo(stage2Req),
-                );
-                if (!drawn.logoImageUrl) return;
-                mergeResult = buildStagedMergeResult(
-                  drawn.logoImageUrl,
-                  drawn.logoModel ?? drawn._meta?.model,
-                  drawn._meta,
-                  drawn.logoComposition ?? pfResult.logoComposition,
-                );
-              } else {
-                const drawn = await withDebugLog(
-                  debugInterceptor,
-                  { ...stage2Log, endpoint: "art-director/design-art-style" },
-                  () => designArtStyle(stage2Req),
-                );
-                if (!drawn.artStyleImageUrl) return;
-                mergeResult = buildStagedMergeResult(
-                  drawn.artStyleImageUrl,
-                  drawn.artStyleModel ?? drawn._meta?.model,
-                  drawn._meta,
-                );
-              }
-            } else {
-            // Queue-slot drop → simple merge via visual-designer
-            const sourceData = getVariationData(sourceEid, sourceVarId);
-            const sourceImageUrl = IMAGE_ELEMENT_IDS.has(sourceEid)
-              ? (sourceData as { imageUrl: string } | null)?.imageUrl
-              : undefined;
-            const sourceTextData = IMAGE_ELEMENT_IDS.has(sourceEid) ? undefined : sourceData;
-            let effectiveHint = hint;
-            let effectiveSourceTextData = sourceTextData;
-
-            const mergeImgCtx = {
-              brandName: brief.name,
-              newHint: effectiveHint,
-              sourceId,
-              sourceImageUrl,
-              sourceTextData: effectiveSourceTextData,
-              brandContextShort: buildBriefOnlyContext(p),
-              mergeBoardContext: buildMergeBoardPromptContext(p, {
-                excludeTarget: targetEid,
-                excludeSource: sourceEid,
-              }),
-            };
-            mergeResult = await withDebugLog(
-              debugInterceptor,
-              { label: `Merge: ${hint}`, agent: "visual-designer", endpoint: "visual-designer/merge-generate", request: { cardType: targetId, ...mergeImgCtx } },
-              () => generateMergeImage(targetId as ImageCardType, mergeImgCtx),
-            );
-            }
-          } else {
-            // Card drop → img2img editing, or wordmark merge
-            const targetData = targetVarId
-              ? getVariationData(targetEid, targetVarId) as { imageUrl: string } | null
-              : null;
-            const existingImageUrl = targetData?.imageUrl;
-            const draggedPalette = sourceId === "color-palette"
-              ? getVariationData(sourceEid, sourceVarId) as string[] | null
-              : undefined;
-            const paletteImageBase64 = sourceId === "color-palette" && draggedPalette?.length
-              ? paletteToBase64(draggedPalette)
-              : undefined;
-            const isWordmarkSlotDrop = isWordmarkMerge && !targetVarId;
-            const fontData = isWordmarkSlotDrop
-              ? getVariationData(sourceEid, sourceVarId) as { titleFont: string; bodyFont: string } | null
-              : null;
-
-            const cardHint = resolveMergeHint("card", sourceId, targetId, {
-              sourceData: formatSourceForHint(sourceId, getVariationData(sourceEid, sourceVarId), targetId),
-              brandName: brief.name,
-              brandDescription: brief.description,
-            });
-
-            const sourceRefUrl = IMAGE_ELEMENT_IDS.has(sourceEid)
-              ? (getVariationData(sourceEid, sourceVarId) as { imageUrl: string } | null)?.imageUrl
-              : undefined;
-
-            const img2imgCtx = {
-              newHint: isWordmarkSlotDrop
-                ? resolveMergeHint("slot", sourceId, targetId)
-                : cardHint,
-              colorPalette: draggedPalette ?? undefined,
-              sourceImageUrl: isWordmarkSlotDrop ? undefined : existingImageUrl,
-              referenceImageUrl: sourceRefUrl,
-              paletteImageBase64,
-              titleFont: fontData?.titleFont,
-              bodyFont: fontData?.bodyFont,
-              brandContextShort: buildBriefOnlyContext(p),
-            };
-            mergeResult = await withDebugLog(
+        } else {
+          const seededFont = canSeed ? sourceVariation?.meta?.pipelineSeed?.font : undefined;
+          if (seededFont != null) {
+            await withDebugLog(
               debugInterceptor,
               {
-                label: `Merge: ${hint}`,
-                agent: debugAgentForGenerateImage({ cardType: targetId, ...img2imgCtx }),
-                endpoint: "generate-image",
-                request: { cardType: targetId, ...img2imgCtx },
+                label: `Seed Merge: ${sourceId} -> ${targetId}`,
+                agent: "local",
+                endpoint: "seed-cache/direct-merge",
+                request: {
+                  sourceId,
+                  targetId,
+                  sourceVarId,
+                  mode: "pipeline-seed",
+                  seededFields: ["font"],
+                },
               },
-              () => generateBrandImage(targetId as ImageCardType, img2imgCtx),
+              async () => ({ usedSeed: true, seededFields: ["font"] }),
             );
+            addMergeVariation(seededFont, sourceVariation?.meta);
+            return;
           }
+        }
 
-          const imgData = { imageUrl: mergeResult.imageUrl };
-          const variation = createVariation({ prefix: "merge", data: imgData, source: "merge", meta: mergeResult._meta, counterRef: generationCounterRef });
-          addVariationIfNew(setProject, targetEid, variation);
-        } else {
-          // text → text: generic merge
-          const mergeContext = buildMergeFullBrandContext(p);
-          overrideContextField(mergeContext, sourceId, sourceVarId);
-          overrideContextField(mergeContext, targetId, targetVarId);
-          const { patch, _meta: mergeMeta } = await withDebugLog(
+        const sourceImageUrl = (getVariationData(sourceEid, sourceVarId) as { imageUrl: string } | null)?.imageUrl;
+        if (!sourceImageUrl) return;
+        const mergeContext = buildMergeFullBrandContext(p);
+        overrideContextField(mergeContext, targetId, targetVarId);
+        if (omitsCurrentPaletteInSlotExtract(targetId, targetVarId)) {
+          mergeContext.colorPalette = null;
+        }
+        const { patch, _meta: img2txtMeta } = await withDebugLog(
+          debugInterceptor,
+          {
+            label: `Merge: ${slotHint}`,
+            agent: "visual-designer",
+            endpoint: "visual-designer/img2txt",
+            request: { sourceId, targetId, sourceImageUrl, brandData: mergeContext },
+          },
+          () => performImg2Txt(sourceId, targetId, sourceImageUrl, mergeContext),
+        );
+        if (!patch) return;
+        const mergeData = extractMergeData(targetEid, patch);
+        if (mergeData == null) return;
+        const variationData = targetEid === "color-palette"
+          ? normalizeAndSortColorPalette(mergeData)
+          : mergeData;
+        if (variationData != null) addMergeVariation(variationData, img2txtMeta);
+      };
+
+      const runTxt2Img = async () => {
+        const p = projectRef.current;
+        const brief = p.brandBrief.current;
+        const sourceData = getVariationData(sourceEid, sourceVarId);
+        const mergeImgCtx = {
+          brandName: brief.name,
+          newHint: slotHint,
+          sourceId,
+          targetId,
+          sourceTextData: sourceData,
+          brandContextShort: omitTaglineForLogo(targetId, buildBriefOnlyContext(p)),
+          mergeBoardContext: buildMergeBoardPromptContext(p, {
+            excludeTarget: targetEid,
+            excludeSource: sourceEid,
+          }),
+        };
+        const result = await withDebugLog(
+          debugInterceptor,
+          {
+            label: `Merge: ${slotHint}`,
+            agent: "visual-designer",
+            endpoint: "visual-designer/txt2img",
+            request: mergeImgCtx,
+          },
+          () => generateTxt2Img(mergeImgCtx),
+        );
+        addMergeVariation({ imageUrl: result.imageUrl }, result._meta);
+      };
+
+      const runImg2Img = async () => {
+        const p = projectRef.current;
+        const brief = p.brandBrief.current;
+        const sourceData = getVariationData(sourceEid, sourceVarId);
+        const boardContext = buildMergeBoardPromptContext(p, {
+          excludeTarget: targetEid,
+          excludeSource: sourceEid,
+        });
+
+        if (!targetVarId) {
+          const sourceImageUrl = (sourceData as { imageUrl: string } | null)?.imageUrl;
+          if (!sourceImageUrl) return;
+          const mergeImgCtx = {
+            brandName: brief.name,
+            newHint: slotHint,
+            sourceId,
+            targetId,
+            sourceImageUrl,
+            brandContextShort: omitTaglineForLogo(targetId, buildBriefOnlyContext(p)),
+            mergeBoardContext: boardContext,
+          };
+          const result = await withDebugLog(
             debugInterceptor,
-            { label: `Merge: ${hint}`, agent: "visual-designer", endpoint: "visual-designer/merge", request: { sourceId, targetId, brandData: mergeContext } },
-            () => performMerge(sourceId, targetId, mergeContext),
+            {
+              label: `Merge: ${slotHint}`,
+              agent: "visual-designer",
+              endpoint: "visual-designer/img2img",
+              request: mergeImgCtx,
+            },
+            () => generateImg2Img(mergeImgCtx),
           );
-          if (patch) {
-            const mergeData = extractMergeData(targetEid, patch);
-            if (mergeData != null) {
-              const variationData = targetEid === "color-palette" ? normalizeAndSortColorPalette(mergeData) : mergeData;
-              const variation = createVariation({ prefix: "merge", data: variationData, source: "merge", meta: mergeMeta, counterRef: generationCounterRef });
-              addVariationIfNew(setProject, targetEid, variation);
-            }
-          }
+          addMergeVariation({ imageUrl: result.imageUrl }, result._meta);
+          return;
+        }
+
+        const existingImageUrl = (
+          getVariationData(targetEid, targetVarId) as { imageUrl: string } | null
+        )?.imageUrl;
+        if (!existingImageUrl) return;
+
+        const draggedPalette = sourceId === "color-palette"
+          ? getVariationData(sourceEid, sourceVarId) as string[] | null
+          : undefined;
+        const paletteImageBase64 = sourceId === "color-palette" && draggedPalette?.length
+          ? paletteToBase64(draggedPalette)
+          : undefined;
+        const cardHint = resolveMergeHint("card", sourceId, targetId, {
+          sourceData: formatSourceForHint(sourceId, getVariationData(sourceEid, sourceVarId), targetId),
+          brandName: brief.name,
+          brandDescription: brief.description,
+        });
+        const sourceRefUrl = IMAGE_ELEMENT_IDS.has(sourceEid)
+          ? (sourceData as { imageUrl: string } | null)?.imageUrl
+          : undefined;
+
+        const editCtx = {
+          brandName: brief.name,
+          newHint: cardHint,
+          sourceId,
+          targetId,
+          targetImageUrl: existingImageUrl,
+          referenceImageUrl: sourceRefUrl,
+          paletteImageBase64,
+          colorPalette: draggedPalette ?? undefined,
+          sourceTextData: sourceData,
+          brandContextShort: omitTaglineForLogo(targetId, buildBriefOnlyContext(p)),
+          mergeBoardContext: boardContext,
+        };
+        const result = await withDebugLog(
+          debugInterceptor,
+          {
+            label: `Merge: ${slotHint}`,
+            agent: "visual-designer",
+            endpoint: "visual-designer/img2img",
+            request: editCtx,
+          },
+          () => generateImg2Img(editCtx),
+        );
+        addMergeVariation({ imageUrl: result.imageUrl }, result._meta);
+      };
+
+      try {
+        switch (kind) {
+          case "txt2txt":
+            await runTxt2Txt();
+            break;
+          case "img2txt":
+            await runImg2Txt();
+            break;
+          case "txt2img":
+            await runTxt2Img();
+            break;
+          case "img2img":
+            await runImg2Img();
+            break;
         }
       } catch (err) {
         console.error("Merge error:", err);
@@ -468,6 +376,18 @@ export function useMergeGeneration({
       }
     },
     [projectRef, generationCounterRef, setProject, debugInterceptor],
+  );
+
+  const handleMergeSlot = useCallback(
+    (sourceId: string, targetId: string, sourceVarId?: string) =>
+      runMerge(sourceId, targetId, sourceVarId),
+    [runMerge],
+  );
+
+  const handleMergeCard = useCallback(
+    (sourceId: string, targetId: string, sourceVarId: string | undefined, targetVarId: string) =>
+      runMerge(sourceId, targetId, sourceVarId, targetVarId),
+    [runMerge],
   );
 
   const handleCommentModify = useCallback(
@@ -495,7 +415,6 @@ export function useMergeGeneration({
 
       try {
         const p = projectRef.current;
-        const brief = p.brandBrief.current;
 
         if (IMAGE_ELEMENT_IDS.has(targetEid)) {
           const slot = p.elements[targetEid];
@@ -509,7 +428,7 @@ export function useMergeGeneration({
             return;
           }
 
-          const shortCtx = buildMergeShortBrandContext(p);
+          const shortCtx = omitTaglineForLogo(targetId, buildMergeShortBrandContext(p));
           const result = await withDebugLog(
             debugInterceptor,
             { label: "Comment Modify (image)", agent: "visual-designer", endpoint: "visual-designer/edit", request: { cardType: targetId, sourceImageUrl: existingImageUrl, newHint: comment } },
@@ -552,7 +471,8 @@ export function useMergeGeneration({
     mergingVariationIds,
     setMergingVariationIds,
     mergingElementTypes,
-    handleMerge,
+    handleMergeSlot,
+    handleMergeCard,
     handleCommentModify,
   };
 }

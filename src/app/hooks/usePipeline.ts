@@ -8,6 +8,8 @@ import { addVariationToProject } from "../utils/variation-helpers";
 import type { UseGenerationBaseParams } from "../utils/variation-helpers";
 import { withPipelineStage } from "../utils/debug-interceptor-utils";
 import { getUserFacingApiErrorMessage } from "../utils/apiClient";
+import { collectExcludedLogoCompositions } from "@server-shared/logo-prompts.ts";
+import { omitTaglineDeep } from "@server-shared/brand-context.ts";
 
 // ── Public input type for the pipeline entry point ───────────────────────────
 // Distinct from PipelineContext (the art-director's internal accumulated context).
@@ -185,11 +187,15 @@ export function usePipeline({
             const d = v.data as FontData;
             return [d?.titleFont, d?.bodyFont].filter(Boolean);
           });
+        const existingCompositions = collectExcludedLogoCompositions(
+          currentElements["logo"]?.variations ?? [],
+        );
 
         const pfDesignCtx = {
           ...designCtx,
           excludedPalettes: existingPalettes.length > 0 ? existingPalettes : undefined,
           excludedFonts: existingFontNames.length > 0 ? [...new Set(existingFontNames)] : undefined,
+          excludedCompositions: existingCompositions.length > 0 ? existingCompositions : undefined,
         };
         const pfResult = await withPipelineStage(
           debugInterceptor,
@@ -248,6 +254,7 @@ export function usePipeline({
             application: briefContext.applications?.[0],
           },
         };
+        const logoRequest = omitTaglineDeep(lsRequest);
         const commitDrawnCard = (
           elementId: "logo" | "art-style",
           imageUrl: string,
@@ -267,10 +274,10 @@ export function usePipeline({
             stage: "drawing",
             agent: "art-director",
             endpoint: "art-director/design-logo",
-            request: lsRequest,
+            request: logoRequest,
           },
           async (finalReq) => {
-            const result = await designLogo(finalReq as typeof lsRequest, { signal });
+            const result = await designLogo(finalReq as typeof logoRequest, { signal });
             if (!result.logoImageUrl) throw new Error("Drawing stage did not return a logo");
             return result;
           },

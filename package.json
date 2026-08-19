@@ -12,9 +12,13 @@
     "test:logo-prompts": "node --test tests/logo-prompts.test.ts",
     "test:image-text-policy": "node --test tests/image-text-policy.test.ts",
     "test:merge-ui-hints": "node --test tests/merge-ui-hints.test.ts",
-    "check:quality": "npm run typecheck && npm run test:logo-prompts && npm run test:image-text-policy && npm run test:merge-ui-hints && npm run build",
+    "test:color-font-merge": "node --test tests/color-font-merge.test.ts",
+    "test:merge-routes": "node --test tests/merge-routes.test.ts",
+    "test:cors-origin": "node --test tests/cors-origin.test.ts",
+    "check:quality": "npm run typecheck && npm run test:logo-prompts && npm run test:image-text-policy && npm run test:merge-ui-hints && npm run test:color-font-merge && npm run test:merge-routes && npm run test:cors-origin && npm run build",
     "eval:model": "node scripts/eval-model.mjs",
     "bench:image-gen": "node scripts/bench-image-gen.mjs",
+    "diagnose:logo-composition": "node scripts/diagnose-logo-composition.mjs",
     "check:predeploy": "npm run check:quality && npm run eval:model"
   },
   "dependencies": {

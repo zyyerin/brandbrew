@@ -10,6 +10,11 @@ export type AspectRatio = "1:1" | "16:9" | "9:16" | "4:3" | "3:4";
 // Available image models. Every card type names one explicitly below.
 export const PRO_IMAGE_MODEL = "gemini-3-pro-image-preview";
 export const FLASH_IMAGE_MODEL = "gemini-3.1-flash-image-preview";
+/** Direct-merge image generation always uses Pro, regardless of card type. */
+export const MERGE_IMAGE_MODEL = PRO_IMAGE_MODEL;
+
+/** "generate" follows IMAGE_CARD_CONFIGS; "merge" always uses MERGE_IMAGE_MODEL. */
+export type ImageGenPurpose = "generate" | "merge";
 
 export interface ImageCardConfig {
   /**
@@ -28,8 +33,9 @@ export interface ImageCardConfig {
 /**
  * Per-card-type image generation config.
  * Agents use `resolveImageModel` / `resolveAspectRatio` to read these at
- * generation time; callers can still override the aspect ratio via the request
- * body's `aspectRatio` field, but never the model.
+ * generation time. Callers may set purpose `"merge"` (direct merge), which
+ * always uses MERGE_IMAGE_MODEL. They cannot pick an arbitrary model id.
+ * Aspect ratio can still be overridden via the request body's `aspectRatio`.
  */
 export const IMAGE_CARD_CONFIGS: Record<string, ImageCardConfig> = {
   "logo":             { model: FLASH_IMAGE_MODEL, aspectRatio: "1:1",  displayRatio: 1 },
@@ -57,8 +63,20 @@ export function getImageCardConfig(cardType: string): AspectDefaults {
   return IMAGE_CARD_CONFIGS[cardType] ?? DEFAULT_ASPECT;
 }
 
+/**
+ * Accept only the literal `"merge"`. Anything else (missing, typo, `"pro"`)
+ * stays on the per-card generate mapping so clients cannot pick a model id.
+ */
+export function parseImageGenPurpose(raw: unknown): ImageGenPurpose {
+  return raw === "merge" ? "merge" : "generate";
+}
+
 /** The model for a card type. Throws when the card type has no entry above. */
-export function resolveImageModel(cardType: string | undefined): string {
+export function resolveImageModel(
+  cardType: string | undefined,
+  purpose: ImageGenPurpose = "generate",
+): string {
+  if (purpose === "merge") return MERGE_IMAGE_MODEL;
   const config = cardType ? IMAGE_CARD_CONFIGS[cardType] : undefined;
   if (!config) {
     throw new Error(

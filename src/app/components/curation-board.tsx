@@ -43,7 +43,13 @@ interface CurationBoardProps {
   onSuggestionClick?: (s: string) => void;
   variationCounts?: Record<string, number>;
   onEditSave?: (elementId: string, data: unknown) => void;
-  onMerge?: (sourceId: string, targetId: string, sourceVarId?: string, targetVarId?: string) => void;
+  onMergeSlot?: (sourceId: string, targetId: string, sourceVarId?: string) => void;
+  onMergeCard?: (
+    sourceId: string,
+    targetId: string,
+    sourceVarId: string | undefined,
+    targetVarId: string,
+  ) => void;
   onCommentModify?: (targetId: string, comment: string, targetVarId?: string) => void;
   mergingVariationIds?: Set<string>;
   mergingElementTypes?: Set<string>;
@@ -64,8 +70,8 @@ interface CurationBoardProps {
   snapshotGenerating?: boolean;
   vsPanelExpanded?: boolean;
   vcPanelExpanded?: boolean;
-  onAddVariation?: (elementType: string, sourceVariationId?: string | null) => void;
-  onAddConcept?: () => void;
+  onAddVariation?: (elementType: string) => void;
+  onAddConcept: () => void;
   onMoveVariationToQueue?: (sourceElementType: string, targetElementType: string, variationId: string) => void;
   onUploadVariation?: (elementType: string, file: File) => void;
   onUploadImageForPalette?: (elementType: string, file: File) => void;
@@ -89,7 +95,8 @@ export function CurationBoard({
   suggestions,
   onSuggestionClick,
   onEditSave,
-  onMerge,
+  onMergeSlot,
+  onMergeCard,
   onCommentModify,
   mergingVariationIds = EMPTY_SET,
   mergingElementTypes = EMPTY_SET,
@@ -145,7 +152,8 @@ export function CurationBoard({
   const canvas = useCanvasTransform(isCanvasPhase);
 
   const drag = useDirectMerge(
-    onMerge,
+    onMergeSlot,
+    onMergeCard,
     onMoveVariationToQueue,
     (varId) => uploadingVariationIds?.has(varId) ?? false,
     canvas.zoom,
@@ -503,13 +511,7 @@ export function CurationBoard({
               conceptVariations={allVariationsByElementType["visual-concept"] ?? []}
               activeConceptId={activeVariationByElementType["visual-concept"] ?? null}
               onSelectConcept={(variationId) => onSelectVariation?.("visual-concept", variationId)}
-              onAddConcept={() => {
-                if (onAddConcept) {
-                  onAddConcept();
-                  return;
-                }
-                onAddVariation?.("visual-concept");
-              }}
+              onAddConcept={onAddConcept}
               onEditConcept={(data) => onEditSave?.("visual-concept", data)}
               onDeleteConcept={(variationId) => onDeleteVariation?.("visual-concept", variationId)}
               isGenerating={pendingGenerationElements.has("visual-concept")}

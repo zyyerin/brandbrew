@@ -16,14 +16,13 @@ export type MergeSpec = {
    */
   cardHint?: string;
   allowedFields?: string[];
-  /** Full LLM instruction for text-target merges (brand-strategist /merge and visual-designer /vision-merge). */
+  /** Full LLM instruction for text-target merges (/txt2txt and /img2txt). */
   instruction?: string;
   /**
    * extract-palette only: when the target already has hex colors, use this instruction instead of `instruction`.
    * Replace `{sourceData}` with the comma-separated current palette (visual-designer).
    */
   extractPaletteInstructionWithExistingTarget?: string;
-  requiresSourceImage?: boolean;
   /** Override the default text model (TEXT_MODEL) for this specific merge. */
   textModel?: string;
 };
@@ -113,7 +112,7 @@ export type MergeBoardElements = {
 
 /**
  * Unified board state for merge prompts: visual concept + four visual slots.
- * Used by `/merge`, `/vision-merge`, and `/merge-generate` via the same formatter.
+ * Used by `/txt2txt`, `/img2txt`, `/txt2img`, and `/img2img` via the same formatter.
  */
 export type MergeBoardPromptContext = {
   visualConcept?: VisualConceptData | null;

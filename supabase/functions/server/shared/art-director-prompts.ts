@@ -24,8 +24,7 @@ Return ONLY valid JSON with this exact structure:
     "bodyFont": "Google Fonts body font name"
   },
   "logoComposition": {
-    "mode": "symbol-wordmark-horizontal",
-    "rationale": "One concise brand-specific reason for this composition"
+    "rationale": "One concise brand-specific reason this assigned lockup fits"
   }
 }
 Rules:
@@ -34,11 +33,8 @@ Rules:
 - Font names must be real Google Fonts.
 - The title font should have strong character; the body font should be readable.
 - Typography and color choices must reinforce the visual concept's aesthetic direction.
-- Choose symbol-wordmark-horizontal when a short or medium name benefits from balanced left-to-right recognition.
-- Choose symbol-wordmark-stacked when the symbol should lead or a square composition best supports the identity.
-- Choose wordmark-only when the brand name itself is distinctive and custom lettering should be the primary identifier.
-- logoComposition.mode must be exactly one of: symbol-wordmark-horizontal, symbol-wordmark-stacked, wordmark-only.
-- logoComposition.rationale must be a non-empty, brand-specific sentence.`;
+- logoComposition.mode is assigned by the system in the Assigned logo composition mode block; do not choose or change it.
+- logoComposition.rationale must be a non-empty, brand-specific sentence explaining why that assigned lockup fits.`;
 
 export const ART_DIRECTOR_VARIATION_TASK_DESCRIPTIONS: Record<"color-palette" | "font", string> = {
   "color-palette": `Given the brand context, generate a color palette that is distinctly different from the current one.

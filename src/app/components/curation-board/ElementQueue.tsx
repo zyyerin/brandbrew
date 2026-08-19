@@ -17,6 +17,7 @@ import type { QueueColors } from "./QueueAffordanceSlot";
 import { QueueBodyDropBlock } from "./QueueBodyDropBlock";
 import { AddVariationSlot } from "./AddVariationSlot";
 import { VariationSlot } from "./VariationSlot";
+import { FilmstripScrollButtons } from "./FilmstripScrollButtons";
 
 interface ElementQueueProps {
   elementType: string;
@@ -65,7 +66,7 @@ interface ElementQueueProps {
   onQueueReorderDrop: (e: React.DragEvent<HTMLDivElement>, targetElementType: string) => void;
   // Variation action handlers
   onEditSave?: (elementId: string, data: unknown) => void;
-  onAddVariation?: (elementType: string, sourceVariationId?: string | null) => void;
+  onAddVariation?: (elementType: string) => void;
   onToggleVariationChecked?: (variationId: string, peerVariationIds: string[]) => void;
   onDeleteVariation?: (elementType: string, variationId: string) => void;
   isAddingVariation?: boolean;
@@ -174,6 +175,8 @@ export const ElementQueue = React.memo(function ElementQueue({
 }: ElementQueueProps) {
   const [isFileDragOver, setIsFileDragOver] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
+  const [canScrollLeft, setCanScrollLeft] = useState(false);
+  const [canScrollRight, setCanScrollRight] = useState(false);
   const [imageAspectRatios, setImageAspectRatios] = useState<Record<string, number>>({});
   const addSlotFileInputRef = useRef<HTMLInputElement>(null);
   const addSlotExtractInputRef = useRef<HTMLInputElement>(null);
@@ -318,6 +321,23 @@ export const ElementQueue = React.memo(function ElementQueue({
     }
   }
 
+  const updateScrollAffordance = useCallback(() => {
+    const el = filmstripRef.current;
+    if (!el) {
+      setCanScrollLeft(false);
+      setCanScrollRight(false);
+      return;
+    }
+    const max = el.scrollWidth - el.clientWidth;
+    const overflowing = max > 1;
+    setCanScrollLeft(overflowing && el.scrollLeft > 1);
+    setCanScrollRight(overflowing && el.scrollLeft < max - 1);
+  }, []);
+
+  const handleFilmstripScrollBy = useCallback((delta: number) => {
+    filmstripRef.current?.scrollBy({ left: delta, behavior: "smooth" });
+  }, []);
+
   // ── Filmstrip scroll listener ──
   useEffect(() => {
     const el = filmstripRef.current;
@@ -325,10 +345,21 @@ export const ElementQueue = React.memo(function ElementQueue({
     const handler = () => {
       filmstripScrollMapRef.current.set(elementType, el.scrollLeft);
       onFilmstripScroll((t) => t + 1);
+      updateScrollAffordance();
     };
     el.addEventListener("scroll", handler, { passive: true });
-    return () => el.removeEventListener("scroll", handler);
-  }, [elementType, filmstripScrollMapRef, onFilmstripScroll]);
+    const ro = new ResizeObserver(() => updateScrollAffordance());
+    ro.observe(el);
+    updateScrollAffordance();
+    return () => {
+      el.removeEventListener("scroll", handler);
+      ro.disconnect();
+    };
+  }, [elementType, filmstripScrollMapRef, onFilmstripScroll, updateScrollAffordance]);
+
+  useLayoutEffect(() => {
+    updateScrollAffordance();
+  }, [sortedVersions.length, filmstripWidth, aspectLayoutSignal, updateScrollAffordance]);
 
   // ── Auto-scroll filmstrip to newly active variation ──
   // Skip one auto-scroll when active card changes because of deletion.
@@ -530,20 +561,26 @@ export const ElementQueue = React.memo(function ElementQueue({
 
         {/* Filmstrip cards */}
         <div
-          ref={filmstripRef}
-          data-filmstrip
-          className="relative flex gap-4 overflow-x-auto bb-scrollbar-hide-x"
+          className="relative"
           style={{
             marginLeft: filmstripMarginLeft,
             width: filmstripWidth,
-            boxSizing: "border-box",
-            paddingLeft: LAYOUT.filmstrip.paddingLeft,
-            paddingRight: LAYOUT.slot.paddingX,
-            paddingTop: LAYOUT.filmstrip.paddingTop,
-            paddingBottom: LAYOUT.filmstrip.paddingBottom,
-            ...(filmstripMaskImage !== "none" ? { WebkitMaskImage: filmstripMaskImage, maskImage: filmstripMaskImage } : {}),
           }}
         >
+          <div
+            ref={filmstripRef}
+            data-filmstrip
+            className="relative flex gap-4 overflow-x-auto bb-scrollbar-hide-x"
+            style={{
+              width: "100%",
+              boxSizing: "border-box",
+              paddingLeft: LAYOUT.filmstrip.paddingLeft,
+              paddingRight: LAYOUT.slot.paddingX,
+              paddingTop: LAYOUT.filmstrip.paddingTop,
+              paddingBottom: LAYOUT.filmstrip.paddingBottom,
+              ...(filmstripMaskImage !== "none" ? { WebkitMaskImage: filmstripMaskImage, maskImage: filmstripMaskImage } : {}),
+            }}
+          >
           {/* Add variation slot */}
           {draggedId === null && onAddVariation && (
             <div
@@ -734,6 +771,18 @@ export const ElementQueue = React.memo(function ElementQueue({
               colors={colors}
               isImageElementType={true}
               onUploadFile={onUploadVariation}
+            />
+          )}
+        </div>
+          {isHovered && (
+            <FilmstripScrollButtons
+              showLeft={canScrollLeft}
+              showRight={canScrollRight}
+              zoom={zoom}
+              accent={colors.accent}
+              leftInset={leftClipWidth + LAYOUT.filmstrip.paddingLeft}
+              rightInset={vsPanelExpanded ? softClipCanvasWidth : 0}
+              onScrollBy={handleFilmstripScrollBy}
             />
           )}
         </div>

@@ -487,7 +487,7 @@ export function VisualSnapshotPanel({
         return createPortal(
           <div
             ref={vsDetailsPopupRef}
-            className="fixed z-[9999] bg-white rounded-xl border border-border/60 shadow-xl overflow-hidden"
+            className="fixed z-[9999] bg-white rounded-xl border border-border/60 shadow-xl overflow-y-auto"
             style={{
               left: popupLeft,
               top: popupTop,

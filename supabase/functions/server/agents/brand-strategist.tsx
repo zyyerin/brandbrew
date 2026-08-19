@@ -161,7 +161,7 @@ strategist.post("/generate-visual-concept", async (c) => {
       visualConcept: result.visualConcept,
       _meta: {
         agent: "brand-strategist",
-        ...(Deno.env.get("ENABLE_DEV_ROUTES") === "true" && { prompt: fullPrompt }),
+        prompt: fullPrompt,
         model: TEXT_MODEL,
         generationTime,
         contextMode: "full",
@@ -210,7 +210,7 @@ strategist.post("/generate-brand", async (c) => {
       ...brandData,
       _meta: {
         agent: "brand-strategist",
-        ...(Deno.env.get("ENABLE_DEV_ROUTES") === "true" && { prompt: fullPrompt }),
+        prompt: fullPrompt,
         model: TEXT_MODEL,
         generationTime,
         userInput: userPrompt,
@@ -286,7 +286,7 @@ strategist.post("/auto-complete", async (c) => {
       targetAudience: (out.targetAudience as string) ?? "",
       keywords: Array.isArray(out.keywords) ? out.keywords : (out.keywords ? [out.keywords] : []),
       applications: Array.isArray(out.applications) ? out.applications : [],
-      _meta: { agent: "brand-strategist", model: TEXT_MODEL, generationTime, ...(Deno.env.get("ENABLE_DEV_ROUTES") === "true" && { prompt: fullPrompt }) },
+      _meta: { agent: "brand-strategist", prompt: fullPrompt, model: TEXT_MODEL, generationTime },
     });
   } catch (err) {
     const isDev = Deno.env.get("ENABLE_DEV_ROUTES") === "true";
@@ -355,7 +355,7 @@ Rules: ${activeRules}`,
     return c.json({
       targetField,
       value: out.value,
-      _meta: { agent: "brand-strategist", model: TEXT_MODEL, generationTime, ...(Deno.env.get("ENABLE_DEV_ROUTES") === "true" && { prompt: fullPrompt }) },
+      _meta: { agent: "brand-strategist", prompt: fullPrompt, model: TEXT_MODEL, generationTime },
     });
   } catch (err) {
     const isDev = Deno.env.get("ENABLE_DEV_ROUTES") === "true";
@@ -409,7 +409,7 @@ strategist.post("/variation", async (c) => {
       ...variation,
       _meta: {
         agent: "brand-strategist",
-        ...(Deno.env.get("ENABLE_DEV_ROUTES") === "true" && { prompt: fullPrompt }),
+        prompt: fullPrompt,
         model: TEXT_MODEL,
         generationTime,
         contextMode: "full",
@@ -498,6 +498,7 @@ strategist.post("/direction", async (c) => {
       ...direction,
       _meta: {
         agent: "brand-strategist",
+        prompt: fullPrompt,
         model: TEXT_MODEL,
         generationTime,
         imageCount: images.length,

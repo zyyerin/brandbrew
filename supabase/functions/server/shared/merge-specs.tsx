@@ -5,8 +5,8 @@
 //
 //   Layer 1 — SOURCE_DESCRIPTORS
 //     Describes each source element to the AI (one entry per element type).
-//     textDesc:  used in text-model prompts (brand-strategist, vision-merge).
-//     imageDesc: used in image generation prompts (merge-generate).
+//     textDesc:  used in text-model prompts (txt2txt / img2txt).
+//     imageDesc: used in image generation prompts (txt2img / img2img generate).
 //
 //   Layer 2 — TARGET_ACTIONS
 //     Defines what the target element needs from the AI (one entry per element type).
@@ -27,7 +27,7 @@
 //
 // Out of scope: "visual-snapshot" is not a merge target here. Drag-to-update on
 // the snapshot panel calls onSnapshotMerge → regenerateWithOverride (full
-// snapshot re-synthesis), not MERGE_SPECS / merge-cards.
+// snapshot re-synthesis), not MERGE_SPECS.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import type {
@@ -39,9 +39,13 @@ import type {
 } from "./types.tsx";
 import { buildVisualConceptContextText } from "./brand-context.ts";
 import { buildImageTextPolicy, formatColorSchemeSpec, formatTypefaceCharacterSpec } from "./image-text-policy.ts";
+import { withLogoWhiteCanvas } from "./logo-prompts.ts";
 import { SUPPORTED_MERGE_PAIRS } from "./merge-pairs.ts";
+import { mergeCardIdToField } from "./merge-text.ts";
 import { buildPrompt } from "./prompt-builder.ts";
 import { RULE_OUTPUT_JSON } from "./prompt-rules.ts";
+
+export { withLogoWhiteCanvas };
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
@@ -130,7 +134,6 @@ const PROMPT_OVERRIDES: Record<string, Partial<MergeSpec>> = {
       "Derive a color palette of 3 to 5 hex colors that reflects the color scheme of the image. Include a primary brand color, key accent colors, and any neutral tones.",
     extractPaletteInstructionWithExistingTarget:
       "Derive a color palette of 3 to 5 hex colors that reflects the color scheme of the image, and form a palette that fits this color scheme: {sourceData}. Include a primary brand color, key accent colors, and any neutral tones.",
-    requiresSourceImage: true,
   },
   "logo→font": {
     instruction:
@@ -143,7 +146,6 @@ const PROMPT_OVERRIDES: Record<string, Partial<MergeSpec>> = {
       "Derive a color palette of 3 to 5 hex colors that reflects the color scheme of the image. Include a primary brand color, key accent colors, and any neutral tones.",
     extractPaletteInstructionWithExistingTarget:
       "Derive a color palette of 3 to 5 hex colors that reflects the color scheme of the image, and form a palette that fits this color scheme: {sourceData}. Include a primary brand color, key accent colors, and any neutral tones.",
-    requiresSourceImage: true,
   },
   "art-style→font": {
     instruction:
@@ -152,7 +154,8 @@ const PROMPT_OVERRIDES: Record<string, Partial<MergeSpec>> = {
 
   // ── image targets (model-facing newHint / cardHint overrides) ───────────────
   "color-palette→logo": {
-    newHint: "Design a logo inspired by the color scheme: {sourceData}.",
+    newHint:
+      "Design a logo inspired by the color scheme: {sourceData}. Keep a solid white canvas; apply the scheme only to the mark and wordmark.",
     cardHint: "Recolor this image with this color scheme: {sourceData}",
   },
   "color-palette→art-style": {
@@ -162,7 +165,7 @@ const PROMPT_OVERRIDES: Record<string, Partial<MergeSpec>> = {
     newHint: "Design a wordmark from typeface (black wordmark on white background)",
     cardHint: "Replace the text in the image with this font: {sourceData}; if no text is visible, add a wordmark in this typeface. Use only this single typeface for all text — do not mix in any other font. Brand name: {brandName}",
   },
-  // Slot merge: /merge-generate uses buildMergeGeneratePrompt (strict 3 segments; no brief text).
+  // Slot txt2img: uses buildMergeGeneratePrompt (strict 3 segments; no brief text).
   "font→art-style": {
     newHint: "Generate a modular brand graphic device system extracting and deconstructing the specific letterforms, terminals, and glyph geometry of the chosen fonts. Include a primary key visual (KV) and secondary supporting patterns/shapes. No photography. No actual logo.",
     cardHint: "Replace the typeface in the image with these fonts: {sourceData}",
@@ -193,7 +196,7 @@ function buildMergeSpec(source: string, target: string): MergeSpec | null {
   const key = `${source}→${target}`;
   const overrides = PROMPT_OVERRIDES[key] ?? {};
 
-  // 文本类目标（如调色板、字体）：走 strategist / vision-merge，需要完整 instruction 与可改字段列表
+  // 文本类目标（如调色板、字体）：走 /txt2txt 或 /img2txt，需要完整 instruction 与可改字段列表
   if (tgtAction.textAction !== null && tgtAction.allowedFields !== null) {
     // 优先用 PROMPT_OVERRIDES 里的 instruction，否则把模板中的 {SOURCE_DESC} 换成 Layer 1 的 textDesc
     const instruction = overrides.instruction
@@ -208,7 +211,6 @@ function buildMergeSpec(source: string, target: string): MergeSpec | null {
       allowedFields: tgtAction.allowedFields,
       instruction,
       extractPaletteInstructionWithExistingTarget: overrides.extractPaletteInstructionWithExistingTarget,
-      requiresSourceImage: overrides.requiresSourceImage ?? false,
       textModel: overrides.textModel,
     };
   }
@@ -253,20 +255,10 @@ function buildAllMergeSpecs(): Record<string, Record<string, MergeSpec>> {
 
 export const MERGE_SPECS: Record<string, Record<string, MergeSpec>> = buildAllMergeSpecs();
 
-// ── Card-ID ↔ brandData field mapping ────────────────────────────────────────
-
-export function mergeCardIdToField(cardId: string): string | null {
-  const map: Record<string, string> = {
-    "color-palette": "colorPalette",
-    "font": "font",
-    "logo": "logoInspiration",
-    "art-style": "artStyle",
-  };
-  return map[cardId] ?? null;
-}
+export { mergeCardIdToField } from "./merge-text.ts";
 
 // ── Merge board prompt context (visual concept + four visual slots) ───────────
-// Single formatter for /merge, /vision-merge, and /merge-generate.
+// Single formatter for /txt2txt, /img2txt, /txt2img, and /img2img.
 
 const MAX_URL_SNIPPET = 96;
 
@@ -344,6 +336,8 @@ export type FormatMergeBoardOptions = {
   omitLogoUrl?: boolean;
   /** Join board element lines (URLs, palette, fonts). Default ". " */
   boardElementJoiner?: string;
+  /** `logo-mark` keeps palette colors off the canvas (slot color→logo). */
+  colorApplyTo?: "any" | "logo-mark";
 };
 
 /** Single visual-concept line for prompts (same wording as full board formatter). */
@@ -381,7 +375,9 @@ export function formatMergeBoardPromptContext(
       parts.push(`Logo reference: ${truncateUrlForPrompt(be.logoInspiration.imageUrl)}`);
     }
     if (be.colorPalette?.length) {
-      const colorSpec = formatColorSchemeSpec(be.colorPalette.slice(0, 8));
+      const colorSpec = formatColorSchemeSpec(be.colorPalette.slice(0, 8), {
+        applyTo: options?.colorApplyTo,
+      });
       if (colorSpec) parts.push(colorSpec);
     }
     if (be.font && (be.font.titleFont || be.font.bodyFont)) {
@@ -427,11 +423,7 @@ export function normalizeMergeBoardFromBody(
   if (!isRecord(raw)) {
     return mergeBoardFromShortContextPatch(shortContext);
   }
-  const beIn = isRecord(raw.boardElements)
-    ? raw.boardElements
-    : isRecord((raw as Record<string, unknown>).activeElements)
-      ? (raw as Record<string, unknown>).activeElements as Record<string, unknown>
-      : {};
+  const beIn = isRecord(raw.boardElements) ? raw.boardElements : {};
   const visualConcept =
     parseVisualConceptFromUnknown(raw.visualConcept)
     ?? parseVisualConceptFromUnknown(shortContext.visualConcept);
@@ -528,10 +520,7 @@ function normalizeHexPalette(items: unknown[]): string[] {
 
 // ── Merge support predicate ───────────────────────────────────────────────────
 
-export function isMergeSupported(sourceId: string, targetId: string): boolean {
-  if (sourceId === targetId) return false;
-  return !!MERGE_SPECS[sourceId]?.[targetId];
-}
+export { isMergeSupported } from "./merge-routes.ts";
 
 /** Template vars for model-facing newHint / cardHint strings. */
 export type MergeHintTemplateVars = {
@@ -762,12 +751,14 @@ export function buildEditImagePrompt(opts: EditPromptOpts): string {
   }
 
   if (opts.cardType === "logo") {
-    prompt = `${prompt} Keep the background pure white and unchanged; apply the recolor only to the logo mark and wordmark itself, and preserve their exact shapes, composition, and layout.`;
+    prompt = (
+      `${prompt} Keep the background solid pure white (#FFFFFF) and unchanged; `
+      + `apply the recolor only to the logo mark and wordmark itself, and preserve their exact shapes, composition, and layout. `
+      + `Do not tint the canvas with off-white, cream, ivory, beige, or pale palette colors.`
+    );
   }
 
-  if (opts.cardType === "art-style") {
-    prompt = `${prompt} ${buildImageTextPolicy({ purpose: "graphic", preserveExistingText: true })}`;
-  } else if (opts.cardType === "application") {
+  if (opts.cardType === "application") {
     prompt = `${prompt} ${buildImageTextPolicy({
       purpose: "packaging",
       renderable: [opts.brandName, opts.tagline],
@@ -803,11 +794,17 @@ export function buildExtractPalettePrompt(
 // leading separator) for use by buildMergeGeneratePrompt in the /merge-generate route.
 // Distinct from formatSourceForHint which targets the {sourceData} template var.
 
-export function formatSourceTextData(sourceId: string | undefined, data: unknown): string {
+export function formatSourceTextData(
+  sourceId: string | undefined,
+  data: unknown,
+  opts?: { colorApplyTo?: "any" | "logo-mark" },
+): string {
   if (data === undefined || data === null) return "";
   switch (sourceId) {
     case "color-palette": {
-      const spec = Array.isArray(data) ? formatColorSchemeSpec(data as string[]) : "";
+      const spec = Array.isArray(data)
+        ? formatColorSchemeSpec(data as string[], { applyTo: opts?.colorApplyTo })
+        : "";
       return spec ? ` ${spec}` : "";
     }
     case "font": {
@@ -840,7 +837,7 @@ export function buildMergeHintAndSourceSnippet(
 const MERGE_GENERATE_SEGMENT_JOINER = "\n\n";
 
 /**
- * Unified prompt for POST /merge-generate (queue-slot image merge).
+ * Unified prompt for txt2img / img2img generate (no target bitmap).
  * Three segments joined with blank lines: hint → active board slots → visual concept.
  * When `refImageGuide` is set, it is prefixed to the hint segment (still counts as one segment).
  */
@@ -874,8 +871,7 @@ export function buildMergeGeneratePrompt(args: {
   return parts.filter((p) => p.length > 0).join(MERGE_GENERATE_SEGMENT_JOINER);
 }
 
-/** Queue-slot merge-generate: color-palette → logo | art-style (structured brief + 【Visual Concept】 + active slots). */
-/** Queue-slot merge when dragging the palette onto logo or art-style (structured brief + VC + active slots). */
+/** Queue-slot txt2img: color-palette → logo | art-style (structured brief + VC + active slots). */
 export function isMergeGenerateColorPaletteStructuredSlot(
   sourceId: string | undefined,
   cardType: string,
@@ -883,12 +879,10 @@ export function isMergeGenerateColorPaletteStructuredSlot(
   return sourceId === "color-palette" && (cardType === "logo" || cardType === "art-style");
 }
 
-/** @deprecated Use isMergeGenerateColorPaletteStructuredSlot (same behavior for logo). */
-export function isMergeGenerateColorPaletteToLogo(
-  sourceId: string | undefined,
-  cardType: string,
-): boolean {
-  return isMergeGenerateColorPaletteStructuredSlot(sourceId, cardType) && cardType === "logo";
+function paletteFromSourceTextData(sourceTextData: unknown): string[] | undefined {
+  if (!Array.isArray(sourceTextData)) return undefined;
+  const palette = sourceTextData.filter((x): x is string => typeof x === "string" && x.trim().length > 0);
+  return palette.length > 0 ? palette : undefined;
 }
 
 /** Structured sections for palette → logo or palette → art-style (matches explicit VC block like palette → logo). */
@@ -897,16 +891,35 @@ export function buildMergeGeneratePromptColorPaletteStructured(args: {
   board: MergeBoardPromptContext;
   brandCoreText: string;
   boardFormat?: FormatMergeBoardOptions;
+  /** Dragged palette hex array; board context excludes the source slot, so this must be injected. */
+  sourceTextData?: unknown;
+  cardType?: string;
 }): string {
-  const activeElements = formatMergeBoardPromptContext(args.board, {
+  const colorApplyTo = args.cardType === "logo" ? "logo-mark" as const : undefined;
+  const sourcePalette = paletteFromSourceTextData(args.sourceTextData);
+  const board: MergeBoardPromptContext = {
+    visualConcept: args.board.visualConcept,
+    boardElements: {
+      ...args.board.boardElements,
+      colorPalette: sourcePalette ?? args.board.boardElements?.colorPalette,
+    },
+  };
+  const sourceSpec = formatSourceTextData(
+    "color-palette",
+    sourcePalette ?? args.sourceTextData,
+    { colorApplyTo },
+  ).trim();
+  const taskLine = [args.taskLine.trim(), sourceSpec].filter(Boolean).join(" ");
+  const activeElements = formatMergeBoardPromptContext(board, {
     includeVisualConcept: false,
     includeBoardElements: true,
     boardElementJoiner: "\n",
     ...args.boardFormat,
+    colorApplyTo,
   });
-  const vcLine = formatVisualConceptPromptLine(args.board);
+  const vcLine = formatVisualConceptPromptLine(board);
   return [
-    args.taskLine.trim(),
+    taskLine,
     "",
     "【BrandBriefCore】",
     args.brandCoreText.trim(),
@@ -919,18 +932,4 @@ export function buildMergeGeneratePromptColorPaletteStructured(args: {
     "",
     "---",
   ].join("\n");
-}
-
-/** @deprecated Use buildMergeGeneratePromptColorPaletteStructured. */
-export const buildMergeGeneratePromptColorPaletteToLogo = buildMergeGeneratePromptColorPaletteStructured;
-
-export function buildConcisePrompt(
-  newHint: string,
-  sourceId?: string,
-  sourceTextData?: unknown,
-  brandContext?: string,
-): string {
-  const head = buildMergeHintAndSourceSnippet(newHint, sourceId, sourceTextData);
-  if (!brandContext) return head;
-  return `${head}. ${brandContext}`;
 }

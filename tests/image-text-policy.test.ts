@@ -36,6 +36,15 @@ test("color spec names the values as inks, not as a Brand colors caption", () =>
   assert.doesNotMatch(spec, /"#14213D"/);
 });
 
+test("logo-mark color spec keeps palette colors off the canvas", () => {
+  const spec = formatColorSchemeSpec(ctx.colorPalette, { applyTo: "logo-mark" });
+  assert.match(spec, /fills and inks of the mark and wordmark only/);
+  assert.match(spec, /never as the canvas, paper, or background/);
+  assert.match(spec, /#FCA311/);
+  assert.doesNotMatch(spec, /"#FCA311"/);
+  assert.doesNotMatch(spec, /Brand colors:/);
+});
+
 test("typeface spec stays unquoted and talks about visual character", () => {
   const spec = formatTypefaceCharacterSpec(ctx.titleFont, ctx.bodyFont);
   assert.match(spec, /visual character of Fraunces/);
@@ -83,19 +92,20 @@ test("findRenderableSpecLeaks flags quoted fonts and field labels, not bare hex"
   assert.deepEqual(findRenderableSpecLeaks(safe, ["Fraunces"]), []);
 });
 
-test("art-style prompt does not invite a labeled style board", () => {
+test("art-style prompt is a graphic style board, without the later text policy", () => {
   const prompt = buildArtStyleImagePrompt(ctx);
-  assert.match(prompt, /abstract 2D graphic composition/);
-  assert.match(prompt, /The atmosphere is precise, warm/);
-  assert.doesNotMatch(prompt, /style board/i);
-  assert.doesNotMatch(prompt, /Keywords:/);
-  assert.doesNotMatch(prompt, /Tagline:/);
-  assert.doesNotMatch(prompt, /Target audience:/);
-  assert.doesNotMatch(prompt, /Brand colors:/);
-  assert.doesNotMatch(prompt, /"Fraunces"/);
-  assert.doesNotMatch(prompt, /"Northstar"/);
-  assert.match(prompt, /Render no text, letters, or numbers at all/);
-  assert.deepEqual(findRenderableSpecLeaks(prompt, [ctx.titleFont, ctx.bodyFont]), []);
+  assert.match(prompt, /Art style reference image for "Northstar" brand/);
+  assert.match(prompt, /graphic style board/);
+  assert.match(prompt, /Brand description: A navigation platform for independent teams/);
+  assert.match(prompt, /Tagline: "Find your way"/);
+  assert.match(prompt, /Visual concept: Guiding light. Precise geometry with a warm focal point/);
+  assert.match(prompt, /Keywords: precise, warm/);
+  assert.match(prompt, /Brand colors: #14213D, #FCA311, #FFFFFF/);
+  assert.match(prompt, /No photorealism, no people, no products, no environments, no text labels/);
+  assert.doesNotMatch(prompt, /abstract 2D graphic composition/);
+  assert.doesNotMatch(prompt, /no swatches, no legends, no type specimens/);
+  assert.doesNotMatch(prompt, /Render no text, letters, or numbers at all/);
+  assert.doesNotMatch(prompt, /fills and inks only/);
 });
 
 test("application prompt extracts from an identity board instead of reprinting it", () => {

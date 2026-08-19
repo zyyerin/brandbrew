@@ -61,7 +61,13 @@ export interface DirectMergeState {
 }
 
 export function useDirectMerge(
-  onMerge?: (sourceElementType: string, targetElementType: string, sourceVariationId?: string, targetVariationId?: string) => void,
+  onMergeSlot?: (sourceElementType: string, targetElementType: string, sourceVariationId?: string) => void,
+  onMergeCard?: (
+    sourceElementType: string,
+    targetElementType: string,
+    sourceVariationId: string | undefined,
+    targetVariationId: string,
+  ) => void,
   onMoveVariationToQueue?: (sourceElementType: string, targetElementType: string, variationId: string) => void,
   isVariationDisabled?: (variationId: string) => boolean,
   zoom: number = 1,
@@ -101,12 +107,7 @@ export function useDirectMerge(
         break;
       }
       case "slot": {
-        toast(resolveMergeUiHint("slot", draggedId, dropTarget.elementType), {
-          id: DRAG_HINT_TOAST_ID,
-          duration: Infinity,
-          icon: "✦",
-          style: AI_TOAST_STYLE,
-        });
+        toast.dismiss(DRAG_HINT_TOAST_ID);
         break;
       }
       case "body": {
@@ -253,7 +254,7 @@ export function useDirectMerge(
     const target = dropTargetRef.current;
     if (dragging && target?.type === "card" && target.elementType !== dragging) {
       if (!isVariationDisabled?.(target.variationId) && (!draggingVar || !isVariationDisabled?.(draggingVar))) {
-        onMerge?.(dragging, target.elementType, draggingVar ?? undefined, target.variationId);
+        onMergeCard?.(dragging, target.elementType, draggingVar ?? undefined, target.variationId);
       }
     }
     resetAll();
@@ -290,7 +291,7 @@ export function useDirectMerge(
       return;
     }
     if (dragging && isMergeSupported(dragging, targetElementType)) {
-      onMerge?.(dragging, targetElementType, draggingVar ?? undefined);
+      onMergeSlot?.(dragging, targetElementType, draggingVar ?? undefined);
     }
     resetAll();
   };

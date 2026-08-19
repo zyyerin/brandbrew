@@ -1,11 +1,9 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // shared/art-director-image-prompts.ts — txt2img briefs for drawing-stage cards
 //
-// Art-style and application prompts used to dump labeled fields (Brand colors,
-// Typography, Keywords) and quoted font names into the image model. Those
-// strings look like captions, so they get printed onto style boards and
-// packaging. This builder keeps specification values unquoted and ends with
-// the shared text-rendering contract.
+// Art-style keeps the style-board brief (layered graphic language, not a single
+// poster). Application mockups still use the shared text-rendering contract so
+// hex codes and typeface names are not printed onto packaging.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import type { ImagePromptContext } from "./types.tsx";
@@ -38,18 +36,30 @@ function visualDirection(ctx: ImagePromptContext): string {
 }
 
 export function buildArtStyleImagePrompt(ctx: ImagePromptContext): string {
-  const name = ctx.brandName?.trim() || "the brand";
-  const focus = ctx.newHint ? `Creative direction: ${asSentence(ctx.newHint)} ` : "";
-  const prompt = [
-    `${focus}An abstract 2D graphic composition that establishes the visual language of ${name}.`,
-    visualDirection(ctx),
-    "Shape grammar, pattern rhythm, contrast hierarchy, and abstract textures. Flat or semi-flat, poster-like. No photorealism, no people, no products, no environments, no swatches, no legends, no type specimens.",
-    formatColorSchemeSpec(ctx.colorPalette),
-    buildImageTextPolicy(),
-  ].filter((part) => part.trim().length > 0).join(" ");
+  const name = ctx.brandName ?? "the brand";
+  const description = ctx.description ?? ctx.brandDescription;
+  const tagline = ctx.tagline ? `Tagline: "${ctx.tagline}". ` : "";
+  const audience = ctx.targetAudience ? `Target audience: ${ctx.targetAudience}. ` : "";
+  const vc = ctx.visualConcept;
+  const conceptStr = vc ? `${vc.concept}. ${vc.description}` : "";
+  const kwds = (ctx.keywords ?? []).join(", ");
+  const focus = ctx.newHint ? `Creative direction: ${ctx.newHint}. ` : "";
+  const palette = (ctx.colorPalette ?? []).length > 0
+    ? `Brand colors: ${ctx.colorPalette!.join(", ")}. `
+    : "";
 
-  warnIfSpecLeaks("art-style-prompt", prompt, [ctx.titleFont, ctx.bodyFont]);
-  return prompt;
+  return (
+    `${focus}Art style reference image for "${name}" brand. ` +
+    `${description ? `Brand description: ${description}. ` : ""}` +
+    `${tagline}${audience}` +
+    `${conceptStr ? `Visual concept: ${conceptStr}. ` : ""}` +
+    `${kwds ? `Keywords: ${kwds}. ` : ""}` +
+    `${palette}` +
+    `Create a graphic style board that defines the brand's 2D visual language: ` +
+    `shape grammar, pattern rhythm, contrast hierarchy, and abstract textures. ` +
+    `Flat or semi-flat composition, poster-like design layout. ` +
+    `No photorealism, no people, no products, no environments, no text labels.`
+  );
 }
 
 export function buildApplicationImagePrompt(ctx: ImagePromptContext): string {

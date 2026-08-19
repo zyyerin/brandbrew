@@ -1,9 +1,10 @@
 import { callApi } from "./apiClient";
 import type { VariationMeta } from "../types/project";
 import type { BrandContextFull, BrandContextShort, MergeBoardPromptContext } from "@server-shared/types.tsx";
-import type { LogoComposition } from "@server-shared/logo-prompts.ts";
+import type { LogoComposition, LogoCompositionMode } from "@server-shared/logo-prompts.ts";
+import { omitTaglineDeep, omitTaglineForLogo } from "@server-shared/brand-context.ts";
 import type { MergeBrandContext, MergeResult } from "./variation-helpers";
-import { isMergeSupported } from "@server-shared/merge-specs.tsx";
+import { isMergeSupported } from "@server-shared/merge-routes.ts";
 
 const IMAGE_GEN_TIMEOUT_MS = 180_000;
 // One image per request only needs room for a single model attempt plus upload.
@@ -26,7 +27,7 @@ export interface ImageGenContext {
   paletteImageBase64?: string;
   /** Hex colors for recoloring when no palette image is available */
   colorPalette?: string[];
-  /** Heading/display font name (Google Fonts) — signals wordmark generation when font→logo */
+  /** Heading/display font name (Google Fonts) */
   titleFont?: string;
   bodyFont?: string;
   brandContext?: BrandContextFull;
@@ -86,7 +87,10 @@ export async function generateBrandImage(
   const brandContextShort: BrandContextShort = ctx.brandContextShort ?? {};
   const data = await callApi<{ imageUrl?: string; _meta?: ImageGenResult["_meta"] }>(
     "generate-image",
-    { body: { cardType, ...ctx, brandContext, brandContextShort }, timeoutMs: IMAGE_GEN_TIMEOUT_MS },
+    {
+      body: omitTaglineForLogo(cardType, { cardType, ...ctx, brandContext, brandContextShort }),
+      timeoutMs: IMAGE_GEN_TIMEOUT_MS,
+    },
   );
   if (!data.imageUrl) throw new Error("No imageUrl in server response");
   return { imageUrl: data.imageUrl, _meta: data._meta };
@@ -95,8 +99,7 @@ export async function generateBrandImage(
 /**
  * Edits an existing image using a free-form user comment as the modification
  * instruction.  Calls /visual-designer/edit directly so it always uses
- * img2img (bypasses the generate-image routing that can mis-route to
- * wordmark or txt2img).
+ * img2img (bypasses the generate-image routing that can mis-route to txt2img).
  */
 export async function commentEditImage(
   cardType: ImageCardType,
@@ -109,12 +112,12 @@ export async function commentEditImage(
   const data = await callApi<{ imageUrl?: string; _meta?: ImageGenResult["_meta"] }>(
     "visual-designer/edit",
     {
-      body: {
+      body: omitTaglineForLogo(cardType, {
         cardType,
         newHint: ctx.comment,
         sourceImageUrl: ctx.sourceImageUrl,
         brandContextShort: ctx.brandContextShort ?? {},
-      },
+      }),
       timeoutMs: IMAGE_GEN_TIMEOUT_MS,
     },
   );
@@ -125,31 +128,62 @@ export async function commentEditImage(
 export interface MergeImageContext {
   brandName?: string;
   newHint: string;
-  /** Source element type — used by the server to look up formatSourceTextData. */
-  sourceId?: string;
-  /** Active image URL of the source card — used as img2img reference when available */
+  sourceId: string;
+  targetId: string;
+  /** Source card image — used for img2img generate (no target bitmap). */
   sourceImageUrl?: string;
-  /** Actual data of a text-based source element (visual-concept phrase, palette hex array, font pairing) */
+  /** Existing target card image — used for img2img edit. */
+  targetImageUrl?: string;
+  /** Source card image when editing a target (logo/art-style → image card). */
+  referenceImageUrl?: string;
+  paletteImageBase64?: string;
+  colorPalette?: string[];
+  /** Text source payload (palette hex array, font pairing). Wordmark reads titleFont from this. */
   sourceTextData?: unknown;
   brandContextShort?: BrandContextShort;
-  /** Board snapshot for merge-generate: active visual concept + four visual slots (minus target/source). */
   mergeBoardContext?: MergeBoardPromptContext;
 }
 
-export async function generateMergeImage(
-  cardType: ImageCardType,
-  ctx: MergeImageContext,
-): Promise<ImageGenResult> {
+export async function generateTxt2Img(ctx: MergeImageContext): Promise<ImageGenResult> {
   const data = await callApi<{ imageUrl?: string; _meta?: ImageGenResult["_meta"] }>(
-    "visual-designer/merge-generate",
+    "visual-designer/txt2img",
     {
-      body: {
-        cardType,
-        ...ctx,
+      body: omitTaglineForLogo(ctx.targetId, {
+        sourceId: ctx.sourceId,
+        targetId: ctx.targetId,
+        newHint: ctx.newHint,
+        sourceTextData: ctx.sourceTextData,
         brandContextShort: ctx.brandContextShort ?? {
           name: ctx.brandName,
         },
-      },
+        mergeBoardContext: ctx.mergeBoardContext,
+      }),
+      timeoutMs: IMAGE_GEN_TIMEOUT_MS,
+    },
+  );
+  if (!data.imageUrl) throw new Error("No imageUrl in server response");
+  return { imageUrl: data.imageUrl, _meta: data._meta };
+}
+
+export async function generateImg2Img(ctx: MergeImageContext): Promise<ImageGenResult> {
+  const data = await callApi<{ imageUrl?: string; _meta?: ImageGenResult["_meta"] }>(
+    "visual-designer/img2img",
+    {
+      body: omitTaglineForLogo(ctx.targetId, {
+        sourceId: ctx.sourceId,
+        targetId: ctx.targetId,
+        newHint: ctx.newHint,
+        sourceImageUrl: ctx.sourceImageUrl,
+        targetImageUrl: ctx.targetImageUrl,
+        referenceImageUrl: ctx.referenceImageUrl,
+        paletteImageBase64: ctx.paletteImageBase64,
+        colorPalette: ctx.colorPalette,
+        sourceTextData: ctx.sourceTextData,
+        brandContextShort: ctx.brandContextShort ?? {
+          name: ctx.brandName,
+        },
+        mergeBoardContext: ctx.mergeBoardContext,
+      }),
       timeoutMs: IMAGE_GEN_TIMEOUT_MS,
     },
   );
@@ -178,6 +212,8 @@ export interface PipelineContext {
   excludedPalettes?: string[][];
   /** Font names already used — the AI should choose entirely different fonts. */
   excludedFonts?: string[];
+  /** Logo lockup modes already used — the server samples a different mode. */
+  excludedCompositions?: LogoCompositionMode[];
 }
 
 export interface PaletteFontsResult {
@@ -268,7 +304,11 @@ export function designLogo(
   ctx: PipelineContext,
   opts?: { signal?: AbortSignal },
 ): Promise<LogoResult> {
-  return designDrawingStageCard<LogoResult>("art-director/design-logo", ctx, opts);
+  return designDrawingStageCard<LogoResult>(
+    "art-director/design-logo",
+    omitTaglineDeep(ctx),
+    opts,
+  );
 }
 
 export function designArtStyle(
@@ -382,10 +422,10 @@ export async function generateBrandContextMockup(
 
 // ─── Merge API calls (moved from merge-logic.ts) ─────────────────────────────
 
-const VISION_MERGE_TIMEOUT_MS = 90_000;
-const PALETTE_EXTRACTION_TIMEOUT_MS = 180_000;
+const TXT_MERGE_TIMEOUT_MS = 90_000;
+const IMG2TXT_TIMEOUT_MS = 180_000;
 
-export async function performMerge(
+export async function performTxt2Txt(
   sourceId: string,
   targetId: string,
   brandContext: MergeBrandContext,
@@ -394,52 +434,37 @@ export async function performMerge(
 
   try {
     const result = await callApi<{ patch?: Partial<MergeBrandContext>; _meta?: VariationMeta; error?: string }>(
-      "merge-cards",
-      { body: { sourceId, targetId, brandData: brandContext } },
+      "visual-designer/txt2txt",
+      { body: { sourceId, targetId, brandData: brandContext }, timeoutMs: TXT_MERGE_TIMEOUT_MS },
     );
-    if (result.error) throw new Error(`[performMerge] server error: ${result.error}`);
+    if (result.error) throw new Error(`[performTxt2Txt] server error: ${result.error}`);
     return { patch: result.patch ?? null, _meta: result._meta };
   } catch (err) {
-    console.error("[performMerge] failed:", err);
+    console.error("[performTxt2Txt] failed:", err);
     return { patch: null };
   }
 }
 
-export async function performPaletteExtraction(
+export async function performImg2Txt(
   sourceId: string,
+  targetId: string,
   sourceImageUrl: string,
   brandContext: MergeBrandContext,
   options: { throwOnError?: boolean } = {},
 ): Promise<MergeResult> {
   try {
     const result = await callApi<{ patch?: Partial<MergeBrandContext>; _meta?: VariationMeta; error?: string }>(
-      "visual-designer/extract-palette",
-      { body: { sourceId, sourceImageUrl, brandData: brandContext }, timeoutMs: PALETTE_EXTRACTION_TIMEOUT_MS },
+      "visual-designer/img2txt",
+      {
+        body: { sourceId, targetId, sourceImageUrl, brandData: brandContext },
+        timeoutMs: IMG2TXT_TIMEOUT_MS,
+      },
     );
-    if (result.error) throw new Error(`[performPaletteExtraction] server error: ${result.error}`);
+    if (result.error) throw new Error(`[performImg2Txt] server error: ${result.error}`);
     return { patch: result.patch ?? null, _meta: result._meta };
   } catch (err) {
-    console.error("[performPaletteExtraction] failed:", err);
+    console.error("[performImg2Txt] failed:", err);
     if (options.throwOnError) throw err;
-    return { patch: null };
-  }
-}
-
-export async function performVisionTextMerge(
-  sourceId: string,
-  targetId: string,
-  sourceImageUrl: string,
-  brandContext: MergeBrandContext,
-): Promise<MergeResult> {
-  try {
-    const result = await callApi<{ patch?: Partial<MergeBrandContext>; _meta?: VariationMeta; error?: string }>(
-      "visual-designer/vision-merge",
-      { body: { sourceId, targetId, sourceImageUrl, brandData: brandContext }, timeoutMs: VISION_MERGE_TIMEOUT_MS },
-    );
-    if (result.error) throw new Error(`[performVisionTextMerge] server error: ${result.error}`);
-    return { patch: result.patch ?? null, _meta: result._meta };
-  } catch (err) {
-    console.error("[performVisionTextMerge] failed:", err);
     return { patch: null };
   }
 }

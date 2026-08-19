@@ -116,7 +116,8 @@ export default function App() {
     generatedTagsByField,
     handleAddConceptWithPipeline,
     handleAddVariation,
-    handleMerge,
+    handleMergeSlot,
+    handleMergeCard,
     handleMoveVariationToQueue,
     handleCommentModify,
     handleUploadVariation,
@@ -627,19 +628,20 @@ export default function App() {
                 handleEditSave(elementId, data);
               }
             }}
-            onAddVariation={(elementType, sourceVariationId) => {
-              if (sourceVariationId && uploadingVariationIds.has(sourceVariationId)) return;
-              handleAddVariation(elementType, sourceVariationId);
-            }}
+            onAddVariation={handleAddVariation}
             onAddConcept={handleAddConceptWithPipeline}
             onUploadVariation={handleUploadVariation}
             onUploadImageForPalette={(elementType, file) => {
               if (elementType === "color-palette") handleExtractPaletteFromImage(file);
             }}
             loadingElementIds={loadingElements}
-            onMerge={(sourceId, targetId, sourceVarId, targetVarId) => {
-              if ((sourceVarId && uploadingVariationIds.has(sourceVarId)) || (targetVarId && uploadingVariationIds.has(targetVarId))) return;
-              handleMerge(sourceId, targetId, sourceVarId, targetVarId);
+            onMergeSlot={(sourceId, targetId, sourceVarId) => {
+              if (sourceVarId && uploadingVariationIds.has(sourceVarId)) return;
+              handleMergeSlot(sourceId, targetId, sourceVarId);
+            }}
+            onMergeCard={(sourceId, targetId, sourceVarId, targetVarId) => {
+              if ((sourceVarId && uploadingVariationIds.has(sourceVarId)) || uploadingVariationIds.has(targetVarId)) return;
+              handleMergeCard(sourceId, targetId, sourceVarId, targetVarId);
             }}
             onMoveVariationToQueue={(sourceId, targetId, variationId) => {
               if (uploadingVariationIds.has(variationId)) return;

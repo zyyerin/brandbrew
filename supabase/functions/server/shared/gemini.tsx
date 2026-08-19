@@ -6,7 +6,7 @@
 import { jsonrepair } from "https://esm.sh/jsonrepair@3.12.0";
 import { getSupabaseClient } from "../supabase-client.tsx";
 import { buildImageBaseName } from "./storage-paths.ts";
-import { resolveImageModel } from "./image-config.tsx";
+import { parseImageGenPurpose, resolveImageModel, type ImageGenPurpose } from "./image-config.tsx";
 import type { Timer } from "./timing.ts";
 import type {
   GeminiTextConfig,
@@ -658,6 +658,8 @@ export type GenerateImageOpts = {
   referenceImage?: { b64: string; mimeType: string };
   refImages?: Array<{ b64: string; mimeType: string }>;
   aspectRatio?: string;
+  /** Direct merge uses Pro for every card type; omitted means per-card generate mapping. */
+  purpose?: ImageGenPurpose;
   /** Collects per-attempt wall-clock spans. Pass a child timer for concurrent branches. */
   timer?: Timer;
 };
@@ -669,10 +671,11 @@ export async function generateImage(
 ): Promise<{ b64: string; mimeType: string; usedModel: string }> {
   const { cardType, sourceImage, paletteImage, referenceImage, refImages, aspectRatio, timer } = opts;
   const hasRefs = refImages && refImages.length > 0;
-  const model = resolveImageModel(cardType);
+  const purpose = parseImageGenPurpose(opts.purpose);
+  const model = resolveImageModel(cardType, purpose);
 
   const mode = hasRefs ? "multiRef" : sourceImage ? "img2img" : "txt2img";
-  console.log(`[gemini] generateImage → cardType=${cardType} model=${model} mode=${mode}`);
+  console.log(`[gemini] generateImage → cardType=${cardType} purpose=${purpose} model=${model} mode=${mode}`);
 
   const attemptTimer = timer?.child(`model-${model.includes("pro") ? "pro" : "flash"}`);
   const closeAttempt = attemptTimer?.open("total");

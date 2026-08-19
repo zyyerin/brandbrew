@@ -12,6 +12,29 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/**
+ * Drop every `tagline` field, including nested brandContext / brandBrief.core.
+ * Logo image models treat quoted slogans as lockup copy, so drawing-stage logo
+ * payloads must not carry the brief tagline.
+ */
+export function omitTaglineDeep<T>(value: T): T {
+  if (value === null || typeof value !== "object") return value;
+  if (Array.isArray(value)) {
+    return value.map((item) => omitTaglineDeep(item)) as T;
+  }
+  const out: Record<string, unknown> = {};
+  for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+    if (key === "tagline") continue;
+    out[key] = omitTaglineDeep(nested);
+  }
+  return out as T;
+}
+
+/** Strip tagline only when the card being drawn is a logo. */
+export function omitTaglineForLogo<T>(cardType: string | undefined, value: T): T {
+  return cardType === "logo" ? omitTaglineDeep(value) : value;
+}
+
 function asNonEmptyString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
 }

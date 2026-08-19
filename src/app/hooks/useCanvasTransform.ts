@@ -1,5 +1,10 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { CANVAS, LAYOUT } from "../utils/design-tokens";
+import {
+  findFilmstripFromEventTarget,
+  getFilmstripWheelDelta,
+  isFilmstripOverflowing,
+} from "../utils/filmstrip-wheel";
 
 const ZOOM_MIN = CANVAS.ZOOM_MIN;
 const ZOOM_MAX = CANVAS.ZOOM_MAX;
@@ -154,15 +159,13 @@ export function useCanvasTransform(isCanvasPhase: boolean): CanvasTransformState
       const briefScroll = (e.target as Element)?.closest("[data-brief-scroll]") as HTMLElement | null;
       if (briefScroll) return;
 
-      if (!e.ctrlKey) {
-        const isHorizontalDominant = Math.abs(e.deltaX) > Math.abs(e.deltaY);
-        if (isHorizontalDominant) {
-          const filmstrip = (e.target as Element)?.closest("[data-filmstrip]") as HTMLElement | null;
-          if (filmstrip) {
-            e.preventDefault();
-            filmstrip.scrollLeft += e.deltaX;
-            return;
-          }
+      const filmstrip = findFilmstripFromEventTarget(e.target);
+      if (filmstrip && isFilmstripOverflowing(filmstrip)) {
+        const delta = getFilmstripWheelDelta(e);
+        if (delta !== null) {
+          e.preventDefault();
+          filmstrip.scrollLeft += delta;
+          return;
         }
       }
 

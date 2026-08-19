@@ -611,8 +611,8 @@ function StageRow({
             />
           )}
 
-          {/* Completed stage: show actual prompt from _meta.prompt in response */}
-          {log.status === "completed" && !log.promptTemplates && log.response && (
+          {/* Completed: assembled prompt from _meta.prompt (merge + pipeline) */}
+          {log.status === "completed" && log.response && (
             <ActualPromptViewer response={log.response} />
           )}
 
@@ -823,10 +823,22 @@ function PromptField({
 
 // ─── Actual prompt viewer (from completed response _meta) ─────────────────────
 
+function readActualPrompt(response: unknown): string | undefined {
+  if (!response || typeof response !== "object" || Array.isArray(response)) return undefined;
+  const rec = response as Record<string, unknown>;
+  const meta = rec._meta;
+  const fromMeta =
+    meta && typeof meta === "object" && !Array.isArray(meta)
+      ? (meta as Record<string, unknown>).prompt
+      : undefined;
+  const candidate = typeof fromMeta === "string" ? fromMeta : rec.prompt;
+  if (typeof candidate !== "string") return undefined;
+  return candidate.trim().length > 0 ? candidate : undefined;
+}
+
 function ActualPromptViewer({ response }: { response: unknown }) {
-  const [collapsed, setCollapsed] = useState(true);
-  const meta = (response as Record<string, unknown>)?._meta as Record<string, unknown> | undefined;
-  const prompt = meta?.prompt as string | undefined;
+  const [collapsed, setCollapsed] = useState(false);
+  const prompt = readActualPrompt(response);
   if (!prompt) return null;
 
   return (

@@ -6,15 +6,11 @@ import type { DebugInterceptor, PipelineDebugAgent, PipelineStageLog } from "../
  */
 export function debugAgentForGenerateImage(body: {
   cardType?: string;
-  titleFont?: string;
   sourceImageUrl?: string;
   referenceImageUrls?: unknown;
   paletteImageBase64?: string;
 }): Extract<PipelineDebugAgent, "visual-designer" | "art-director"> {
   if (body.cardType === "visual-snapshot") {
-    return "visual-designer";
-  }
-  if (body.titleFont && body.cardType === "logo") {
     return "visual-designer";
   }
   if (body.sourceImageUrl) {

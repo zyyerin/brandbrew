@@ -159,7 +159,7 @@ export function GenerationDetailsPanel({
   };
 
   return (
-    <>
+    <div className="flex min-h-0 flex-col overflow-hidden">
       {/* Header */}
       <div className="flex items-center justify-between px-3 py-2 border-b border-border/30 bg-muted/20 shrink-0">
         <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider flex items-center gap-1.5">
@@ -254,14 +254,25 @@ export function GenerationDetailsPanel({
           ) : <EmptyValue />}
         </DetailRow>
 
-        {/* 3. User input */}
+        {/* 3. Prompt — keep near the top so a short popup cannot clip it */}
+        <DetailRow icon={FileText} label="Prompt">
+          {meta?.prompt
+            ? (
+              <p className="text-[11px] text-foreground/60 leading-relaxed break-words whitespace-pre-wrap max-h-[220px] overflow-y-auto">
+                {meta.prompt}
+              </p>
+            )
+            : <EmptyValue />}
+        </DetailRow>
+
+        {/* 4. User input */}
         <DetailRow icon={MessageSquare} label="User input">
           {meta?.userInput
             ? <p className="text-[11px] text-foreground/80 leading-relaxed break-words italic">"{meta.userInput}"</p>
             : <EmptyValue />}
         </DetailRow>
 
-        {/* 4. Brand brief — ingredients */}
+        {/* 5. Brand brief — ingredients */}
         <DetailRow icon={Tag} label="Brand brief">
           {(() => {
             const items = (meta?.ingredients ?? []).filter(
@@ -283,7 +294,7 @@ export function GenerationDetailsPanel({
           })()}
         </DetailRow>
 
-        {/* 5. Selected elements */}
+        {/* 6. Selected elements */}
         <DetailRow icon={Layers} label="Selected elements">
           {(inputItems.hasSelectedLabels || inputItems.hasPalette || inputItems.hasReferenceImages) ? (
             <div className="flex flex-col gap-1.5">
@@ -329,14 +340,7 @@ export function GenerationDetailsPanel({
             </div>
           ) : <EmptyValue />}
         </DetailRow>
-
-        {/* 6. Prompt */}
-        <DetailRow icon={FileText} label="Prompt">
-          {meta?.prompt
-            ? <p className="text-[11px] text-foreground/60 leading-relaxed break-words whitespace-pre-wrap">{meta.prompt}</p>
-            : <EmptyValue />}
-        </DetailRow>
       </div>
-    </>
+    </div>
   );
 }

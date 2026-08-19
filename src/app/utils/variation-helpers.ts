@@ -81,7 +81,7 @@ export function createVariation(opts: {
     data: opts.data,
     source: opts.source,
     createdAt: new Date(),
-    meta: opts.meta,
+    meta: opts.meta ? { ...opts.meta } : undefined,
   };
 }
 
@@ -90,12 +90,38 @@ export function addVariationIfNew(
   setProject: React.Dispatch<React.SetStateAction<ProjectData>>,
   elementId: ElementId,
   variation: Variation,
-): void {
-  setProject((prev) =>
-    projectHasEquivalentVariation(prev.elements, elementId, variation.data)
-      ? prev
-      : addVariationToProject(prev, elementId, variation),
-  );
+): "added" | "duplicate" {
+  let outcome: "added" | "duplicate" = "added";
+  setProject((prev) => {
+    const slot = prev.elements[elementId];
+    const key = JSON.stringify(variation.data);
+    const existing = slot.variations.find((v) => JSON.stringify(v.data) === key);
+    if (!existing) return addVariationToProject(prev, elementId, variation);
+
+    outcome = "duplicate";
+    const incomingPrompt = variation.meta?.prompt?.trim();
+    const patchMeta = Boolean(incomingPrompt && !existing.meta?.prompt?.trim());
+    if (!patchMeta && slot.activeVariationId === existing.id) return prev;
+
+    return {
+      ...prev,
+      elements: {
+        ...prev.elements,
+        [elementId]: {
+          ...slot,
+          activeVariationId: existing.id,
+          variations: patchMeta
+            ? slot.variations.map((v) =>
+                v.id === existing.id
+                  ? { ...v, meta: { ...existing.meta, ...variation.meta } }
+                  : v,
+              )
+            : slot.variations,
+        },
+      },
+    };
+  });
+  return outcome;
 }
 
 // ── Merge context helpers ────────────────────────────────────────────────────
@@ -134,7 +160,7 @@ export function buildMergeFullBrandContext(p: ProjectData): MergeBrandContext {
 }
 
 /**
- * Board snapshot for merge-generate prompts: checked visual concept + four visual slots.
+ * Board snapshot for merge image prompts: checked visual concept + four visual slots.
  * Excludes merge target/source slots so the model is not double-fed the same card.
  */
 export function buildMergeBoardPromptContext(

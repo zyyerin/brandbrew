@@ -11,6 +11,12 @@ export const LOGO_COMPOSITION_MODES = [
 
 export type LogoCompositionMode = (typeof LOGO_COMPOSITION_MODES)[number];
 
+export const LOGO_COMPOSITION_WEIGHTS: Record<LogoCompositionMode, number> = {
+  "symbol-wordmark-horizontal": 0.4,
+  "symbol-wordmark-stacked": 0.3,
+  "wordmark-only": 0.3,
+};
+
 export interface LogoComposition {
   mode: LogoCompositionMode;
   rationale: string;
@@ -70,13 +76,112 @@ export function validateOptionalLogoComposition(
   return validateLogoComposition(value);
 }
 
+export function pickLogoCompositionMode(
+  excluded: readonly string[] = [],
+  random: () => number = Math.random,
+): LogoCompositionMode {
+  const excludedSet = new Set(
+    excluded.filter((mode): mode is LogoCompositionMode =>
+      (LOGO_COMPOSITION_MODES as readonly string[]).includes(mode)
+    ),
+  );
+  let pool: LogoCompositionMode[] = LOGO_COMPOSITION_MODES.filter(
+    (mode) => !excludedSet.has(mode),
+  );
+  if (pool.length === 0) pool = [...LOGO_COMPOSITION_MODES];
+
+  const total = pool.reduce((sum, mode) => sum + LOGO_COMPOSITION_WEIGHTS[mode], 0);
+  let ticket = random() * total;
+  for (const mode of pool) {
+    ticket -= LOGO_COMPOSITION_WEIGHTS[mode];
+    if (ticket <= 0) return mode;
+  }
+  return pool[pool.length - 1];
+}
+
+export function parseLogoCompositionRationale(value: unknown): string {
+  if (!isRecord(value)) {
+    throw new Error("logoComposition is required and must be an object");
+  }
+  const rationale = typeof value.rationale === "string" ? value.rationale.trim() : "";
+  if (!rationale) {
+    throw new Error("logoComposition.rationale must be a non-empty string");
+  }
+  return rationale;
+}
+
+export function attachAssignedLogoComposition(
+  value: unknown,
+  assignedMode: LogoCompositionMode,
+): LogoComposition {
+  return { mode: assignedMode, rationale: parseLogoCompositionRationale(value) };
+}
+
+export function assignedLogoCompositionBlock(mode: LogoCompositionMode): string {
+  return (
+    `Assigned logo composition mode: ${mode}. `
+    + `Write logoComposition.rationale for this assigned lockup. Do not change the mode.`
+  );
+}
+
+export function compositionModeFromMeta(meta: unknown): LogoCompositionMode | undefined {
+  if (!isRecord(meta)) return undefined;
+
+  const direct = meta.logoComposition;
+  if (
+    isRecord(direct)
+    && typeof direct.mode === "string"
+    && (LOGO_COMPOSITION_MODES as readonly string[]).includes(direct.mode)
+  ) {
+    return direct.mode as LogoCompositionMode;
+  }
+
+  const seed = meta.pipelineSeed;
+  if (isRecord(seed) && isRecord(seed.logoComposition)) {
+    const nested = seed.logoComposition.mode;
+    if (
+      typeof nested === "string"
+      && (LOGO_COMPOSITION_MODES as readonly string[]).includes(nested)
+    ) {
+      return nested as LogoCompositionMode;
+    }
+  }
+
+  return undefined;
+}
+
+export function collectExcludedLogoCompositions(
+  variations: ReadonlyArray<{ meta?: unknown }>,
+): LogoCompositionMode[] {
+  const seen = new Set<LogoCompositionMode>();
+  for (const variation of variations) {
+    const mode = compositionModeFromMeta(variation.meta);
+    if (mode) seen.add(mode);
+  }
+  return [...seen];
+}
+
+/** Shared canvas lock: palette light colors must not become the logo paper. */
+export const LOGO_WHITE_CANVAS_RULE =
+  "Place the lockup on a pure white background with generous padding. "
+  + "The canvas must stay solid #FFFFFF. "
+  + "Do not tint, wash, or replace the background with any palette color. "
+  + "Off-white, cream, ivory, beige, and pale pastels from the palette are mark and wordmark inks only — never paper, never a colored field behind the lockup.";
+
+export function withLogoWhiteCanvas(prompt: string, cardType: string): string {
+  if (cardType !== "logo") return prompt;
+  const rule = LOGO_WHITE_CANVAS_RULE.trim();
+  if (prompt.includes(rule)) return prompt;
+  return `${prompt.trim()}\n\n${rule}`;
+}
+
 function buildLegacyLogoPrompt(ctx: LogoPromptContext): string {
   const name = ctx.brandName ?? "the brand";
   const description = ctx.description ?? ctx.brandDescription;
   const focus = ctx.newHint
     ? `Creative direction: ${formatSentence(ctx.newHint)} `
     : "";
-  const palette = formatColorSchemeSpec(ctx.colorPalette);
+  const palette = formatColorSchemeSpec(ctx.colorPalette, { applyTo: "logo-mark" });
   const motif = ctx.visualConcept?.concept?.trim()
     ? `Visual motif: ${formatSentence(ctx.visualConcept.concept)} `
     : "";
@@ -89,7 +194,7 @@ function buildLegacyLogoPrompt(ctx: LogoPromptContext): string {
     + `Rules: `
     + `Purely graphic symbol — absolutely NO text, NO letters, NO words, NO characters. `
     + `NOT an illustration, NOT a scene, NOT a mascot, NOT a badge, NOT a detailed drawing. `
-    + `Centered on pure white background with generous padding.`
+    + `${LOGO_WHITE_CANVAS_RULE}`
   );
 }
 
@@ -132,7 +237,7 @@ export function buildLogoImagePrompt(ctx: LogoPromptContext): string {
   const focus = ctx.newHint
     ? `Creative direction: ${formatSentence(ctx.newHint)} `
     : "";
-  const palette = formatColorSchemeSpec(ctx.colorPalette);
+  const palette = formatColorSchemeSpec(ctx.colorPalette, { applyTo: "logo-mark" });
   const conceptText = concept?.concept?.trim()
     ? `Visual concept: ${formatSentence(concept.concept)} `
     : "";
@@ -151,7 +256,7 @@ export function buildLogoImagePrompt(ctx: LogoPromptContext): string {
     `Rules: Render the brand name exactly as "${name}", once and only once. `,
     `Show no tagline, subtitle, explanation, label, or any other text or characters. `,
     `Create one cohesive lockup only — no logo sheet, no alternate variants, and no application mockup. `,
-    `Use a minimal flat vector style on a pure white background with generous padding. `,
+    `Use a minimal flat vector style. ${LOGO_WHITE_CANVAS_RULE} `,
     `Any symbol must be simple and abstract — not an illustration, scene, mascot, badge, or detailed drawing. `,
     buildImageTextPolicy({ renderable: [ctx.brandName] }),
   ].join("");

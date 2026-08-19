@@ -11,11 +11,12 @@
 //           - Standalone txt2img generation for element (except visual concept) regeneration.
 //           - Visual snapshot generation from multiple sources.
 //           - Brand in Context mockup generation using a visual snapshot.
-//           - Palette extraction from an image card using Gemini Vision.
+//           - Palette extraction and vision text merge via POST /img2txt.
 // Model:    Gemini image model (gemini-3-pro-image-preview)
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { Hono } from "npm:hono";
+import type { Context } from "npm:hono";
 import {
   generateImage,
   uploadAndSignImage,
@@ -42,11 +43,24 @@ import {
   formatMergeBoardPromptContext,
   mergeBoardContextFromBrandData,
   normalizeMergeBoardFromBody,
+  withLogoWhiteCanvas,
 } from "../shared/merge-specs.tsx";
-import { resolveAspectRatio } from "../shared/image-config.tsx";
+import { prepareTextMerge } from "../shared/merge-text.ts";
+import {
+  resolveImg2ImgImpl,
+  resolveImg2TxtImpl,
+  resolveMergeKind,
+  resolveTxt2ImgImpl,
+  type MergeKind,
+} from "../shared/merge-routes.ts";
+import { parseImageGenPurpose, resolveAspectRatio } from "../shared/image-config.tsx";
 import { buildImageTextPolicy } from "../shared/image-text-policy.ts";
 import { buildSnapshotPrompt } from "../shared/snapshot-prompts.ts";
-import { buildBriefIdentityContextText, normalizeShortContext } from "../shared/brand-context.ts";
+import {
+  buildBriefIdentityContextText,
+  normalizeShortContext,
+  omitTaglineForLogo,
+} from "../shared/brand-context.ts";
 import { createTimer, logTimingReport } from "../shared/timing.ts";
 
 const visualDesigner = new Hono();
@@ -115,26 +129,48 @@ function unwrapSingleKeyWrapper(targetData: unknown, parsed: unknown): unknown {
   return parsed;
 }
 
-// ── Route: POST /edit ────────────────────────────────────────────────────────
-// Edits an existing image (recolor, style adaptation, etc.).
+function asNonEmptyString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+}
 
-visualDesigner.post("/edit", async (c) => {
+function requireMergeIds(
+  body: Record<string, unknown>,
+): { sourceId: string; targetId: string } | { error: string } {
+  const sourceId = asNonEmptyString(body.sourceId);
+  const targetId = asNonEmptyString(body.targetId);
+  if (!sourceId || !targetId) return { error: "sourceId and targetId are required" };
+  return { sourceId, targetId };
+}
+
+function rejectWrongMergeKind(
+  c: Context,
+  sourceId: string,
+  targetId: string,
+  expected: MergeKind,
+  targetVarId?: string,
+) {
+  const kind = resolveMergeKind(sourceId, targetId, targetVarId);
+  if (kind === expected) return null;
+  return c.json(
+    { error: `Expected ${expected} merge for ${sourceId}→${targetId}, got ${kind ?? "unsupported"}` },
+    400,
+  );
+}
+
+async function runEditImage(c: Context, body: Record<string, unknown>): Promise<Response> {
   try {
     const startTime = Date.now();
-    const body = await c.req.json();
     if (!hasShortContext(body)) {
       return c.json({ error: "brandContextShort is required" }, 400);
     }
-    const {
-      cardType,
-      newHint,
-      colorPalette,
-      sourceImageUrl,
-      referenceImageUrl,
-      paletteImageBase64,
-      aspectRatio,
-    } = body;
-    const shortContext = normalizeShortContext(body);
+    const cardType = asNonEmptyString(body.cardType);
+    const newHint = typeof body.newHint === "string" ? body.newHint : undefined;
+    const sourceImageUrl = asNonEmptyString(body.sourceImageUrl);
+    const referenceImageUrl = asNonEmptyString(body.referenceImageUrl);
+    const paletteImageBase64 = typeof body.paletteImageBase64 === "string" ? body.paletteImageBase64 : undefined;
+    const aspectRatio = asNonEmptyString(body.aspectRatio);
+    const colorPalette = Array.isArray(body.colorPalette) ? body.colorPalette as string[] : undefined;
+    const shortContext = omitTaglineForLogo(cardType, normalizeShortContext(body));
     const brandName = shortContext.name;
     const tagline = shortContext.tagline;
 
@@ -148,7 +184,6 @@ visualDesigner.post("/edit", async (c) => {
     const paletteB64Error = validateBase64(paletteImageBase64, "paletteImageBase64");
     if (paletteB64Error) return c.json({ error: paletteB64Error }, 400);
 
-    // Fetch the source image for img2img editing
     console.log(`[visual-designer] Fetching source image for img2img edit…`);
     const fetched = await fetchImageAsBase64(sourceImageUrl);
     if ("error" in fetched) {
@@ -157,7 +192,6 @@ visualDesigner.post("/edit", async (c) => {
     }
     const sourceImage = fetched;
 
-    // Fetch optional reference image (source card image in card-to-card merge)
     let referenceImage: { b64: string; mimeType: string } | undefined;
     if (referenceImageUrl) {
       console.log(`[visual-designer] Fetching reference image for card-to-card merge…`);
@@ -180,7 +214,7 @@ visualDesigner.post("/edit", async (c) => {
       newHint,
       hasPaletteImage: hasPalette,
       hasReferenceImage: hasRef,
-      colorPaletteHex: colorPalette as string[] | undefined,
+      colorPaletteHex: colorPalette,
       cardType,
       brandName,
       tagline,
@@ -189,7 +223,15 @@ visualDesigner.post("/edit", async (c) => {
     const mode = hasRef ? "img2img+ref" : hasPalette ? "img2img+palette" : "img2img";
     console.log(`[visual-designer] Editing (${mode}) — cardType=${cardType} ar=${effectiveAR} prompt="${prompt.slice(0, 80)}…"`);
 
-    const genResult = await generateImage(apiKey, prompt, { cardType, sourceImage, paletteImage, referenceImage, aspectRatio: effectiveAR });
+    const purpose = parseImageGenPurpose(body.purpose);
+    const genResult = await generateImage(apiKey, prompt, {
+      cardType,
+      sourceImage,
+      paletteImage,
+      referenceImage,
+      aspectRatio: effectiveAR,
+      purpose,
+    });
 
     const imageUrl = await uploadAndSignImage(genResult.b64, genResult.mimeType, cardType, c.req.header("X-Project-Id"));
     const generationTime = Date.now() - startTime;
@@ -222,6 +264,14 @@ visualDesigner.post("/edit", async (c) => {
     console.error("[visual-designer] edit error:", (err as Error)?.stack ?? String(err));
     return c.json(buildErrorPayload("Image editing failed", err), 500);
   }
+}
+
+// ── Route: POST /edit ────────────────────────────────────────────────────────
+// Comment-modify for image cards (recolor, free-form edit). Merge img2img uses /img2img.
+
+visualDesigner.post("/edit", async (c) => {
+  const body = await c.req.json() as Record<string, unknown>;
+  return runEditImage(c, body);
 });
 
 // ── Route: POST /visual-snapshot ─────────────────────────────────────────────
@@ -510,7 +560,7 @@ visualDesigner.post("/context", async (c) => {
           warning,
           _meta: {
             agent: "visual-designer-context",
-            ...(isDevMode() && { prompt: effectivePrompt }),
+            prompt: effectivePrompt,
             generationTime: Date.now() - startTime,
             timings,
             ingredients: [brandName, application].filter(Boolean),
@@ -535,7 +585,7 @@ visualDesigner.post("/context", async (c) => {
       imageUrl,
       _meta: {
         agent: "visual-designer-context",
-        ...(isDevMode() && { prompt: effectivePrompt }),
+        prompt: effectivePrompt,
         model: usedModel,
         generationTime,
         timings,
@@ -549,33 +599,31 @@ visualDesigner.post("/context", async (c) => {
   }
 });
 
-// ── Route: POST /merge-generate ──────────────────────────────────────────────
-// Queue-slot image merge: palette→logo|art-style uses structured brief + 【Visual Concept】; others use buildMergeGeneratePrompt (hint → active slots → VC).
-// Gemini parts: reference images first, then text. Board: optional mergeBoardContext or shortContext patch.
+// ── Merge runners (txt2img generate / img2img generate) ──────────────────────
+// Palette→logo|art-style uses structured brief + 【Visual Concept】; others use
+// buildMergeGeneratePrompt (hint → active slots → VC). Gemini parts: reference
+// images first, then text.
 
-visualDesigner.post("/merge-generate", async (c) => {
+async function runMergeGenerate(
+  c: Context,
+  body: Record<string, unknown>,
+  ids: { sourceId: string; targetId: string },
+  opts: { requireSourceImage: boolean },
+): Promise<Response> {
   try {
     const startTime = Date.now();
-    const body = await c.req.json() as Record<string, unknown>;
     if (!hasShortContext(body)) {
       return c.json({ error: "brandContextShort is required" }, 400);
     }
-    const {
-      cardType,
-      newHint,
-      sourceId,
-      sourceImageUrl,
-      sourceTextData,
-      aspectRatio,
-    } = body as {
-      cardType: string;
-      newHint: string;
-      sourceId?: string;
-      sourceImageUrl?: string;
-      sourceTextData?: unknown;
-      aspectRatio?: string;
-    };
-    const shortContext = normalizeShortContext(body);
+    const cardType = ids.targetId;
+    const sourceId = ids.sourceId;
+    const newHint = typeof body.newHint === "string" ? body.newHint : "";
+    const sourceTextData = body.sourceTextData;
+    const aspectRatio = asNonEmptyString(body.aspectRatio);
+    const sourceImageUrl = opts.requireSourceImage
+      ? asNonEmptyString(body.sourceImageUrl)
+      : undefined;
+    const shortContext = omitTaglineForLogo(cardType, normalizeShortContext(body));
     const brandName = shortContext.name;
 
     const apiKey = Deno.env.get("GEMINI_API_KEY");
@@ -588,13 +636,16 @@ visualDesigner.post("/merge-generate", async (c) => {
       return c.json({ error: "newHint exceeds maximum length of 500 characters" }, 400);
 
     let sourceImage: { b64: string; mimeType: string } | undefined;
-    if (sourceImageUrl) {
+    if (opts.requireSourceImage) {
+      if (!sourceImageUrl) {
+        return c.json({ error: "sourceImageUrl is required for img2img generate" }, 400);
+      }
       const fetched = await fetchImageAsBase64(sourceImageUrl);
       if ("error" in fetched) {
-        console.log(`[visual-designer] Source image fetch failed, falling back to txt2img: ${fetched.error}`);
-      } else {
-        sourceImage = fetched;
+        console.log(`[visual-designer] Source image fetch failed: ${fetched.error}`);
+        return c.json({ error: "Failed to fetch source image" }, 400);
       }
+      sourceImage = fetched;
     }
 
     const effectiveAR = resolveAspectRatio(cardType, aspectRatio);
@@ -673,6 +724,8 @@ visualDesigner.post("/merge-generate", async (c) => {
           board,
           brandCoreText: buildBriefIdentityContextText(shortContext),
           boardFormat,
+          sourceTextData,
+          cardType,
         })
       : buildMergeGeneratePrompt({
           newHint,
@@ -683,21 +736,22 @@ visualDesigner.post("/merge-generate", async (c) => {
           refImageGuide,
         });
 
-    const textPolicy = cardType === "art-style"
-      ? buildImageTextPolicy({ purpose: "graphic" })
-      : cardType === "application"
+    const textPolicy = cardType === "application"
+      ? buildImageTextPolicy({
+          purpose: "packaging",
+          renderable: [brandName],
+          preserveExistingText: true,
+        })
+      : cardType === "logo"
         ? buildImageTextPolicy({
-            purpose: "packaging",
             renderable: [brandName],
             preserveExistingText: true,
           })
-        : cardType === "logo"
-          ? buildImageTextPolicy({
-              renderable: [brandName],
-              preserveExistingText: true,
-            })
-          : "";
-    const promptWithPolicy = textPolicy ? `${prompt}\n\n${textPolicy}` : prompt;
+        : "";
+    const promptWithPolicy = withLogoWhiteCanvas(
+      textPolicy ? `${prompt}\n\n${textPolicy}` : prompt,
+      cardType,
+    );
 
     const mode = useBoardInlineImages
       ? `multi-ref(${refImages.length})`
@@ -711,11 +765,13 @@ visualDesigner.post("/merge-generate", async (c) => {
         cardType,
         refImages,
         aspectRatio: effectiveAR,
+        purpose: "merge",
       })
       : await generateImage(apiKey, promptWithPolicy, {
         cardType,
         sourceImage,
         aspectRatio: effectiveAR,
+        purpose: "merge",
       });
     const imageUrl = await uploadAndSignImage(genResult.b64, genResult.mimeType, cardType, c.req.header("X-Project-Id"));
     const generationTime = Date.now() - startTime;
@@ -726,7 +782,7 @@ visualDesigner.post("/merge-generate", async (c) => {
       _meta: {
         agent: "visual-designer",
         prompt: promptWithPolicy,
-        promptKey: `${sourceId ?? "?"}->${cardType}:merge-generate`,
+        promptKey: `${sourceId}->${cardType}:${opts.requireSourceImage ? "img2img" : "txt2img"}`,
         model: usedModel,
         generationTime,
         ingredients: [brandName].filter(Boolean),
@@ -736,28 +792,32 @@ visualDesigner.post("/merge-generate", async (c) => {
     console.error("[visual-designer] merge-generate error:", (err as Error)?.stack ?? String(err));
     return c.json(buildErrorPayload("Merge image generation failed", err), 500);
   }
-});
+}
 
-// ── Route: POST /wordmark ────────────────────────────────────────────────────
-// Generates a wordmark logo (brand name as typographic logotype) via txt2img.
-// Called when a Typography card is dragged onto the Logo queue.
+// Wordmark: font→logo txt2img. Storage stays on "logo".
 
-visualDesigner.post("/wordmark", async (c) => {
+async function runWordmark(
+  c: Context,
+  body: Record<string, unknown>,
+  ids: { sourceId: string; targetId: string },
+): Promise<Response> {
   try {
     const startTime = Date.now();
-    const body = await c.req.json();
     if (!hasShortContext(body)) {
       return c.json({ error: "brandContextShort is required" }, 400);
     }
-    const {
-      cardType,
-      newHint,
-      titleFont,
-      aspectRatio,
-    } = body;
-    const shortContext = normalizeShortContext(body);
+    const newHint = typeof body.newHint === "string" ? body.newHint : undefined;
+    const aspectRatio = asNonEmptyString(body.aspectRatio);
+    const sourceText = isRecord(body.sourceTextData) ? body.sourceTextData : null;
+    const shortContext = omitTaglineForLogo(ids.targetId, normalizeShortContext(body));
     const brandName = shortContext.name;
-    const effectiveTitleFont = shortContext.titleFont ?? titleFont;
+    const effectiveTitleFont = asNonEmptyString(body.titleFont)
+      ?? asNonEmptyString(sourceText?.titleFont)
+      ?? shortContext.titleFont;
+    if (!effectiveTitleFont) {
+      return c.json({ error: "titleFont is required for wordmark generation" }, 400);
+    }
+    const cardType = ids.targetId;
 
     const apiKey = Deno.env.get("GEMINI_API_KEY");
     if (!apiKey) return c.json({ error: "GEMINI_API_KEY not configured" }, 500);
@@ -781,13 +841,13 @@ visualDesigner.post("/wordmark", async (c) => {
 
     console.log(`[visual-designer] Generating wordmark (txt2img) — font=${effectiveTitleFont} ar=${effectiveAR} prompt="${prompt.slice(0, 80)}…"`);
 
-    // The request body carries cardType "logo" (this route is reached by forwarding
-    // from /generate-image), so the wordmark card type is named explicitly here to
-    // pick up its own model and aspect ratio. Storage naming stays on "logo"
-    // because the result lands in the logo slot.
-    const genResult = await generateImage(apiKey, prompt, { cardType: "wordmark", aspectRatio: effectiveAR });
+    const genResult = await generateImage(apiKey, prompt, {
+      cardType: "wordmark",
+      aspectRatio: effectiveAR,
+      purpose: "merge",
+    });
 
-    const imageUrl = await uploadAndSignImage(genResult.b64, genResult.mimeType, cardType ?? "logo", c.req.header("X-Project-Id"));
+    const imageUrl = await uploadAndSignImage(genResult.b64, genResult.mimeType, cardType, c.req.header("X-Project-Id"));
     const generationTime = Date.now() - startTime;
     const usedModel = genResult.usedModel;
 
@@ -801,6 +861,7 @@ visualDesigner.post("/wordmark", async (c) => {
       _meta: {
         agent: "visual-designer",
         prompt,
+        promptKey: `${ids.sourceId}->${ids.targetId}:txt2img`,
         model: usedModel,
         generationTime,
         ingredients: [brandName, effectiveTitleFont].filter(Boolean),
@@ -811,28 +872,28 @@ visualDesigner.post("/wordmark", async (c) => {
     console.error("[visual-designer] wordmark error:", (err as Error)?.stack ?? String(err));
     return c.json(buildErrorPayload("Wordmark generation failed", err), 500);
   }
-});
+}
 
-// ── Route: POST /extract-palette ─────────────────────────────────────────────
-// Extracts a 5-color hex palette from an image card using Gemini Vision.
-// Called when an image card (logo, art-style, layout) is dragged onto color-palette.
-
-visualDesigner.post("/extract-palette", async (c) => {
+async function runExtractPalette(
+  c: Context,
+  body: Record<string, unknown>,
+  ids: { sourceId: string; targetId: string },
+): Promise<Response> {
   let _rawGeminiText: string | undefined;
   try {
     const startTime = Date.now();
-    const { sourceId, sourceImageUrl, brandData, _promptOverride } = await c.req.json();
+    const sourceId = ids.sourceId;
+    const sourceImageUrl = asNonEmptyString(body.sourceImageUrl);
+    const brandData = body.brandData;
+    const _promptOverride = body._promptOverride;
     const apiKey = Deno.env.get("GEMINI_API_KEY");
     if (!apiKey) return c.json({ error: "GEMINI_API_KEY not configured" }, 500);
 
-    if (!sourceId || typeof sourceId !== "string") {
-      return c.json({ error: "sourceId is required" }, 400);
-    }
     if (!sourceImageUrl) {
       return c.json({ error: "sourceImageUrl is required" }, 400);
     }
 
-    const spec = MERGE_SPECS[sourceId]?.["color-palette"];
+    const spec = MERGE_SPECS[sourceId]?.[ids.targetId];
     if (!spec?.instruction) {
       return c.json({ error: `No vision-based palette spec found for source: ${sourceId}` }, 400);
     }
@@ -840,7 +901,7 @@ visualDesigner.post("/extract-palette", async (c) => {
     const imageResult = await fetchImageAsBase64(sourceImageUrl);
     if ("error" in imageResult) {
       console.log(`[visual-designer] extract-palette source image fetch failed: ${imageResult.error}`);
-      return c.json({ error: "Failed to fetch source image" }, 500);
+      return c.json({ error: "Failed to fetch source image" }, 400);
     }
 
     // Inject current palette as a constraint so the extracted palette matches
@@ -901,8 +962,8 @@ visualDesigner.post("/extract-palette", async (c) => {
       patch: { colorPalette: checkedPalette },
       _meta: {
         agent: "visual-designer",
-        ...(isDevMode() && { prompt: instruction }),
-        promptKey: `${sourceId}->color-palette:extract-palette`,
+        prompt: instruction,
+        promptKey: `${sourceId}->${ids.targetId}:img2txt`,
         model: spec.textModel ?? TEXT_MODEL,
         generationTime,
         ingredients: [],
@@ -917,23 +978,23 @@ visualDesigner.post("/extract-palette", async (c) => {
       500,
     );
   }
-});
+}
 
-// ── Route: POST /vision-merge ────────────────────────────────────────────────
-// Merges an image source card into a text target card using Gemini Vision.
-// Called when an image card is dragged onto a non-image target queue.
-
-visualDesigner.post("/vision-merge", async (c) => {
+async function runVisionMerge(
+  c: Context,
+  body: Record<string, unknown>,
+  ids: { sourceId: string; targetId: string },
+): Promise<Response> {
   let _rawGeminiText: string | undefined;
   try {
     const startTime = Date.now();
-    const { sourceId, targetId, sourceImageUrl, brandData, _promptOverride } = await c.req.json();
+    const { sourceId, targetId } = ids;
+    const sourceImageUrl = asNonEmptyString(body.sourceImageUrl);
+    const brandData = body.brandData;
+    const _promptOverride = body._promptOverride;
     const apiKey = Deno.env.get("GEMINI_API_KEY");
     if (!apiKey) return c.json({ error: "GEMINI_API_KEY not configured" }, 500);
 
-    if (!sourceId || !targetId) {
-      return c.json({ error: "sourceId and targetId are required" }, 400);
-    }
     if (!isRecord(brandData)) {
       return c.json({ error: "brandData must be an object" }, 400);
     }
@@ -941,24 +1002,19 @@ visualDesigner.post("/vision-merge", async (c) => {
       return c.json({ error: "sourceImageUrl is required" }, 400);
     }
 
-    const spec = MERGE_SPECS[sourceId]?.[targetId];
-    if (!spec || !spec.allowedFields?.length || !spec.instruction) {
-      return c.json({ patch: null });
-    }
-
-    const targetField = mergeCardIdToField(targetId);
-    if (!targetField) {
-      return c.json({ patch: null });
-    }
-    const targetData = brandData[targetField];
-    if (targetData === undefined || targetData === null) {
-      return c.json({ patch: null });
-    }
+    const prepared = prepareTextMerge(
+      sourceId,
+      targetId,
+      brandData,
+      MERGE_SPECS[sourceId]?.[targetId],
+    );
+    if (!prepared.ok) return c.json({ patch: null });
+    const { spec, targetField, targetData } = prepared;
 
     const imageResult = await fetchImageAsBase64(sourceImageUrl);
     if ("error" in imageResult) {
       console.log(`[visual-designer] vision-merge source image fetch failed: ${imageResult.error}`);
-      return c.json({ error: "Failed to fetch source image" }, 500);
+      return c.json({ error: "Failed to fetch source image" }, 400);
     }
 
     const boardAppendix = formatMergeBoardPromptContext(
@@ -993,7 +1049,7 @@ visualDesigner.post("/vision-merge", async (c) => {
       _meta: {
         agent: "visual-designer",
         prompt,
-        promptKey: `${sourceId}->${targetId}:vision-merge`,
+        promptKey: `${sourceId}->${targetId}:img2txt`,
         model: spec.textModel ?? TEXT_MODEL,
         generationTime,
         ingredients: [],
@@ -1007,6 +1063,140 @@ visualDesigner.post("/vision-merge", async (c) => {
       500,
     );
   }
+}
+
+async function runTextMerge(
+  c: Context,
+  body: Record<string, unknown>,
+  ids: { sourceId: string; targetId: string },
+): Promise<Response> {
+  let _rawGeminiText: string | undefined;
+  try {
+    const startTime = Date.now();
+    const { sourceId, targetId } = ids;
+    const brandData = body.brandData;
+    const _promptOverride = body._promptOverride;
+    const apiKey = Deno.env.get("GEMINI_API_KEY");
+    if (!apiKey) return c.json({ error: "GEMINI_API_KEY not configured" }, 500);
+
+    if (!isRecord(brandData)) {
+      return c.json({ error: "brandData must be an object" }, 400);
+    }
+
+    const prepared = prepareTextMerge(
+      sourceId,
+      targetId,
+      brandData,
+      MERGE_SPECS[sourceId]?.[targetId],
+    );
+    if (!prepared.ok) return c.json({ patch: null });
+    const { spec, targetField, sourceData, targetData, omitCurrentTargetInContext } = prepared;
+
+    const boardAppendix = formatMergeBoardPromptContext(
+      mergeBoardContextFromBrandData(brandData, { targetId, sourceId }),
+      { omitArtStyleUrl: true, omitLogoUrl: true },
+    );
+
+    const effectiveOverride = getEffectiveOverride(_promptOverride) as { fullPrompt?: string } | undefined;
+    const fullPrompt = effectiveOverride?.fullPrompt
+      ?? buildMergeJsonPrompt(spec.instruction, sourceData, targetField, targetData, boardAppendix, {
+          omitCurrentTargetInContext,
+        });
+
+    _rawGeminiText = await callGeminiText(apiKey, fullPrompt, {
+      temperature: MERGE_TEMPERATURES["merge"],
+      maxOutputTokens: 2048,
+    }, spec.textModel);
+
+    const parsed: unknown = safeParseJson<unknown>(_rawGeminiText, "merge");
+
+    const unwrapped = unwrapSingleKeyWrapper(targetData, parsed);
+
+    const guarded = applyFieldGuard(targetData, unwrapped, spec.allowedFields!, targetField);
+    const generationTime = Date.now() - startTime;
+    console.log(`[visual-designer] Merge complete: ${sourceId} → ${targetId} (field: ${targetField}, ${generationTime}ms)`);
+    return c.json({
+      patch: { [targetField]: guarded },
+      _meta: {
+        agent: "visual-designer",
+        prompt: fullPrompt,
+        promptKey: `${sourceId}->${targetId}:txt2txt`,
+        model: spec.textModel ?? TEXT_MODEL,
+        generationTime,
+        ingredients: [],
+      },
+    });
+  } catch (err) {
+    console.error("[visual-designer] merge error:", (err as Error)?.stack ?? String(err));
+    return c.json(
+      buildErrorPayload("Merge failed", err, _rawGeminiText ? { rawText: _rawGeminiText.slice(0, 500) } : undefined),
+      500,
+    );
+  }
+}
+
+async function parseMergeBody(c: Context): Promise<
+  { ok: true; body: Record<string, unknown>; ids: { sourceId: string; targetId: string } }
+  | { ok: false; response: Response }
+> {
+  const body = await c.req.json() as Record<string, unknown>;
+  const ids = requireMergeIds(body);
+  if ("error" in ids) {
+    return { ok: false, response: c.json({ error: ids.error }, 400) };
+  }
+  return { ok: true, body, ids };
+}
+
+// ── Merge kind routes ────────────────────────────────────────────────────────
+
+visualDesigner.post("/txt2txt", async (c) => {
+  const parsed = await parseMergeBody(c);
+  if (!parsed.ok) return parsed.response;
+  const rejected = rejectWrongMergeKind(c, parsed.ids.sourceId, parsed.ids.targetId, "txt2txt");
+  if (rejected) return rejected;
+  return runTextMerge(c, parsed.body, parsed.ids);
+});
+
+visualDesigner.post("/img2txt", async (c) => {
+  const parsed = await parseMergeBody(c);
+  if (!parsed.ok) return parsed.response;
+  const rejected = rejectWrongMergeKind(c, parsed.ids.sourceId, parsed.ids.targetId, "img2txt");
+  if (rejected) return rejected;
+  return resolveImg2TxtImpl(parsed.ids.targetId) === "extract-palette"
+    ? runExtractPalette(c, parsed.body, parsed.ids)
+    : runVisionMerge(c, parsed.body, parsed.ids);
+});
+
+visualDesigner.post("/txt2img", async (c) => {
+  const parsed = await parseMergeBody(c);
+  if (!parsed.ok) return parsed.response;
+  const rejected = rejectWrongMergeKind(c, parsed.ids.sourceId, parsed.ids.targetId, "txt2img");
+  if (rejected) return rejected;
+  return resolveTxt2ImgImpl(parsed.ids.sourceId, parsed.ids.targetId) === "wordmark"
+    ? runWordmark(c, parsed.body, parsed.ids)
+    : runMergeGenerate(c, parsed.body, parsed.ids, { requireSourceImage: false });
+});
+
+visualDesigner.post("/img2img", async (c) => {
+  const parsed = await parseMergeBody(c);
+  if (!parsed.ok) return parsed.response;
+  const targetImageUrl = asNonEmptyString(parsed.body.targetImageUrl);
+  const rejected = rejectWrongMergeKind(
+    c,
+    parsed.ids.sourceId,
+    parsed.ids.targetId,
+    "img2img",
+    targetImageUrl ? "target" : undefined,
+  );
+  if (rejected) return rejected;
+  if (resolveImg2ImgImpl(!!targetImageUrl) === "edit") {
+    return runEditImage(c, {
+      ...parsed.body,
+      cardType: parsed.ids.targetId,
+      sourceImageUrl: targetImageUrl,
+    });
+  }
+  return runMergeGenerate(c, parsed.body, parsed.ids, { requireSourceImage: true });
 });
 
 // ── Route: POST /comment-modify ──────────────────────────────────────────────
@@ -1062,7 +1252,7 @@ visualDesigner.post("/comment-modify", async (c) => {
       patch: { [targetField]: guarded },
       _meta: {
         agent: "visual-designer",
-        ...(isDevMode() && { prompt: fullPrompt }),
+        prompt: fullPrompt,
         promptKey: `${targetId}:comment-modify`,
         model: TEXT_MODEL,
         generationTime,
@@ -1074,85 +1264,6 @@ visualDesigner.post("/comment-modify", async (c) => {
     console.error("[visual-designer] comment-modify error:", (err as Error)?.stack ?? String(err));
     return c.json(
       buildErrorPayload("Comment-modify failed", err, _rawGeminiText ? { rawText: _rawGeminiText.slice(0, 500) } : undefined),
-      500,
-    );
-  }
-});
-
-// ── Route: POST /merge ───────────────────────────────────────────────────────
-// Text-to-text merge: applies a source card's influence to a text target card.
-// Handles all spec-driven merges where both source and target are text elements.
-
-visualDesigner.post("/merge", async (c) => {
-  let _rawGeminiText: string | undefined;
-  try {
-    const startTime = Date.now();
-    const { sourceId, targetId, brandData, _promptOverride } = await c.req.json();
-    const apiKey = Deno.env.get("GEMINI_API_KEY");
-    if (!apiKey) return c.json({ error: "GEMINI_API_KEY not configured" }, 500);
-
-    if (!sourceId || !targetId) {
-      return c.json({ error: "sourceId and targetId are required" }, 400);
-    }
-    if (!isRecord(brandData)) {
-      return c.json({ error: "brandData must be an object" }, 400);
-    }
-
-    const spec = MERGE_SPECS[sourceId]?.[targetId];
-    if (!spec || !spec.allowedFields?.length || !spec.instruction) {
-      return c.json({ patch: null });
-    }
-
-    const targetField = mergeCardIdToField(targetId);
-    const sourceField = mergeCardIdToField(sourceId);
-    if (!targetField) return c.json({ patch: null });
-
-    const targetData = brandData[targetField];
-    const sourceData = sourceField ? brandData[sourceField] : null;
-    if (targetData === undefined || targetData === null) return c.json({ patch: null });
-
-    const boardAppendix = formatMergeBoardPromptContext(
-      mergeBoardContextFromBrandData(brandData as Record<string, unknown>, { targetId, sourceId }),
-      { omitArtStyleUrl: true, omitLogoUrl: true },
-    );
-
-    const omitCurrentTargetInContext =
-      (sourceId === "color-palette" && targetId === "font") ||
-      (sourceId === "font" && targetId === "color-palette");
-
-    const effectiveOverride = getEffectiveOverride(_promptOverride) as { fullPrompt?: string } | undefined;
-    const fullPrompt = effectiveOverride?.fullPrompt
-      ?? buildMergeJsonPrompt(spec.instruction, sourceData, targetField, targetData, boardAppendix, {
-          omitCurrentTargetInContext,
-        });
-
-    _rawGeminiText = await callGeminiText(apiKey, fullPrompt, {
-      temperature: MERGE_TEMPERATURES["merge"],
-      maxOutputTokens: 2048,
-    }, spec.textModel);
-
-    const parsed: unknown = safeParseJson<unknown>(_rawGeminiText, "merge");
-
-    const unwrapped = unwrapSingleKeyWrapper(targetData, parsed);
-
-    const guarded = applyFieldGuard(targetData, unwrapped, spec.allowedFields!, targetField);
-    const generationTime = Date.now() - startTime;
-    console.log(`[visual-designer] Merge complete: ${sourceId} → ${targetId} (field: ${targetField}, ${generationTime}ms)`);
-    return c.json({
-      patch: { [targetField]: guarded },
-      _meta: {
-        agent: "visual-designer",
-        ...(isDevMode() && { prompt: fullPrompt }),
-        promptKey: `${sourceId}->${targetId}:merge`,
-        model: spec.textModel ?? TEXT_MODEL,
-        generationTime,
-        ingredients: [],
-      },
-    });
-  } catch (err) {
-    console.error("[visual-designer] merge error:", (err as Error)?.stack ?? String(err));
-    return c.json(
-      buildErrorPayload("Merge failed", err, _rawGeminiText ? { rawText: _rawGeminiText.slice(0, 500) } : undefined),
       500,
     );
   }
