@@ -45,7 +45,7 @@ export const MERGE_UI_HINTS = {
   },
   "logo→art-style": {
     slot: "Create art style from logo",
-    card: "Apply logo style to art style",
+    card: "Replace logo in art style",
   },
   "art-style→color-palette": {
     slot: "Extract palette from art style",

@@ -45,7 +45,7 @@ const EXPECTED_HINTS = {
   },
   "logo→art-style": {
     slot: "Create art style from logo",
-    card: "Apply logo style to art style",
+    card: "Replace logo in art style",
   },
   "art-style→color-palette": {
     slot: "Extract palette from art style",
@@ -93,7 +93,7 @@ test("keeps all merge UI hints short, complete, and placeholder-free", () => {
 test("regresses the reversed logo and art-style card copy", () => {
   assert.equal(
     resolveMergeUiHint("card", "logo", "art-style"),
-    "Apply logo style to art style",
+    "Replace logo in art style",
   );
   assert.equal(
     resolveMergeUiHint("card", "art-style", "logo"),

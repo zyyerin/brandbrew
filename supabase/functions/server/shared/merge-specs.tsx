@@ -172,6 +172,7 @@ const PROMPT_OVERRIDES: Record<string, Partial<MergeSpec>> = {
   },
   "logo→art-style": {
     newHint: "Generate a modular brand graphic device system reflecting the logo's stylistic signature. Include a primary key visual (KV) and secondary supporting patterns/shapes. No photography. Do not include actual logo.",
+    cardHint: "Update the logo in the art style board with the selected logo",
   },
   "art-style→logo": {
     newHint: "Design a logo referring to this style: {sourceData}",
@@ -720,6 +721,7 @@ export interface EditPromptOpts {
   hasReferenceImage: boolean;
   colorPaletteHex?: string[];
   cardType?: string;
+  sourceId?: string;
   brandName?: string;
   tagline?: string;
 }
@@ -730,6 +732,14 @@ export function buildEditImagePrompt(opts: EditPromptOpts): string {
 
   if (opts.hasPaletteImage) {
     prompt = `Recolor the second image using the color scheme of the first image.`;
+  } else if (opts.hasReferenceImage && opts.sourceId === "logo" && opts.cardType === "art-style") {
+    prompt = (
+      `${hint}. The first image is the selected logo lockup. The second image is the art style board. ` +
+      `Replace any existing logo, wordmark, or lockup on the second image with that exact mark from the first image. ` +
+      `Copy it faithfully: the same composition, lettering, colors, and proportions. ` +
+      `Do not redraw, restyle, or invent a different mark. Keep the rest of the style board unchanged. ` +
+      `Do not add a second logo.`
+    );
   } else if (opts.hasReferenceImage) {
     prompt = `${hint}. Use the first image as reference, edit the second image accordingly.`;
   } else if (opts.colorPaletteHex?.length) {

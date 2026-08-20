@@ -329,3 +329,35 @@ test("pipeline waits for the logo before requesting art-style with that lockup",
   assert.doesNotMatch(source, /allSettledMaybeSequential/);
   assert.doesNotMatch(source, /not held back by the art style/);
 });
+
+test("logo→art-style card merge replaces the lockup on the style board", () => {
+  const mergeSpecs = readFileSync(
+    new URL("../supabase/functions/server/shared/merge-specs.tsx", import.meta.url),
+    "utf8",
+  );
+  const visualDesigner = readFileSync(
+    new URL("../supabase/functions/server/agents/visual-designer.tsx", import.meta.url),
+    "utf8",
+  );
+  const mergeHook = readFileSync(
+    new URL("../src/app/hooks/useMergeGeneration.ts", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(
+    mergeSpecs,
+    /cardHint: "Update the logo in the art style board with the selected logo"/,
+  );
+  assert.match(mergeSpecs, /Do not include actual logo/);
+  assert.match(
+    mergeSpecs,
+    /sourceId === "logo" && opts.cardType === "art-style"/,
+  );
+  assert.match(
+    mergeSpecs,
+    /Replace any existing logo, wordmark, or lockup on the second image with that exact mark/,
+  );
+  assert.match(visualDesigner, /sourceId,\s*brandName,/);
+  assert.match(mergeHook, /resolveMergeHint\("card", sourceId, targetId/);
+  assert.match(mergeHook, /referenceImageUrl: sourceRefUrl/);
+});

@@ -164,6 +164,7 @@ async function runEditImage(c: Context, body: Record<string, unknown>): Promise<
       return c.json({ error: "brandContextShort is required" }, 400);
     }
     const cardType = asNonEmptyString(body.cardType);
+    const sourceId = asNonEmptyString(body.sourceId);
     const newHint = typeof body.newHint === "string" ? body.newHint : undefined;
     const sourceImageUrl = asNonEmptyString(body.sourceImageUrl);
     const referenceImageUrl = asNonEmptyString(body.referenceImageUrl);
@@ -216,6 +217,7 @@ async function runEditImage(c: Context, body: Record<string, unknown>): Promise<
       hasReferenceImage: hasRef,
       colorPaletteHex: colorPalette,
       cardType,
+      sourceId,
       brandName,
       tagline,
     });
