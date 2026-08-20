@@ -1,9 +1,8 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // shared/art-director-image-prompts.ts — txt2img briefs for drawing-stage cards
 //
-// Art-style keeps the style-board brief (layered graphic language, not a single
-// poster). Application mockups still use the shared text-rendering contract so
-// hex codes and typeface names are not printed onto packaging.
+// Art-style is a modular style board. When a finished lockup is supplied as a
+// reference image, that exact mark is placed on the board rather than redrawn.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import type { ImagePromptContext } from "./types.tsx";
@@ -37,29 +36,36 @@ function visualDirection(ctx: ImagePromptContext): string {
 
 export function buildArtStyleImagePrompt(ctx: ImagePromptContext): string {
   const name = ctx.brandName ?? "the brand";
-  const description = ctx.description ?? ctx.brandDescription;
-  const tagline = ctx.tagline ? `Tagline: "${ctx.tagline}". ` : "";
-  const audience = ctx.targetAudience ? `Target audience: ${ctx.targetAudience}. ` : "";
   const vc = ctx.visualConcept;
   const conceptStr = vc ? `${vc.concept}. ${vc.description}` : "";
-  const kwds = (ctx.keywords ?? []).join(", ");
-  const focus = ctx.newHint ? `Creative direction: ${ctx.newHint}. ` : "";
-  const palette = (ctx.colorPalette ?? []).length > 0
-    ? `Brand colors: ${ctx.colorPalette!.join(", ")}. `
+  const hasLogoRef = !!ctx.hasVisualRefs;
+  const palette = hasLogoRef
+    ? ""
+    : (ctx.colorPalette ?? []).length > 0
+      ? `Color palette: ${ctx.colorPalette!.join(", ")}. `
+      : "";
+  const logoClause = hasLogoRef
+    ? "The reference image is the finished brand logo lockup. Place that exact lockup on the style board as one of the modules. Copy it faithfully: the same composition, lettering, colors, and proportions. Do not redraw, restyle, or invent a different mark. Do not add a second logo, wordmark, or alternate lockup. "
+    : "";
+  const policy = hasLogoRef
+    ? ` ${buildImageTextPolicy({
+        renderable: [ctx.brandName],
+        preserveExistingText: true,
+      })}`
     : "";
 
-  return (
-    `${focus}Art style reference image for "${name}" brand. ` +
-    `${description ? `Brand description: ${description}. ` : ""}` +
-    `${tagline}${audience}` +
-    `${conceptStr ? `Visual concept: ${conceptStr}. ` : ""}` +
-    `${kwds ? `Keywords: ${kwds}. ` : ""}` +
+  const prompt = (
+    `Create a modular, variable-panel brand style board for "${name}". ` +
+    `The board must be segmented into distinct, non-fixed modules, selecting organically from a library of visual elements to create a dynamic composition. This potential library includes abstract patterns, icon systems, geometric forms, textural explorations, and typographic shapes. Select a balanced subset of these modules, and arrange them non-symmetrically across the canvas, avoiding any fixed grid. Each variation should feature a unique, organic combination of elements. ` +
+    `${conceptStr ? `Visual concept: ${conceptStr} ` : ""}` +
     `${palette}` +
-    `Create a graphic style board that defines the brand's 2D visual language: ` +
-    `shape grammar, pattern rhythm, contrast hierarchy, and abstract textures. ` +
-    `Flat or semi-flat composition, poster-like design layout. ` +
-    `No photorealism, no people, no products, no environments, no text labels.`
+    `${logoClause}` +
+    `No photorealism.` +
+    policy
   );
+
+  if (hasLogoRef) warnIfSpecLeaks("art-style-prompt", prompt, [ctx.titleFont, ctx.bodyFont]);
+  return prompt;
 }
 
 export function buildApplicationImagePrompt(ctx: ImagePromptContext): string {

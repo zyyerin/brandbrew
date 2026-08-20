@@ -228,16 +228,19 @@ function buildScenarios(fx) {
       id: "art-style-split",
       stage: "image",
       route: "art-director/design-art-style",
-      note: "art style alone (pro, pinned) — runs in parallel with logo-split",
-      body: {
-        brandContext,
+      note: "art style after logo — places the lockup from logo-split as a reference",
+      skipIf: () => !fx.logoUrl
+        && "needs logo image (run logo-split first)",
+      body: () => ({
+        brandContext: { ...brandContext, logoImageUrl: fx.logoUrl },
         brandName: fx.brandName,
         description: fx.description,
         keywords: fx.keywords,
         visualConcept: fx.visualConcept,
         colorPalette: fx.colorPalette,
         font: fx.font,
-      },
+        logoImageUrl: fx.logoUrl,
+      }),
     },
     {
       id: "application",

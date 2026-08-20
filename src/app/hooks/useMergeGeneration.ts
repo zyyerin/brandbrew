@@ -16,7 +16,7 @@ import { resolveMergeHint, formatSourceForHint } from "@server-shared/merge-spec
 import { omitTaglineForLogo } from "@server-shared/brand-context.ts";
 import { omitsCurrentPaletteInSlotExtract } from "@server-shared/merge-text.ts";
 import type { MergeBrandContext } from "../utils/variation-helpers";
-import { normalizeAndSortColorPalette, paletteToBase64 } from "../utils/helpers";
+import { normalizeColorPalette, paletteToBase64 } from "../utils/helpers";
 import {
   addVariationToProject,
   addVariationIfNew,
@@ -159,7 +159,7 @@ export function useMergeGeneration({
         const mergeData = extractMergeData(targetEid, patch);
         if (mergeData == null) return;
         const variationData = targetEid === "color-palette"
-          ? normalizeAndSortColorPalette(mergeData)
+          ? normalizeColorPalette(mergeData)
           : mergeData;
         addMergeVariation(variationData, mergeMeta);
       };
@@ -172,8 +172,8 @@ export function useMergeGeneration({
         if (targetEid === "color-palette") {
           const cachedPalette = canSeed ? sourceVariation?.meta?.pipelineSeed?.colorPalette : undefined;
           if (cachedPalette?.length) {
-            const normalizedPalette = normalizeAndSortColorPalette(cachedPalette);
-            if (normalizedPalette == null) return;
+            const normalizedPalette = normalizeColorPalette(cachedPalette);
+            if (normalizedPalette.length === 0) return;
             await withDebugLog(
               debugInterceptor,
               {
@@ -238,7 +238,7 @@ export function useMergeGeneration({
         const mergeData = extractMergeData(targetEid, patch);
         if (mergeData == null) return;
         const variationData = targetEid === "color-palette"
-          ? normalizeAndSortColorPalette(mergeData)
+          ? normalizeColorPalette(mergeData)
           : mergeData;
         if (variationData != null) addMergeVariation(variationData, img2txtMeta);
       };
@@ -451,7 +451,7 @@ export function useMergeGeneration({
           if (patch) {
             const modifiedData = extractMergeData(targetEid, patch);
             if (modifiedData != null) {
-              const data = targetEid === "color-palette" ? normalizeAndSortColorPalette(modifiedData) : modifiedData;
+              const data = targetEid === "color-palette" ? normalizeColorPalette(modifiedData) : modifiedData;
               const variation = createVariation({ prefix: "comment", data, source: "comment", meta: commentMeta, counterRef: generationCounterRef });
               setProject((prev) => addVariationToProject(prev, targetEid, variation));
             }

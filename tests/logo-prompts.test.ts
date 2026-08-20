@@ -202,15 +202,16 @@ test("builds a stacked combination-mark prompt with the title font", () => {
   assertSharedRules(prompt);
 });
 
-test("builds a custom wordmark-only prompt without the title font", () => {
+test("builds a custom wordmark-only prompt with the title font", () => {
   const prompt = buildLogoImagePrompt({
     ...baseContext,
     logoComposition: composition("wordmark-only"),
   });
 
   assert.match(prompt, /wordmark-only logo using distinctive custom lettering/);
+  assert.match(prompt, /selected title typeface Fraunces/);
   assert.match(prompt, /Do not add a separate symbol, icon, emblem, or pictorial mark/);
-  assert.doesNotMatch(prompt, /Fraunces/);
+  assert.doesNotMatch(prompt, /"Fraunces"/);
   assertSharedRules(prompt);
 });
 
@@ -301,4 +302,30 @@ test("color-palette→logo slot merge keeps light palette colors off the canvas"
   assert.match(mergeSpecs, /cardType === "logo" \? "logo-mark"/);
   assert.match(visualDesigner, /withLogoWhiteCanvas\(/);
   assert.match(visualDesigner, /sourceTextData,\s*cardType,/);
+});
+
+test("art-style drawing fetches the finished logo as a reference image", () => {
+  const source = readFileSync(
+    new URL("../supabase/functions/server/agents/art-director.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(source, /fetchLogoReferenceImages/);
+  assert.match(source, /cardType === "art-style"/);
+  assert.match(source, /refImages: refImages\.length > 0 \? refImages : undefined/);
+  assert.doesNotMatch(
+    source,
+    /Promise\.all\(\[\s*artDirector\.request\("\/design-logo"/,
+  );
+});
+
+test("pipeline waits for the logo before requesting art-style with that lockup", () => {
+  const source = readFileSync(
+    new URL("../src/app/hooks/usePipeline.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(source, /logoImageUrl/);
+  assert.match(source, /endpoint: "art-director\/design-logo"/);
+  assert.match(source, /endpoint: "art-director\/design-art-style"/);
+  assert.doesNotMatch(source, /allSettledMaybeSequential/);
+  assert.doesNotMatch(source, /not held back by the art style/);
 });

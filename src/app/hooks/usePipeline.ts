@@ -3,7 +3,7 @@ import { toast } from "sonner";
 import type { ProjectData, ElementId, Variation, VariationMeta, PipelineStage, VisualConceptData, ColorPaletteData, FontData } from "../types/project";
 import { generateVisualConcept } from "../utils/generate-brand";
 import { designPaletteAndFonts, designLogo, designArtStyle } from "../utils/generate-image";
-import { sortColorPaletteForHarmony } from "../utils/helpers";
+import { normalizeColorPalette } from "../utils/helpers";
 import { addVariationToProject } from "../utils/variation-helpers";
 import type { UseGenerationBaseParams } from "../utils/variation-helpers";
 import { withPipelineStage } from "../utils/debug-interceptor-utils";
@@ -21,23 +21,6 @@ export interface PipelineBriefInput {
   targetAudience: string;
   keywords: string[];
   applications?: string[];
-}
-
-/**
- * Runs tasks concurrently, or one after another when `sequential` is set. The
- * debug panel gates a single paused stage at a time, so stepping through the
- * pipeline has to serialize stages that would otherwise overlap.
- */
-async function allSettledMaybeSequential(
-  tasks: (() => Promise<void>)[],
-  sequential: boolean,
-): Promise<PromiseSettledResult<void>[]> {
-  if (!sequential) return await Promise.allSettled(tasks.map((run) => run()));
-  const results: PromiseSettledResult<void>[] = [];
-  for (const run of tasks) {
-    results.push(...(await Promise.allSettled([run()])));
-  }
-  return results;
 }
 
 export interface UsePipelineReturn {
@@ -214,7 +197,7 @@ export function usePipeline({
           let next = addVariationToProject(
             prev,
             "color-palette",
-            makeVar("color-palette", sortColorPaletteForHarmony(pfResult.colorPalette), { ...pfResult._meta, sourceConceptVariationId: vcVariationId }),
+            makeVar("color-palette", normalizeColorPalette(pfResult.colorPalette), { ...pfResult._meta, sourceConceptVariationId: vcVariationId }),
             false,
           );
           next = addVariationToProject(
@@ -226,8 +209,9 @@ export function usePipeline({
           return next;
         });
 
-        // Step 2: Art Director → Logo + Art Style, as two independent requests
-        // so the logo (fast) is not held back by the art style (slow).
+        // Step 2: Art Director → Logo, then Art Style. Art style needs the
+        // finished lockup as a reference image so the board places that mark
+        // instead of inventing a second one.
         setDisplayPhase("drawing");
         const lsRequest = {
           ...designCtx,
@@ -251,6 +235,8 @@ export function usePipeline({
             keywords: briefContext.keywords,
             visualConcept: vcResult.visualConcept,
             colorPalette: pfResult.colorPalette,
+            titleFont: pfResult.font?.titleFont,
+            bodyFont: pfResult.font?.bodyFont,
             application: briefContext.applications?.[0],
           },
         };
@@ -267,46 +253,66 @@ export function usePipeline({
           );
         };
 
-        const runLogoTask = () => withPipelineStage(
-          debugInterceptor,
-          {
-            id: `stage-${genTs}-2`,
-            stage: "drawing",
-            agent: "art-director",
-            endpoint: "art-director/design-logo",
-            request: logoRequest,
-          },
-          async (finalReq) => {
-            const result = await designLogo(finalReq as typeof logoRequest, { signal });
-            if (!result.logoImageUrl) throw new Error("Drawing stage did not return a logo");
-            return result;
-          },
-        ).then((result) => {
+        const drawingFailures: unknown[] = [];
+        let logoImageUrl: string | undefined;
+
+        try {
+          const result = await withPipelineStage(
+            debugInterceptor,
+            {
+              id: `stage-${genTs}-2`,
+              stage: "drawing",
+              agent: "art-director",
+              endpoint: "art-director/design-logo",
+              request: logoRequest,
+            },
+            async (finalReq) => {
+              const logoResult = await designLogo(finalReq as typeof logoRequest, { signal });
+              if (!logoResult.logoImageUrl) throw new Error("Drawing stage did not return a logo");
+              return logoResult;
+            },
+          );
           throwIfAborted();
           const model = result.logoModel ?? result._meta?.model;
+          logoImageUrl = result.logoImageUrl ?? undefined;
           commitDrawnCard("logo", result.logoImageUrl!, {
             ...(result._meta ?? {}),
             ...(model ? { model } : {}),
             sourceConceptVariationId: vcVariationId,
             logoComposition: result.logoComposition ?? pfResult.logoComposition,
           });
-        });
+        } catch (err) {
+          drawingFailures.push(err);
+        }
+        throwIfAborted();
 
-        const runArtStyleTask = () => withPipelineStage(
-          debugInterceptor,
-          {
-            id: `stage-${genTs}-3`,
-            stage: "drawing",
-            agent: "art-director",
-            endpoint: "art-director/design-art-style",
-            request: lsRequest,
-          },
-          async (finalReq) => {
-            const result = await designArtStyle(finalReq as typeof lsRequest, { signal });
-            if (!result.artStyleImageUrl) throw new Error("Drawing stage did not return an art style");
-            return result;
-          },
-        ).then((result) => {
+        const artStyleRequest = logoImageUrl
+          ? {
+              ...lsRequest,
+              logoImageUrl,
+              brandContext: {
+                ...lsRequest.brandContext,
+                logoImageUrl,
+              },
+            }
+          : lsRequest;
+
+        try {
+          const result = await withPipelineStage(
+            debugInterceptor,
+            {
+              id: `stage-${genTs}-3`,
+              stage: "drawing",
+              agent: "art-director",
+              endpoint: "art-director/design-art-style",
+              request: artStyleRequest,
+            },
+            async (finalReq) => {
+              const artResult = await designArtStyle(finalReq as typeof artStyleRequest, { signal });
+              if (!artResult.artStyleImageUrl) throw new Error("Drawing stage did not return an art style");
+              return artResult;
+            },
+          );
           throwIfAborted();
           const model = result.artStyleModel ?? result._meta?.model;
           commitDrawnCard("art-style", result.artStyleImageUrl!, {
@@ -314,21 +320,14 @@ export function usePipeline({
             ...(model ? { model } : {}),
             sourceConceptVariationId: vcVariationId,
           });
-        });
-
-        const drawnCards = await allSettledMaybeSequential(
-          [runLogoTask, runArtStyleTask],
-          Boolean(debugInterceptor?.enabled),
-        );
+        } catch (err) {
+          drawingFailures.push(err);
+        }
         throwIfAborted();
-
-        const drawingFailures = drawnCards
-          .filter((r): r is PromiseRejectedResult => r.status === "rejected")
-          .map((r) => r.reason);
 
         // One image failing no longer discards the other: it is already on the
         // board, and the missing one leaves the set unselected on purpose.
-        if (drawingFailures.length === drawnCards.length) throw drawingFailures[0];
+        if (drawingFailures.length === 2) throw drawingFailures[0];
         if (drawingFailures.length > 0) {
           console.error("Drawing stage partially failed:", drawingFailures[0]);
           toast.error(getUserFacingApiErrorMessage(drawingFailures[0]));

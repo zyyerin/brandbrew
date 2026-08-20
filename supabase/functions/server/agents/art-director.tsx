@@ -20,7 +20,7 @@ import {
 } from "../shared/gemini.tsx";
 import type { ImagePromptContext, VisualConceptData } from "../shared/types.tsx";
 import { resolveAspectRatio } from "../shared/image-config.tsx";
-import { createTimer, logTimingReport } from "../shared/timing.ts";
+import { createTimer, logTimingReport, type Timer } from "../shared/timing.ts";
 import {
   ART_DIRECTOR_VARIATION_TASK_DESCRIPTIONS,
   PALETTE_FONTS_TASK_DESCRIPTION,
@@ -143,6 +143,24 @@ function buildDevDebugPayload(rawGeminiText?: string): { _debug?: { rawText: str
   return { _debug: { rawText: rawGeminiText.slice(0, 500) } };
 }
 
+function asOptionalUrl(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+/** Fetch a finished lockup so art-style can place that mark instead of inventing one. */
+async function fetchLogoReferenceImages(
+  logoImageUrl: string | undefined,
+  timer?: Timer,
+): Promise<Array<{ b64: string; mimeType: string }>> {
+  if (!logoImageUrl) return [];
+  const fetched = await fetchImageAsBase64(logoImageUrl, timer);
+  if ("error" in fetched) {
+    console.log(`[art-director] Logo reference fetch skipped: ${fetched.error}`);
+    return [];
+  }
+  return [fetched];
+}
+
 // ── Route: POST /generate ────────────────────────────────────────────────────
 // Generates a brand image from text context only (no source image).
 
@@ -206,10 +224,21 @@ artDirector.post("/generate", async (c) => {
       aspectRatio: effectiveAR,
     });
 
+    const logoRefUrl = cardType === "art-style"
+      ? (fullContext.logoImageUrl ?? asOptionalUrl(body.logoImageUrl))
+      : undefined;
+    const refImages = await fetchLogoReferenceImages(logoRefUrl, timer);
+    if (refImages.length > 0) ctx.hasVisualRefs = true;
+
     const prompt = buildCreativeBrief(cardType, ctx);
     console.log(`[art-director] Generating (txt2img) — cardType=${cardType} ar=${effectiveAR} prompt="${prompt.slice(0, 80)}…"`);
 
-    const genResult = await generateImage(apiKey, prompt, { cardType, aspectRatio: effectiveAR, timer });
+    const genResult = await generateImage(apiKey, prompt, {
+      cardType,
+      aspectRatio: effectiveAR,
+      timer,
+      refImages: refImages.length > 0 ? refImages : undefined,
+    });
 
     const imageUrl = await uploadAndSignImage(genResult.b64, genResult.mimeType, cardType, c.req.header("X-Project-Id"), timer);
     const generationTime = Date.now() - startTime;
@@ -221,6 +250,8 @@ artDirector.post("/generate", async (c) => {
       (fullContext.name ?? brandName) && "Brand Brief",
       vc && "Visual Concept",
       (normalizedPalette?.length ?? 0) > 0 && "Color Palette",
+      (fullContext.font?.titleFont || fullContext.font?.bodyFont) && "Font",
+      refImages.length > 0 && "Logo",
     ].filter(Boolean) as string[];
 
     return c.json({
@@ -352,6 +383,7 @@ artDirector.post("/design-palette-fonts", async (c) => {
 interface DrawingStageContext {
   baseCtx: ImagePromptContext;
   logoComposition?: LogoComposition;
+  logoImageUrl?: string;
   aspectRatioOverride?: string;
   override?: { logoPrompt?: string; artStylePrompt?: string };
 }
@@ -409,6 +441,7 @@ function parseDrawingStageBody(body: Record<string, unknown>): DrawingStageParse
         logoComposition,
       },
       logoComposition,
+      logoImageUrl: fullContext.logoImageUrl ?? asOptionalUrl(body.logoImageUrl),
       aspectRatioOverride: typeof aspectRatio === "string" ? aspectRatio : undefined,
       override: getEffectiveOverride(_promptOverride) as
         | { logoPrompt?: string; artStylePrompt?: string }
@@ -418,9 +451,8 @@ function parseDrawingStageBody(body: Record<string, unknown>): DrawingStageParse
 }
 
 // ── Shared: one drawing-stage image ───────────────────────────────────────────
-// Backs /design-logo and /design-art-style. One image per request, so the logo
-// reaches the board as soon as it is ready instead of waiting on the slower art
-// style, and callers needing only one of them don't pay for the other.
+// Backs /design-logo and /design-art-style. Logo is generated first in the
+// pipeline; art-style then receives that lockup as a reference image.
 
 async function respondWithDrawingStageCard(
   c: Context<{ Variables: Variables }>,
@@ -439,6 +471,11 @@ async function respondWithDrawingStageCard(
     const baseCtx = omitTaglineForLogo(cardType, parsed.ctx.baseCtx);
 
     const aspectRatio = resolveAspectRatio(cardType, aspectRatioOverride);
+    const refImages = cardType === "art-style"
+      ? await fetchLogoReferenceImages(parsed.ctx.logoImageUrl, timer)
+      : [];
+    if (refImages.length > 0) baseCtx.hasVisualRefs = true;
+
     const closePrompt = timer.open("prompt.build");
     const overridePrompt = cardType === "logo" ? override?.logoPrompt : override?.artStylePrompt;
     const prompt = overridePrompt ?? buildCreativeBrief(cardType, { ...baseCtx, aspectRatio });
@@ -449,6 +486,7 @@ async function respondWithDrawingStageCard(
       cardType,
       aspectRatio,
       timer,
+      refImages: refImages.length > 0 ? refImages : undefined,
     }).finally(() => closeGen());
 
     const imageUrl = await uploadAndSignImage(
@@ -472,7 +510,12 @@ async function respondWithDrawingStageCard(
       timings,
       contextMode: "full",
       ingredients: buildIngredients(baseCtx.brandName, baseCtx.visualConcept, baseCtx.keywords ?? null),
-      selectedElementLabels: ["Visual Concept", "Color Palette", "Font"],
+      selectedElementLabels: [
+        "Visual Concept",
+        "Color Palette",
+        "Font",
+        ...(refImages.length > 0 ? ["Logo"] : []),
+      ],
     };
 
     return c.json(
@@ -497,18 +540,18 @@ async function respondWithDrawingStageCard(
 }
 
 // ── Routes: POST /design-logo, POST /design-art-style ─────────────────────────
-// Step 2, split into independent requests so each image renders on arrival.
+// Step 2, split so the logo can land on the board before art-style starts.
+// Art-style expects logoImageUrl when the pipeline has already drawn the lockup.
 
 artDirector.post("/design-logo", (c) => respondWithDrawingStageCard(c, "logo"));
 artDirector.post("/design-art-style", (c) => respondWithDrawingStageCard(c, "art-style"));
 
 // Backward compat: the currently deployed Netlify client still POSTs the
-// combined route after brief generate. Keep the old payload shape until that
-// frontend is redeployed onto /design-logo + /design-art-style.
+// combined route after brief generate. Draw logo first, then art-style with
+// that lockup as a reference, matching the split-route pipeline.
 artDirector.post("/design-logo-style", async (c) => {
   const startTime = Date.now();
   const body = await c.req.json();
-  const payload = JSON.stringify(body);
   const headers = new Headers();
   headers.set("Content-Type", "application/json");
   for (const name of ["Authorization", "X-Access-Token", "X-Project-Id"]) {
@@ -516,14 +559,32 @@ artDirector.post("/design-logo-style", async (c) => {
     if (value) headers.set(name, value);
   }
 
-  const [logoRes, artStyleRes] = await Promise.all([
-    artDirector.request("/design-logo", { method: "POST", headers, body: payload }),
-    artDirector.request("/design-art-style", { method: "POST", headers, body: payload }),
-  ]);
-
+  const logoRes = await artDirector.request("/design-logo", {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+  });
   const logoJson = await logoRes.json().catch(() => ({} as Record<string, unknown>));
-  const artJson = await artStyleRes.json().catch(() => ({} as Record<string, unknown>));
   const logoImageUrl = typeof logoJson.logoImageUrl === "string" ? logoJson.logoImageUrl : null;
+
+  const brandContext = body.brandContext;
+  const artPayload = logoImageUrl
+    ? {
+        ...body,
+        logoImageUrl,
+        brandContext: brandContext && typeof brandContext === "object" && !Array.isArray(brandContext)
+          ? { ...brandContext, logoImageUrl }
+          : { logoImageUrl },
+      }
+    : body;
+
+  const artStyleRes = await artDirector.request("/design-art-style", {
+    method: "POST",
+    headers,
+    body: JSON.stringify(artPayload),
+  });
+
+  const artJson = await artStyleRes.json().catch(() => ({} as Record<string, unknown>));
   const artStyleImageUrl = typeof artJson.artStyleImageUrl === "string" ? artJson.artStyleImageUrl : null;
   const partialErrors: string[] = [];
   if (!logoRes.ok) partialErrors.push(`logo: ${String(logoJson.error ?? logoRes.status)}`);

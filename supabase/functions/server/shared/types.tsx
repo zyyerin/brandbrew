@@ -136,9 +136,10 @@ export type ImagePromptContext = {
   /** Touchpoint name for application mockup generation (e.g. "Business Card", "Packaging") */
   application?: string;
   /**
-   * When true, color/typeface specification strings are omitted from the
-   * application prompt — the reference images already carry that information,
-   * and restating hex codes or font names is what gets printed onto packaging.
+   * When true, a finished visual is already in the reference images.
+   * Application mockups then omit hex/typeface spec strings so they are not
+   * printed onto packaging. Art-style boards then place the referenced lockup
+   * instead of inventing a second mark.
    */
   hasVisualRefs?: boolean;
 };

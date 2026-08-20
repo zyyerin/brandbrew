@@ -94,18 +94,27 @@ test("findRenderableSpecLeaks flags quoted fonts and field labels, not bare hex"
 
 test("art-style prompt is a graphic style board, without the later text policy", () => {
   const prompt = buildArtStyleImagePrompt(ctx);
-  assert.match(prompt, /Art style reference image for "Northstar" brand/);
-  assert.match(prompt, /graphic style board/);
-  assert.match(prompt, /Brand description: A navigation platform for independent teams/);
-  assert.match(prompt, /Tagline: "Find your way"/);
+  assert.match(prompt, /modular, variable-panel brand style board for "Northstar"/);
   assert.match(prompt, /Visual concept: Guiding light. Precise geometry with a warm focal point/);
-  assert.match(prompt, /Keywords: precise, warm/);
-  assert.match(prompt, /Brand colors: #14213D, #FCA311, #FFFFFF/);
-  assert.match(prompt, /No photorealism, no people, no products, no environments, no text labels/);
-  assert.doesNotMatch(prompt, /abstract 2D graphic composition/);
-  assert.doesNotMatch(prompt, /no swatches, no legends, no type specimens/);
+  assert.match(prompt, /Color palette: #14213D, #FCA311, #FFFFFF/);
+  assert.match(prompt, /No photorealism/);
+  assert.doesNotMatch(prompt, /finished brand logo lockup/);
   assert.doesNotMatch(prompt, /Render no text, letters, or numbers at all/);
-  assert.doesNotMatch(prompt, /fills and inks only/);
+  assert.doesNotMatch(prompt, /Keep the text already present/);
+});
+
+test("art-style prompt with a logo reference places that exact lockup", () => {
+  const prompt = buildArtStyleImagePrompt({ ...ctx, hasVisualRefs: true });
+  assert.match(prompt, /modular, variable-panel brand style board for "Northstar"/);
+  assert.match(prompt, /The reference image is the finished brand logo lockup/);
+  assert.match(prompt, /Place that exact lockup/);
+  assert.match(prompt, /Do not redraw, restyle, or invent a different mark/);
+  assert.match(prompt, /Do not add a second logo, wordmark, or alternate lockup/);
+  assert.match(prompt, /Keep the text already present in the source image/);
+  assert.doesNotMatch(prompt, /Color palette:/);
+  assert.doesNotMatch(prompt, /"Fraunces"/);
+  assert.doesNotMatch(prompt, /Typography:/);
+  assert.deepEqual(findRenderableSpecLeaks(prompt, [ctx.titleFont, ctx.bodyFont]), []);
 });
 
 test("application prompt extracts from an identity board instead of reprinting it", () => {

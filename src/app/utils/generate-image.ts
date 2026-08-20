@@ -34,6 +34,8 @@ export interface ImageGenContext {
   brandContextShort?: BrandContextShort;
   /** Required for cardType "logo" txt2img generation — decides icon+wordmark vs wordmark-only composition. */
   logoComposition?: LogoComposition;
+  /** Finished lockup URL. Art-style txt2img places this mark on the style board. */
+  logoImageUrl?: string;
 }
 
 export interface ImageGenResult {
@@ -78,11 +80,14 @@ export async function generateBrandImage(
   ctx: ImageGenContext,
 ): Promise<ImageGenResult> {
   const sc = ctx.brandContextShort;
-  const brandContext: BrandContextFull = ctx.brandContext ?? {
-    ...sc,
-    visualConcept: sc?.visualConcept
-      ? { concept: sc.visualConcept.concept, description: sc.visualConcept.description ?? "" }
-      : undefined,
+  const brandContext: BrandContextFull = {
+    ...(ctx.brandContext ?? {
+      ...sc,
+      visualConcept: sc?.visualConcept
+        ? { concept: sc.visualConcept.concept, description: sc.visualConcept.description ?? "" }
+        : undefined,
+    }),
+    ...(ctx.logoImageUrl ? { logoImageUrl: ctx.logoImageUrl } : {}),
   };
   const brandContextShort: BrandContextShort = ctx.brandContextShort ?? {};
   const data = await callApi<{ imageUrl?: string; _meta?: ImageGenResult["_meta"] }>(
@@ -271,27 +276,29 @@ export async function designPaletteAndFonts(
 }
 
 /**
- * The logo and the art style are always requested as two independent calls, so
- * each image can be shown as soon as it is ready, and callers that only need
- * one of them don't pay for the other.
+ * Logo and art style are separate calls. The pipeline runs logo first, then
+ * art style with `logoImageUrl`, so the style board can place that lockup.
  */
 async function designDrawingStageCard<T>(
   route: "art-director/design-logo" | "art-director/design-art-style",
   ctx: PipelineContext,
   opts?: { signal?: AbortSignal },
 ): Promise<T> {
-  const brandContext: BrandContextFull = ctx.brandContext ?? {
-    name: ctx.brandName,
-    tagline: ctx.tagline,
-    keywords: ctx.keywords,
-    description: ctx.description,
-    targetAudience: ctx.targetAudience,
-    visualConcept: ctx.visualConcept,
-    colorPalette: ctx.colorPalette,
-    font: ctx.font,
-    artStyleImageUrl: ctx.artStyleImageUrl,
-    logoImageUrl: ctx.logoImageUrl,
-    application: ctx.application,
+  const brandContext: BrandContextFull = {
+    ...(ctx.brandContext ?? {
+      name: ctx.brandName,
+      tagline: ctx.tagline,
+      keywords: ctx.keywords,
+      description: ctx.description,
+      targetAudience: ctx.targetAudience,
+      visualConcept: ctx.visualConcept,
+      colorPalette: ctx.colorPalette,
+      font: ctx.font,
+      artStyleImageUrl: ctx.artStyleImageUrl,
+      logoImageUrl: ctx.logoImageUrl,
+      application: ctx.application,
+    }),
+    ...(ctx.logoImageUrl ? { logoImageUrl: ctx.logoImageUrl } : {}),
   };
   return await callApi<T>(route, {
     body: { ...ctx, brandContext },

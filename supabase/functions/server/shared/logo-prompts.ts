@@ -221,11 +221,16 @@ function buildCompositionInstruction(
         + `and the wordmark below. ${typeface}`
       );
     }
-    case "wordmark-only":
+    case "wordmark-only": {
+      const typeface = titleFont?.trim()
+        ? `Use the visual character of the selected title typeface ${titleFont.trim()} for the wordmark.`
+        : "Use distinctive custom lettering derived from the brand personality.";
       return (
         `Create a wordmark-only logo using distinctive custom lettering derived from the brand personality. `
+        + `${typeface} `
         + `Do not add a separate symbol, icon, emblem, or pictorial mark.`
       );
+    }
   }
 }
 

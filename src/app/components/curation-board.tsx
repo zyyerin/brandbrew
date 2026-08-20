@@ -17,7 +17,7 @@ import { VisualSnapshotPanel } from "./curation-board/VisualSnapshotPanel";
 import { VisualConceptPanel } from "./curation-board/VisualConceptPanel";
 import { CanvasHUD } from "./curation-board/CanvasHUD";
 import { CommentInput } from "./curation-board/CommentInput";
-import type { BrandBriefData, ElementsState, ElementId, SnapshotItem, PipelineStage } from "../types/project";
+import { ALL_ELEMENT_IDS, type BrandBriefData, type ElementsState, type ElementId, type SnapshotItem, type PipelineStage } from "../types/project";
 
 export type { GeneratedCardItem, GeneratedCardType } from "./brand-cards";
 
@@ -33,6 +33,21 @@ const COMMENT_CURSOR = `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/
 const EMPTY_SET = new Set<string>();
 const EMPTY_RECORD_VARIATIONS: Record<string, VariationItem[]> = {};
 const EMPTY_RECORD_ACTIVE: Record<string, string> = {};
+
+function snapshotVariationIds(elements: ElementsState): Record<ElementId, ReadonlySet<string>> {
+  const ids = {} as Record<ElementId, ReadonlySet<string>>;
+  for (const eid of ALL_ELEMENT_IDS) {
+    ids[eid] = new Set((elements[eid]?.variations ?? []).map((v) => v.id));
+  }
+  return ids;
+}
+
+function withoutArrived(stageIds: Set<string>, arrived: ReadonlySet<string>): Set<string> {
+  if (arrived.size === 0) return stageIds;
+  const next = new Set(stageIds);
+  for (const id of arrived) next.delete(id);
+  return next;
+}
 
 interface CurationBoardProps {
   brandSummary: BrandBriefData;
@@ -225,37 +240,68 @@ export function CurationBoard({
   const isGenerating = pipelineStage !== null;
   const isLoadingOrBeyond = projectPhase === "curating";
 
+  // Snapshot variation IDs when a pipeline run starts. Drawing commits logo and
+  // art-style independently, so stage alone cannot tell us a card already landed.
+  const pipelineRunBaselineRef = useRef<Record<ElementId, ReadonlySet<string>> | null>(null);
+  if (pipelineStage && pipelineRunBaselineRef.current === null) {
+    pipelineRunBaselineRef.current = snapshotVariationIds(elements);
+  } else if (!pipelineStage) {
+    pipelineRunBaselineRef.current = null;
+  }
+
+  const arrivedThisRun = useMemo(() => {
+    const baseline = pipelineRunBaselineRef.current;
+    const arrived = new Set<string>();
+    if (!pipelineStage || !baseline) return arrived;
+    for (const eid of ALL_ELEMENT_IDS) {
+      const before = baseline[eid];
+      const now = elements[eid]?.variations ?? [];
+      if (now.some((v) => !before.has(v.id))) arrived.add(eid);
+    }
+    return arrived;
+  }, [elements, pipelineStage]);
+
   // Per-element pending set: elements that have NOT yet received their new variation in this pipeline run.
   const pendingGenerationElements = useMemo((): Set<string> => {
     if (!pipelineStage) return new Set();
+    let pending: Set<string>;
     switch (pipelineStage) {
       case "conceptualizing":
-        return new Set(["visual-concept", "color-palette", "font", "logo", "art-style"]);
+        pending = new Set(["visual-concept", "color-palette", "font", "logo", "art-style"]);
+        break;
       case "styling":
-        return new Set(["color-palette", "font", "logo", "art-style"]);
+        pending = new Set(["color-palette", "font", "logo", "art-style"]);
+        break;
       case "drawing":
-        return new Set(["logo", "art-style"]);
+        pending = new Set(["logo", "art-style"]);
+        break;
       case "synthesizing":
       default:
-        return new Set();
+        pending = new Set();
     }
-  }, [pipelineStage]);
+    return withoutArrived(pending, arrivedThisRun);
+  }, [pipelineStage, arrivedThisRun]);
 
   // Elements actively being generated right now (show brewing spinner).
   const brewingElements = useMemo((): Set<string> => {
     if (!pipelineStage) return new Set();
+    let brewing: Set<string>;
     switch (pipelineStage) {
       case "conceptualizing":
-        return new Set(["visual-concept"]);
+        brewing = new Set(["visual-concept"]);
+        break;
       case "styling":
-        return new Set(["color-palette", "font"]);
+        brewing = new Set(["color-palette", "font"]);
+        break;
       case "drawing":
-        return new Set(["logo", "art-style"]);
+        brewing = new Set(["logo", "art-style"]);
+        break;
       case "synthesizing":
       default:
-        return new Set();
+        brewing = new Set();
     }
-  }, [pipelineStage]);
+    return withoutArrived(brewing, arrivedThisRun);
+  }, [pipelineStage, arrivedThisRun]);
 
   const isElementQueuePresent = useCallback(
     (elementType: string): boolean => {

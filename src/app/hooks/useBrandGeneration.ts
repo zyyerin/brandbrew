@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef, type MutableRefObject } from "react";
-import type { ProjectData, ElementId, Variation, VariationMeta } from "../types/project";
+import type { ProjectData, ElementId, Variation, VariationMeta, ImageElementData } from "../types/project";
 import { IMAGE_ELEMENT_IDS, getActiveElementData } from "../types/project";
 import { generateCardVariation, generateVisualConcept, uploadImage } from "../utils/generate-brand";
 import { generateBrandImage, designPaletteAndFonts, performImg2Txt } from "../utils/generate-image";
@@ -9,7 +9,7 @@ import { omitTaglineForLogo } from "@server-shared/brand-context.ts";
 import type { DebugInterceptor } from "./usePipelineDebugger";
 import { toast } from "sonner";
 import { getUserFacingApiErrorMessage } from "../utils/apiClient";
-import { normalizeAndSortColorPalette } from "../utils/helpers";
+import { normalizeColorPalette } from "../utils/helpers";
 import {
   addVariationToProject,
   createVariation,
@@ -241,12 +241,18 @@ export function useBrandGeneration({
             logoComposition = pfResult.logoComposition;
           }
 
+          const activeLogo = eid === "art-style"
+            ? getActiveElementData(p.elements, "logo") as ImageElementData | null
+            : null;
+          const logoImageUrl = activeLogo?.imageUrl;
           const brandContextShort = {
             name: brief.name || undefined,
             tagline: brief.tagline || undefined,
             keywords: brief.keywords,
             visualConcept,
             colorPalette,
+            titleFont: font?.titleFont,
+            bodyFont: font?.bodyFont,
             application: brief.applications?.[0],
           };
           const imageCtx = omitTaglineForLogo(eid, {
@@ -260,9 +266,11 @@ export function useBrandGeneration({
               colorPalette,
               font,
               application: brief.applications?.[0],
+              ...(logoImageUrl ? { logoImageUrl } : {}),
             },
             brandContextShort,
             ...(eid === "logo" && logoComposition ? { logoComposition } : {}),
+            ...(logoImageUrl ? { logoImageUrl } : {}),
           });
           const result = await withDebugLog(
             debugInterceptor,
@@ -320,7 +328,7 @@ export function useBrandGeneration({
           );
           resultMeta = result._meta;
           data = eid === "color-palette"
-            ? normalizeAndSortColorPalette(result.data)
+            ? normalizeColorPalette(result.data)
             : eid === "visual-concept"
               ? ((result.data as any)?.visualConcept ?? result.data)
               : result.data;
@@ -441,10 +449,10 @@ export function useBrandGeneration({
           const { imageUrl: signedUrl } = await uploadImage(base64, validation.mimeType, "color-palette");
           const mergeContext = buildFullBrandContext(projectRef.current);
           const { patch, _meta } = await performImg2Txt("logo", "color-palette", signedUrl, mergeContext, { throwOnError: true });
-          const normalized = normalizeAndSortColorPalette(
+          const normalized = normalizeColorPalette(
             patch ? (patch as Record<string, unknown>).colorPalette : null,
           );
-          if (normalized == null) {
+          if (normalized.length === 0) {
             throw new Error("Palette extraction returned no valid colors");
           }
           const variation = createVariation({ prefix: "upload-palette", data: normalized, source: "add-variation", meta: _meta, counterRef: generationCounterRef });
