@@ -28,6 +28,7 @@ import {
 } from "./types/project";
 import { generateDirection } from "./utils/generate-brand";
 import { TIMING, TYPE } from "./utils/design-tokens";
+import { parseTagList } from "./utils/parse-tag-list";
 import { useVariations } from "./hooks/useVariations";
 import { useSnapshotHistory } from "./hooks/useSnapshotHistory";
 import { useProjectPersistence } from "./hooks/useProjectPersistence";
@@ -462,12 +463,8 @@ export default function App() {
             tagline: fields.tagline,
             description: fields.brandDescription,
             targetAudience: fields.targetAudience,
-            keywords: fields.keywords
-              ? fields.keywords.split(",").map((k) => k.trim()).filter(Boolean)
-              : [],
-            applications: fields.applications
-              ? fields.applications.split(",").map((a) => a.trim()).filter(Boolean)
-              : [],
+            keywords: parseTagList(fields.keywords),
+            applications: parseTagList(fields.applications),
           },
         },
       }));

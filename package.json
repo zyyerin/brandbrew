@@ -15,10 +15,13 @@
     "test:color-font-merge": "node --test tests/color-font-merge.test.ts",
     "test:merge-routes": "node --test tests/merge-routes.test.ts",
     "test:cors-origin": "node --test tests/cors-origin.test.ts",
-    "check:quality": "npm run typecheck && npm run test:logo-prompts && npm run test:image-text-policy && npm run test:merge-ui-hints && npm run test:color-font-merge && npm run test:merge-routes && npm run test:cors-origin && npm run build",
+    "test:mcu-palette": "node --test tests/mcu-palette.test.ts",
+    "test:parse-tag-list": "node --test tests/parse-tag-list.test.ts",
+    "check:quality": "npm run typecheck && npm run test:logo-prompts && npm run test:image-text-policy && npm run test:merge-ui-hints && npm run test:color-font-merge && npm run test:merge-routes && npm run test:cors-origin && npm run test:mcu-palette && npm run test:parse-tag-list && npm run build",
     "eval:model": "node scripts/eval-model.mjs",
     "bench:image-gen": "node scripts/bench-image-gen.mjs",
     "diagnose:logo-composition": "node scripts/diagnose-logo-composition.mjs",
+    "diagnose:mcu-palette": "node scripts/diagnose-mcu-palette.mjs",
     "check:predeploy": "npm run check:quality && npm run eval:model"
   },
   "dependencies": {
@@ -80,6 +83,7 @@
     "vaul": "1.1.2"
   },
   "devDependencies": {
+    "@material/material-color-utilities": "^0.4.0",
     "@tailwindcss/vite": "4.1.12",
     "@vitejs/plugin-react": "4.7.0",
     "playwright": "^1.60.0",

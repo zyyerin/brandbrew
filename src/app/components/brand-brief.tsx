@@ -2,6 +2,7 @@ import { useState, useEffect, useImperativeHandle, forwardRef, useRef } from "re
 import { Sparkles, X, PanelRightClose, Undo2, ArrowRight } from "lucide-react";
 import type { BrandBriefData, PipelineStage } from "../types/project";
 import { LAYOUT, TYPE } from "../utils/design-tokens";
+import { parseTagList } from "../utils/parse-tag-list";
 import { CapsuleTagInput } from "./capsule-tag-input";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./ui/tooltip";
 
@@ -143,7 +144,7 @@ export interface BrandBriefFields {
   tagline: string;
   targetAudience: string;
   keywords: string;
-  /** Comma-separated list of brand touchpoint mockup ideas. */
+  /** Comma- or list-separated brand touchpoint mockup ideas. */
   applications: string;
 }
 
@@ -160,8 +161,8 @@ export function isBriefSaturatedForAutoComplete(b: BrandBriefData): boolean {
 }
 
 export function briefFieldsSaturatedForAutoComplete(f: BrandBriefFields): boolean {
-  const kw = f.keywords?.trim() ? f.keywords.split(",").map((k) => k.trim()).filter(Boolean) : [];
-  const apps = f.applications?.trim() ? f.applications.split(",").map((a) => a.trim()).filter(Boolean) : [];
+  const kw = parseTagList(f.keywords);
+  const apps = parseTagList(f.applications);
   return isBriefSaturatedForAutoComplete({
     name: f.brandName?.trim() ?? "",
     tagline: f.tagline?.trim() ?? "",
@@ -478,7 +479,7 @@ export const BrandBriefForm = forwardRef<BrandBriefRef, BrandBriefProps>(functio
               </div>
             </div>
             <CapsuleTagInput
-              tags={fields.keywords ? fields.keywords.split(",").map((k) => k.trim()).filter(Boolean) : []}
+              tags={parseTagList(fields.keywords)}
               onTagsChange={(tags) => updateField("keywords", tags.join(", "))}
               placeholder="Type a keyword and press Enter"
               disabled={isLocked}
@@ -509,7 +510,7 @@ export const BrandBriefForm = forwardRef<BrandBriefRef, BrandBriefProps>(functio
               </div>
             </div>
             <CapsuleTagInput
-              tags={fields.applications ? fields.applications.split(",").map((a) => a.trim()).filter(Boolean) : []}
+              tags={parseTagList(fields.applications)}
               onTagsChange={(tags) => updateField("applications", tags.join(", "))}
               placeholder="Type an application and press Enter"
               disabled={isLocked}

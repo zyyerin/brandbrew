@@ -8,6 +8,7 @@ import { withDebugLog } from "../utils/debug-interceptor-utils";
 import type { UseGenerationBaseParams } from "../utils/variation-helpers";
 import type { PipelineBriefInput } from "./usePipeline";
 import { SUGGESTION_PROMPTS } from "../constants/suggestions";
+import { parseTagList } from "../utils/parse-tag-list";
 
 // ── Private helper ───────────────────────────────────────────────────────────
 
@@ -17,12 +18,8 @@ function fieldsToBrief(fields: BrandBriefFields) {
     tagline: fields.tagline?.trim() || "",
     description: fields.brandDescription?.trim() || "",
     targetAudience: fields.targetAudience?.trim() || "",
-    keywords: fields.keywords
-      ? fields.keywords.split(",").map((k) => k.trim()).filter(Boolean)
-      : [],
-    applications: fields.applications
-      ? fields.applications.split(",").map((a) => a.trim()).filter(Boolean)
-      : [],
+    keywords: parseTagList(fields.keywords),
+    applications: parseTagList(fields.applications),
   };
 }
 
@@ -92,9 +89,7 @@ export function useBriefCompletion({
       if (!bsKey) return prev;
       const brief = { ...prev.brandBrief.current };
       if (ARRAY_FIELDS.has(key)) {
-        (brief as Record<string, unknown>)[bsKey] = snapshot
-          ? snapshot.split(",").map((s) => s.trim()).filter(Boolean)
-          : [];
+        (brief as Record<string, unknown>)[bsKey] = parseTagList(snapshot);
       } else {
         (brief as Record<string, unknown>)[bsKey] = snapshot;
       }
@@ -192,7 +187,7 @@ export function useBriefCompletion({
           targetAudience: fields.targetAudience?.trim() || undefined,
           keywords: fields.keywords?.trim() || undefined,
           applications: fields.applications?.trim()
-            ? fields.applications.split(",").map((a) => a.trim()).filter(Boolean)
+            ? parseTagList(fields.applications)
             : undefined,
         };
 
@@ -211,13 +206,8 @@ export function useBriefCompletion({
           ),
         ).then((raw) => { const { _meta, ...data } = raw as any; return data as AutoCompleteResult; });
 
-        const userKeywords = fields.keywords?.trim()
-          ? fields.keywords.split(",").map((k) => k.trim()).filter(Boolean)
-          : [];
-
-        const userApplications = fields.applications?.trim()
-          ? fields.applications.split(",").map((a) => a.trim()).filter(Boolean)
-          : [];
+        const userKeywords = parseTagList(fields.keywords);
+        const userApplications = parseTagList(fields.applications);
 
         const merged = {
           name: fields.brandName?.trim() || result.brandBrief.name || "",
@@ -276,7 +266,7 @@ export function useBriefCompletion({
             targetAudience: fields.targetAudience?.trim() || undefined,
             keywords: fields.keywords?.trim() || undefined,
             applications: fields.applications?.trim()
-              ? fields.applications.split(",").map((a) => a.trim()).filter(Boolean)
+              ? parseTagList(fields.applications)
               : undefined,
           },
         };

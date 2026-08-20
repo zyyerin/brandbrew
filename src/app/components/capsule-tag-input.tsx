@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import type { KeyboardEvent, ClipboardEvent, DragEvent } from "react";
 import { X, Plus } from "lucide-react";
+import { parseTagList } from "../utils/parse-tag-list";
 
 interface CapsuleTagInputProps {
   tags: string[];
@@ -37,11 +38,17 @@ export function CapsuleTagInput({
   const [dragIdx, setDragIdx] = useState<number | null>(null);
   const [dropTargetIdx, setDropTargetIdx] = useState<number | null>(null);
 
-  const commitDraft = (value: string) => {
-    const trimmed = value.trim().replace(/,$/, "").trim();
-    if (trimmed) {
-      onTagsChange([...tags, trimmed]);
+  const appendTags = (incoming: string[]) => {
+    if (incoming.length === 0) return;
+    const next = [...tags];
+    for (const tag of incoming) {
+      if (!next.includes(tag)) next.push(tag);
     }
+    onTagsChange(next);
+  };
+
+  const commitDraft = (value: string) => {
+    appendTags(parseTagList(value));
     setDraft("");
     setIsAdding(false);
   };
@@ -62,20 +69,14 @@ export function CapsuleTagInput({
 
   const handlePaste = (e: ClipboardEvent<HTMLInputElement>) => {
     const text = e.clipboardData.getData("text");
-    if (text.includes(",")) {
-      e.preventDefault();
-      const pasted = text
-        .split(",")
-        .map((s) => s.trim())
-        .filter(Boolean);
-      const next = [...tags];
-      for (const p of pasted) {
-        if (!next.includes(p)) next.push(p);
-      }
-      onTagsChange(next);
-      setDraft("");
-      setIsAdding(false);
-    }
+    const pasted = parseTagList(text);
+    if (pasted.length === 0) return;
+    const isPlainSingle = pasted.length === 1 && pasted[0] === text.trim();
+    if (isPlainSingle) return;
+    e.preventDefault();
+    appendTags(pasted);
+    setDraft("");
+    setIsAdding(false);
   };
 
   const removeTag = (idx: number) => {
