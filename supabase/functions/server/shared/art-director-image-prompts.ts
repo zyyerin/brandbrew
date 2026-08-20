@@ -2,17 +2,17 @@
 // shared/art-director-image-prompts.ts — txt2img briefs for drawing-stage cards
 //
 // Art-style is a modular style board. When a finished lockup is supplied as a
-// reference image, that exact mark is placed on the board rather than redrawn.
+// reference image, it is a style reference and is not printed on the board.
+// The hex/font-name ban belongs on application mockups, not on this board.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import type { ImagePromptContext } from "./types.tsx";
-import { buildLogoImagePrompt } from "./logo-prompts.ts";
 import {
-  buildImageTextPolicy,
+  buildLogoImagePrompt,
   formatColorSchemeSpec,
   formatTypefaceCharacterSpec,
-  warnIfSpecLeaks,
-} from "./image-text-policy.ts";
+} from "./logo-prompts.ts";
+import { IMAGE_TEXT_POLICY } from "./image-text-policy.ts";
 
 function asSentence(value?: string | null): string {
   if (typeof value !== "string") return "";
@@ -45,26 +45,18 @@ export function buildArtStyleImagePrompt(ctx: ImagePromptContext): string {
       ? `Color palette: ${ctx.colorPalette!.join(", ")}. `
       : "";
   const logoClause = hasLogoRef
-    ? "The reference image is the finished brand logo lockup. Place that exact lockup on the style board as one of the modules. Copy it faithfully: the same composition, lettering, colors, and proportions. Do not redraw, restyle, or invent a different mark. Do not add a second logo, wordmark, or alternate lockup. "
-    : "";
-  const policy = hasLogoRef
-    ? ` ${buildImageTextPolicy({
-        renderable: [ctx.brandName],
-        preserveExistingText: true,
-      })}`
+    ? "The reference image is the finished brand logo lockup. Use it as a style reference without printing it on the board."
     : "";
 
   const prompt = (
     `Create a modular, variable-panel brand style board for "${name}". ` +
-    `The board must be segmented into distinct, non-fixed modules, selecting organically from a library of visual elements to create a dynamic composition. This potential library includes abstract patterns, icon systems, geometric forms, textural explorations, and typographic shapes. Select a balanced subset of these modules, and arrange them non-symmetrically across the canvas, avoiding any fixed grid. Each variation should feature a unique, organic combination of elements. ` +
+    `The board must be segmented into distinct, non-fixed modules, selecting organically from a library of visual elements to create a dynamic composition. This potential library includes graphic patterns, icon systems, geometric forms, textural explorations, and typographic shapes. Select 2-4 of these modules, and arrange them across the canvas. ` +
     `${conceptStr ? `Visual concept: ${conceptStr} ` : ""}` +
     `${palette}` +
     `${logoClause}` +
-    `No photorealism.` +
-    policy
+    `No photorealism.`
   );
 
-  if (hasLogoRef) warnIfSpecLeaks("art-style-prompt", prompt, [ctx.titleFont, ctx.bodyFont]);
   return prompt;
 }
 
@@ -76,8 +68,8 @@ export function buildApplicationImagePrompt(ctx: ImagePromptContext): string {
 
   const specLines = hasVisualRefs
     ? [
-        "The reference images are a brand identity board. Take color, graphic motifs, the mark, and lettering style from them.",
-        "Do not reprint the board on the product: no bento grid, no swatch legends, no type-specimen sheets, no hex codes, no typeface names.",
+        "The reference images include a finished logo lockup. Place that exact mark on the product.",
+        "Take color and graphic motifs from any other reference, but do not reprint a board.",
       ]
     : [
         formatColorSchemeSpec(ctx.colorPalette),
@@ -89,14 +81,9 @@ export function buildApplicationImagePrompt(ctx: ImagePromptContext): string {
     visualDirection(ctx),
     `Show the brand identity applied to a physical ${touchpoint}. Clean studio photography, white background, professional product mockup.`,
     ...specLines,
-    buildImageTextPolicy({
-      purpose: "packaging",
-      renderable: [ctx.brandName, ctx.tagline],
-      preserveExistingText: hasVisualRefs,
-    }),
+    IMAGE_TEXT_POLICY,
   ].filter((part) => part.trim().length > 0).join(" ");
 
-  warnIfSpecLeaks("application-prompt", prompt, [ctx.titleFont, ctx.bodyFont]);
   return prompt;
 }
 

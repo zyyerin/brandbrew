@@ -10,7 +10,7 @@
 //           (recolor with palette, style transfer, etc.). 
 //           - Standalone txt2img generation for element (except visual concept) regeneration.
 //           - Visual snapshot generation from multiple sources.
-//           - Brand in Context mockup generation using a visual snapshot.
+//           - Brand in Context mockup generation using the logo lockup as reference.
 //           - Palette extraction and vision text merge via POST /img2txt.
 // Model:    Gemini image model (gemini-3-pro-image-preview)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -54,7 +54,7 @@ import {
   type MergeKind,
 } from "../shared/merge-routes.ts";
 import { parseImageGenPurpose, resolveAspectRatio } from "../shared/image-config.tsx";
-import { buildImageTextPolicy } from "../shared/image-text-policy.ts";
+import { IMAGE_TEXT_POLICY } from "../shared/image-text-policy.ts";
 import { buildSnapshotPrompt } from "../shared/snapshot-prompts.ts";
 import {
   buildBriefIdentityContextText,
@@ -462,7 +462,7 @@ visualDesigner.post("/visual-snapshot", async (c) => {
 
 // ── Route: POST /context ──────────────────────────────────────────────────────
 // Generates a single Brand in Context mockup image for a given application
-// using the brand's visual snapshot (if provided) as a reference.
+// using the finished logo lockup (if provided) as the visual reference.
 
 visualDesigner.post("/context", async (c) => {
   const timer = createTimer("context");
@@ -514,16 +514,12 @@ visualDesigner.post("/context", async (c) => {
     const effectiveAR = resolveAspectRatio("brand-context", aspectRatio);
     let effectivePrompt =
       prompt ??
-      `Create a curated brand application mockup of ${application}${brandName ? ` for "${brandName}"` : ""}. The reference is a brand identity board: extract color, graphic motifs, and lettering style from it and apply them to the physical ${application}. Vary scale between full-bleed moments and smaller placements. Keep the result presentation-ready, realistic, and cohesive. Avoid reprinting the board as a collage, tiled patterns, watermarks, or dense illegible text.`;
+      `Create a curated brand application mockup of ${application}${brandName ? ` for "${brandName}"` : ""}. The reference image is the finished brand logo lockup. Place that exact mark on the physical ${application}. Vary scale between full-bleed moments and smaller placements. Keep the result presentation-ready, realistic, and cohesive. Avoid watermarks or dense illegible text.`;
     if (brandDescriptionForPrompt) {
       effectivePrompt =
         `${effectivePrompt}\n\nBrand description: ${brandDescriptionForPrompt}`;
     }
-    effectivePrompt = `${effectivePrompt}\n\n${buildImageTextPolicy({
-      purpose: "packaging",
-      renderable: [brandName],
-      preserveExistingText: images.length > 0,
-    })}`;
+    effectivePrompt = `${effectivePrompt}\n\n${IMAGE_TEXT_POLICY}`;
 
     console.log(
       `[visual-designer] Generating context mockup — application=${application} ar=${effectiveAR} refs=${images.length} prompt="${effectivePrompt.slice(0, 80)}…"`,
@@ -738,18 +734,7 @@ async function runMergeGenerate(
           refImageGuide,
         });
 
-    const textPolicy = cardType === "application"
-      ? buildImageTextPolicy({
-          purpose: "packaging",
-          renderable: [brandName],
-          preserveExistingText: true,
-        })
-      : cardType === "logo"
-        ? buildImageTextPolicy({
-            renderable: [brandName],
-            preserveExistingText: true,
-          })
-        : "";
+    const textPolicy = cardType === "application" ? IMAGE_TEXT_POLICY : "";
     const promptWithPolicy = withLogoWhiteCanvas(
       textPolicy ? `${prompt}\n\n${textPolicy}` : prompt,
       cardType,
@@ -834,12 +819,7 @@ async function runWordmark(
     const typefaceClause = effectiveTitleFont
       ? `with the visual character of the ${effectiveTitleFont} typeface`
       : "with the visual character of a display typeface";
-    const prompt = [
-      `${hint}Brand wordmark logo for "${name}" ${typefaceClause}`,
-      // A wordmark is text by definition, so the policy is only safe to apply
-      // when there is a real brand name to whitelist.
-      brandName ? buildImageTextPolicy({ renderable: [brandName] }) : "",
-    ].filter(Boolean).join(". ");
+    const prompt = `${hint}Brand wordmark logo for "${name}" ${typefaceClause}`;
 
     console.log(`[visual-designer] Generating wordmark (txt2img) — font=${effectiveTitleFont} ar=${effectiveAR} prompt="${prompt.slice(0, 80)}…"`);
 

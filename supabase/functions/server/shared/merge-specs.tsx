@@ -38,8 +38,8 @@ import type {
   VisualConceptData,
 } from "./types.tsx";
 import { buildVisualConceptContextText } from "./brand-context.ts";
-import { buildImageTextPolicy, formatColorSchemeSpec, formatTypefaceCharacterSpec } from "./image-text-policy.ts";
-import { withLogoWhiteCanvas } from "./logo-prompts.ts";
+import { IMAGE_TEXT_POLICY } from "./image-text-policy.ts";
+import { formatColorSchemeSpec, formatTypefaceCharacterSpec, withLogoWhiteCanvas } from "./logo-prompts.ts";
 import { SUPPORTED_MERGE_PAIRS } from "./merge-pairs.ts";
 import { mergeCardIdToField } from "./merge-text.ts";
 import { buildPrompt } from "./prompt-builder.ts";
@@ -769,11 +769,7 @@ export function buildEditImagePrompt(opts: EditPromptOpts): string {
   }
 
   if (opts.cardType === "application") {
-    prompt = `${prompt} ${buildImageTextPolicy({
-      purpose: "packaging",
-      renderable: [opts.brandName, opts.tagline],
-      preserveExistingText: true,
-    })}`;
+    prompt = `${prompt} ${IMAGE_TEXT_POLICY}`;
   }
 
   return prompt;

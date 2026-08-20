@@ -26,7 +26,7 @@ import {
   resolveSnapshotData,
   resolveVisualConceptForDirection,
 } from "./types/project";
-import { generateDirection } from "./utils/generate-brand";
+import { generateDirection, rememberGeneratedDirection } from "./utils/generate-brand";
 import { TIMING, TYPE } from "./utils/design-tokens";
 import { parseTagList } from "./utils/parse-tag-list";
 import { useVariations } from "./hooks/useVariations";
@@ -318,16 +318,16 @@ export default function App() {
     const existingForSnapshot = currentProject.direction.versions.find(
       (v) => v.boundSnapshotId === snapshotId,
     );
-    const nextVersionId = existingForSnapshot?.id ?? `gv-${Date.now()}`;
+    const fallbackVersionId = existingForSnapshot?.id ?? `gv-${Date.now()}`;
     const generatedLabel = conceptDataForDirection?.concept?.trim() || "Generated direction";
 
     setProject((prev) => {
       const prevExisting = prev.direction.versions.find((v) => v.boundSnapshotId === snapshotId);
-      const targetVersionId = prevExisting?.id ?? nextVersionId;
+      const targetVersionId = prevExisting?.id ?? fallbackVersionId;
       const versions = prevExisting
         ? prev.direction.versions.map((v) =>
             v.id === prevExisting.id
-              ? { ...v, label: generatedLabel, cache: undefined }
+              ? { ...v, label: generatedLabel }
               : v,
           )
         : [
@@ -337,12 +337,11 @@ export default function App() {
             createdAt: new Date(),
             boundSnapshotId: snapshotId,
             snapshotImageUrl: currentProject.snapshots.find((s) => s.id === snapshotId)?.imageUrl,
-            cache: undefined,
           },
             ...prev.direction.versions,
           ];
 
-      return {
+      const next = {
         ...prev,
         direction: {
           ...prev.direction,
@@ -350,6 +349,8 @@ export default function App() {
           activeVersionId: targetVersionId,
         },
       };
+      projectRef.current = next;
+      return next;
     });
 
     try {
@@ -383,37 +384,48 @@ export default function App() {
         const finalLabel = concept?.trim()
           || data.synthesizedVisualConcept?.trim()
           || generatedLabel;
+        const versionId =
+          projectRef.current.direction.versions.find((v) => v.boundSnapshotId === snapshotId)?.id
+          ?? fallbackVersionId;
 
-        setProject((prev) => ({
-          ...prev,
-          direction: {
-            ...prev.direction,
-            versions: prev.direction.versions.map((v) =>
-              v.id === nextVersionId
-                ? {
-                    ...v,
-                    label: finalLabel,
-                    cache: {
-                      rationales: {
-                        logo: data.rationales?.logo ?? "",
-                        color: data.rationales?.color ?? "",
-                        typography: data.rationales?.typography ?? "",
-                        artStyle: data.rationales?.artStyle ?? "",
+        rememberGeneratedDirection({ versionId, snapshotId }, data);
+
+        setProject((prev) => {
+          const next = {
+            ...prev,
+            direction: {
+              ...prev.direction,
+              versions: prev.direction.versions.map((v) =>
+                v.boundSnapshotId === snapshotId || v.id === versionId
+                  ? {
+                      ...v,
+                      label: finalLabel,
+                      cache: {
+                        rationales: {
+                          logo: data.rationales?.logo ?? "",
+                          color: data.rationales?.color ?? "",
+                          typography: data.rationales?.typography ?? "",
+                          artStyle: data.rationales?.artStyle ?? "",
+                        },
+                        colorNames: data.colorNames ?? [],
+                        logoImageUrl,
+                        brandInContextDescription:
+                          data.brandInContextDescription ??
+                          "Real-world application of the identity system across digital and physical touchpoints.",
+                        visualConceptContent: data.visualConceptContent,
+                        visualConceptName: concept?.trim() || data.synthesizedVisualConcept?.trim(),
+                        synthesizedVisualConcept: data.synthesizedVisualConcept,
+                        contextImageUrls: v.cache?.contextImageUrls,
                       },
-                      colorNames: data.colorNames ?? [],
-                      logoImageUrl,
-                      brandInContextDescription:
-                        data.brandInContextDescription ??
-                        "Real-world application of the identity system across digital and physical touchpoints.",
-                      visualConceptContent: data.visualConceptContent,
-                      visualConceptName: concept?.trim() || data.synthesizedVisualConcept?.trim(),
-                      synthesizedVisualConcept: data.synthesizedVisualConcept,
-                    },
-                  }
-                : v,
-            ),
-          },
-        }));
+                    }
+                  : v,
+              ),
+              activeVersionId: versionId,
+            },
+          };
+          projectRef.current = next;
+          return next;
+        });
       }
 
       setPreviousRoute(routeRef.current);

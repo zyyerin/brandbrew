@@ -1,11 +1,11 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { AlertCircle, ArrowLeft, Loader2, GalleryVerticalEnd } from "lucide-react";
-import type { ProjectData, ImageElementData, FontData, ColorPaletteData, DirectionVersion } from "../types/project";
+import type { ProjectData, ImageElementData, FontData, ColorPaletteData, DirectionVersion, DirectionCache } from "../types/project";
 import { resolveSnapshotData, getActiveElementData, resolveVisualConceptForDirection } from "../types/project";
 import { DirectionVersionsPanel } from "./DirectionVersionsPanel";
 import { useGoogleFont } from "../utils/useGoogleFont";
-import { generateDirection } from "../utils/generate-brand";
-import type { DirectionData, DirectionColorName } from "../utils/generate-brand";
+import { generateDirection, getRememberedDirection, rememberGeneratedDirection, directionDataHasText } from "../utils/generate-brand";
+import type { DirectionColorName, DirectionData } from "../utils/generate-brand";
 
 import { generateBrandContextMockup } from "../utils/generate-image";
 import { toast } from "sonner";
@@ -115,6 +115,48 @@ function createDirectionVersionId(): string {
   return `dv-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
+function hasDirectionText(cache?: DirectionCache): boolean {
+  const r = cache?.rationales;
+  if (!r) return false;
+  return [r.logo, r.color, r.typography, r.artStyle].some(
+    (text) => typeof text === "string" && text.trim().length > 0,
+  );
+}
+
+function cacheFromDirectionData(
+  data: DirectionData,
+  existing?: DirectionCache,
+  extras?: { logoImageUrl?: string; visualConceptName?: string },
+): DirectionCache {
+  return {
+    rationales: {
+      logo: data.rationales?.logo ?? existing?.rationales?.logo ?? "",
+      color: data.rationales?.color ?? existing?.rationales?.color ?? "",
+      typography: data.rationales?.typography ?? existing?.rationales?.typography ?? "",
+      artStyle: data.rationales?.artStyle ?? existing?.rationales?.artStyle ?? "",
+    },
+    colorNames: data.colorNames?.length ? data.colorNames : (existing?.colorNames ?? []),
+    logoImageUrl: extras?.logoImageUrl ?? existing?.logoImageUrl,
+    brandInContextDescription:
+      data.brandInContextDescription
+      || existing?.brandInContextDescription
+      || DEFAULT_CONTEXT_DESCRIPTION,
+    contextImageUrls: existing?.contextImageUrls,
+    visualConceptContent: data.visualConceptContent ?? existing?.visualConceptContent,
+    visualConceptName: extras?.visualConceptName ?? existing?.visualConceptName,
+    synthesizedVisualConcept: data.synthesizedVisualConcept ?? existing?.synthesizedVisualConcept,
+  };
+}
+
+function getInitialDirectionVersion(
+  versions: DirectionVersion[] | undefined,
+  initialActiveVersionId?: string,
+): DirectionVersion | undefined {
+  if (!versions?.length) return undefined;
+  const id = initialActiveVersionId ?? versions[0]?.id;
+  return versions.find((v) => v.id === id) ?? versions[0];
+}
+
 // ─────────────────────────────────────────────────────────────────────────────────
 export function DirectionPage({
   project,
@@ -173,7 +215,10 @@ export function DirectionPage({
     : null;
 
   const brandBrief = resolved?.brandBrief ?? project.brandBrief.current;
-  const brief = { name: brandBrief.name, tagline: brandBrief.tagline, description: brandBrief.description };
+  const brief = useMemo(
+    () => ({ name: brandBrief.name, tagline: brandBrief.tagline, description: brandBrief.description }),
+    [brandBrief.name, brandBrief.tagline, brandBrief.description],
+  );
 
   // Same rule as App handleGenerateDirection: prefer live active visual concept, else snapshot-frozen, else API synthesizes from imagery.
   const conceptData =
@@ -224,20 +269,52 @@ export function DirectionPage({
   const brandSubtextColor = isColorLight(darkestColorHex) ? "#64748b" : "#94a3b8";
 
   // ── AI-generated direction content ──────────────────────────────────────────
-  const [directionLoading, setDirectionLoading] = useState(true);
-  const [contextLoading, setContextLoading] = useState(true);
+  const [directionLoading, setDirectionLoading] = useState(() => {
+    const version = getInitialDirectionVersion(versionsProp, initialActiveVersionId);
+    if (hasDirectionText(version?.cache)) return false;
+    return !directionDataHasText(getRememberedDirection({
+      versionId: version?.id ?? initialActiveVersionId,
+      snapshotId: version?.boundSnapshotId,
+    }));
+  });
+  const [contextLoading, setContextLoading] = useState(() => {
+    const cache = getInitialDirectionVersion(versionsProp, initialActiveVersionId)?.cache;
+    const cachedCount = cache?.contextImageUrls?.filter(Boolean).length ?? 0;
+    const expected = (
+      project.brandBrief.current.applications?.length > 0
+        ? project.brandBrief.current.applications
+        : DEFAULT_CONTEXT_APPLICATIONS
+    ).slice(0, MAX_CONTEXT_APPLICATIONS).length;
+    return cachedCount < expected;
+  });
   const [directionError, setDirectionError] = useState<string | null>(null);
-  const [colorNames, setColorNames] = useState<DirectionColorName[]>([]);
+  const [colorNames, setColorNames] = useState<DirectionColorName[]>(() => {
+    const names = getInitialDirectionVersion(versionsProp, initialActiveVersionId)?.cache?.colorNames;
+    return names?.length ? names : [];
+  });
   const [exporting, setExporting] = useState(false);
-  const [contextDescription, setContextDescription] = useState(DEFAULT_CONTEXT_DESCRIPTION);
-  const [contextImages, setContextImages] = useState<Array<string | null>>([]);
+  const [contextDescription, setContextDescription] = useState(() => (
+    getInitialDirectionVersion(versionsProp, initialActiveVersionId)?.cache?.brandInContextDescription
+    ?? DEFAULT_CONTEXT_DESCRIPTION
+  ));
+  const [contextImages, setContextImages] = useState<Array<string | null>>(() => (
+    getInitialDirectionVersion(versionsProp, initialActiveVersionId)?.cache?.contextImageUrls ?? []
+  ));
 
   // ── Generated rationale fields (read-only for users) ───────────────────────
-  const [rationales, setRationales] = useState<Record<string, string>>({
-    logo: "",
-    color: "",
-    typography: "",
-    artStyle: "",
+  const [rationales, setRationales] = useState<Record<string, string>>(() => {
+    const version = getInitialDirectionVersion(versionsProp, initialActiveVersionId);
+    const remembered = getRememberedDirection({
+      versionId: version?.id ?? initialActiveVersionId,
+      snapshotId: version?.boundSnapshotId,
+    });
+    const r = version?.cache?.rationales ?? remembered?.rationales;
+    return {
+      logo: r?.logo ?? "",
+      color: r?.color ?? "",
+      typography: r?.typography ?? "",
+      artStyle: r?.artStyle ?? "",
+    };
   });
 
   const handleRationaleChange = (key: string, value: string) => {
@@ -246,42 +323,80 @@ export function DirectionPage({
 
   // ── Fetch AI-generated direction content (extracted for reuse) ─────────────
   const fetchDirectionAndContext = useCallback(
-    async (versionId: string, existingImages?: Array<string | null>) => {
-      setDirectionLoading(true);
+    async (versionId: string, existingImages?: Array<string | null>, reuseText = false) => {
+      const remembered = getRememberedDirection({ versionId });
+      const skipText = reuseText || directionDataHasText(remembered);
+      if (!skipText) {
+        setDirectionLoading(true);
+        setDirectionError(null);
+      }
       setContextLoading(true);
-      setDirectionError(null);
       try {
-        const data = await generateDirection({
-          brandBrief: brief,
-          keywords,
-          colorPalette,
-          visualConcept: conceptData,
-          artStyle,
-          font,
-          logoImageUrl,
-          artStyleImageUrl,
-        });
-
-        const newRationales = {
-          logo: data.rationales?.logo ?? "",
-          color: data.rationales?.color ?? "",
-          typography: data.rationales?.typography ?? "",
-          artStyle: data.rationales?.artStyle ?? "",
+        let newRationales = {
+          logo: "",
+          color: "",
+          typography: "",
+          artStyle: "",
         };
-        const newColorNames = data.colorNames ?? [];
-        const newContextDesc = data.brandInContextDescription ?? DEFAULT_CONTEXT_DESCRIPTION;
-        const newSynthesizedConcept = data.synthesizedVisualConcept;
-        const newVisualConceptContent = data.visualConceptContent;
-        const newVisualConceptName =
-          concept?.trim()
-          || (typeof newSynthesizedConcept === "string" ? newSynthesizedConcept.trim() : "")
-          || undefined;
+        let newColorNames: DirectionColorName[] = [];
+        let newContextDesc = DEFAULT_CONTEXT_DESCRIPTION;
+        let newSynthesizedConcept: string | undefined;
+        let newVisualConceptContent: string | undefined;
+        let newVisualConceptName: string | undefined;
 
-        if (activeVersionIdRef.current === versionId) {
+        if (!skipText) {
+          const data = await generateDirection({
+            brandBrief: brief,
+            keywords,
+            colorPalette,
+            visualConcept: conceptData,
+            artStyle,
+            font,
+            logoImageUrl,
+            artStyleImageUrl,
+          });
+          rememberGeneratedDirection({ versionId }, data);
+
+          newRationales = {
+            logo: data.rationales?.logo ?? "",
+            color: data.rationales?.color ?? "",
+            typography: data.rationales?.typography ?? "",
+            artStyle: data.rationales?.artStyle ?? "",
+          };
+          newColorNames = data.colorNames ?? [];
+          newContextDesc = data.brandInContextDescription ?? DEFAULT_CONTEXT_DESCRIPTION;
+          newSynthesizedConcept = data.synthesizedVisualConcept;
+          newVisualConceptContent = data.visualConceptContent;
+          newVisualConceptName =
+            concept?.trim()
+            || (typeof newSynthesizedConcept === "string" ? newSynthesizedConcept.trim() : "")
+            || undefined;
+
+          if (activeVersionIdRef.current === versionId) {
+            setRationales(newRationales);
+            if (newColorNames.length) setColorNames(newColorNames);
+            setContextDescription(newContextDesc);
+            // Keep visual-element loading scoped to direction text generation only.
+            setDirectionLoading(false);
+          }
+        } else if (remembered && activeVersionIdRef.current === versionId) {
+          newRationales = {
+            logo: remembered.rationales?.logo ?? "",
+            color: remembered.rationales?.color ?? "",
+            typography: remembered.rationales?.typography ?? "",
+            artStyle: remembered.rationales?.artStyle ?? "",
+          };
+          newColorNames = remembered.colorNames ?? [];
+          newContextDesc = remembered.brandInContextDescription ?? DEFAULT_CONTEXT_DESCRIPTION;
+          newSynthesizedConcept = remembered.synthesizedVisualConcept;
+          newVisualConceptContent = remembered.visualConceptContent;
+          newVisualConceptName =
+            concept?.trim()
+            || (typeof newSynthesizedConcept === "string" ? newSynthesizedConcept.trim() : "")
+            || undefined;
           setRationales(newRationales);
           if (newColorNames.length) setColorNames(newColorNames);
           setContextDescription(newContextDesc);
-          // Keep visual-element loading scoped to direction text generation only.
           setDirectionLoading(false);
         }
 
@@ -304,7 +419,15 @@ export function DirectionPage({
         }
 
         let nextIndex = 0;
-        const workerCount = Math.min(CONTEXT_IMAGE_CONCURRENCY, applications.length);
+        const workerCount = logoImageUrl
+          ? Math.min(CONTEXT_IMAGE_CONCURRENCY, applications.length)
+          : 0;
+
+        const seedCache = (existing?: DirectionCache): DirectionCache | undefined => {
+          if (existing) return existing;
+          if (!remembered) return undefined;
+          return cacheFromDirectionData(remembered, undefined, { logoImageUrl, visualConceptName: newVisualConceptName });
+        };
 
         const runContextWorker = async () => {
           while (true) {
@@ -318,7 +441,7 @@ export function DirectionPage({
                 application: app,
                 brandName: brief?.name,
                 brandDescription: brief?.description,
-                visualSnapshotUrl,
+                logoImageUrl,
               });
               if (result?.imageUrl) {
                 imageSlots[slotIndex] = result.imageUrl;
@@ -328,12 +451,14 @@ export function DirectionPage({
                 // Persist each image immediately so it survives component unmount mid-flight.
                 setVersions((prev) =>
                   prev.map((v) => {
-                    if (v.id !== versionId || !v.cache) return v;
-                    const urls = v.cache.contextImageUrls
-                      ? [...v.cache.contextImageUrls]
+                    if (v.id !== versionId) return v;
+                    const base = seedCache(v.cache);
+                    if (!base) return v;
+                    const urls = base.contextImageUrls
+                      ? [...base.contextImageUrls]
                       : new Array(applications.length).fill(null);
                     urls[slotIndex] = result.imageUrl;
-                    return { ...v, cache: { ...v.cache, contextImageUrls: urls } };
+                    return { ...v, cache: { ...base, contextImageUrls: urls } };
                   }),
                 );
               }
@@ -354,31 +479,41 @@ export function DirectionPage({
 
         // Final sync — merges any per-image writes already made with the complete text cache fields.
         const newLabel =
-          !concept && typeof newSynthesizedConcept === "string" && newSynthesizedConcept.trim()
+          !skipText && !concept && typeof newSynthesizedConcept === "string" && newSynthesizedConcept.trim()
             ? newSynthesizedConcept.trim()
             : undefined;
         setVersions((prev) =>
-          prev.map((v) =>
-            v.id === versionId
-              ? {
-                  ...v,
-                  label: newLabel ?? v.label,
-                  cache: {
-                    rationales: newRationales,
-                    colorNames: newColorNames,
-                    logoImageUrl,
-                    brandInContextDescription: newContextDesc,
-                    // Prefer finalImages slot; fall back to anything already written per-image.
-                    contextImageUrls: finalImages.map(
-                      (img, i) => img ?? v.cache?.contextImageUrls?.[i] ?? null,
-                    ),
-                    visualConceptContent: newVisualConceptContent,
-                    visualConceptName: newVisualConceptName,
-                    synthesizedVisualConcept: newSynthesizedConcept,
-                  },
-                }
-              : v,
-          ),
+          prev.map((v) => {
+            if (v.id !== versionId) return v;
+            const nextImages = finalImages.map(
+              (img, i) => img ?? v.cache?.contextImageUrls?.[i] ?? null,
+            );
+            if (skipText) {
+              const base = seedCache(v.cache);
+              if (!base) return v;
+              return {
+                ...v,
+                cache: {
+                  ...base,
+                  contextImageUrls: nextImages,
+                },
+              };
+            }
+            return {
+              ...v,
+              label: newLabel ?? v.label,
+              cache: {
+                rationales: newRationales,
+                colorNames: newColorNames,
+                logoImageUrl,
+                brandInContextDescription: newContextDesc,
+                contextImageUrls: nextImages,
+                visualConceptContent: newVisualConceptContent,
+                visualConceptName: newVisualConceptName,
+                synthesizedVisualConcept: newSynthesizedConcept,
+              },
+            };
+          }),
         );
       } catch (err) {
         console.error("Direction generation failed:", err);
@@ -393,13 +528,14 @@ export function DirectionPage({
         }
       }
     },
-    [brief, keywords, colorPalette, concept, artStyle, font, visualSnapshotUrl, setVersions, project],
+    [brief, keywords, colorPalette, concept, artStyle, font, setVersions, project, logoImageUrl, artStyleImageUrl, conceptData],
   );
+
+  const fetchDirectionAndContextRef = useRef(fetchDirectionAndContext);
+  fetchDirectionAndContextRef.current = fetchDirectionAndContext;
 
   // ── Hydrate / fetch when activeVersionId changes ──────────────────────────
   const hydratedVersionRef = useRef<string | null>(null);
-  const suppressRationalePersistRef = useRef(false);
-  const hydrationTokenRef = useRef(0);
   // Tracks which version IDs currently have a `fetchDirectionAndContext` call in
   // flight. Generation keeps running in the background even after the user
   // navigates away (so it survives unmount), so if the user navigates back to
@@ -411,94 +547,73 @@ export function DirectionPage({
   useEffect(() => {
     if (hydratedVersionRef.current === activeVersionId) return;
     hydratedVersionRef.current = activeVersionId;
-    suppressRationalePersistRef.current = true;
-    const token = ++hydrationTokenRef.current;
 
     const version = versions.find((v) => v.id === activeVersionId);
+    const remembered = getRememberedDirection({
+      versionId: activeVersionId,
+      snapshotId: version?.boundSnapshotId,
+    });
+    const resolvedCache = hasDirectionText(version?.cache)
+      ? version?.cache
+      : remembered
+        ? cacheFromDirectionData(remembered, version?.cache, { logoImageUrl })
+        : version?.cache;
 
-    const runFetch = (versionId: string, existingImages?: Array<string | null>) => {
+    const runFetch = (
+      versionId: string,
+      existingImages?: Array<string | null>,
+      reuseText = false,
+    ) => {
       if (inFlightVersionsRef.current.has(versionId)) {
         // Already generating in the background from a previous visit to this
         // version — let that run finish instead of starting a duplicate.
-        if (token === hydrationTokenRef.current) {
-          suppressRationalePersistRef.current = false;
-        }
         return;
       }
       inFlightVersionsRef.current.add(versionId);
-      fetchDirectionAndContext(versionId, existingImages).finally(() => {
+      fetchDirectionAndContextRef.current(versionId, existingImages, reuseText).finally(() => {
         inFlightVersionsRef.current.delete(versionId);
-        if (token === hydrationTokenRef.current) {
-          suppressRationalePersistRef.current = false;
-        }
       });
     };
 
-    if (version?.cache) {
-      const cache = version.cache;
+    if (resolvedCache) {
+      const cache = resolvedCache;
       const cacheContextImages = cache.contextImageUrls ?? [];
       // Compute how many mockup slots are expected so partial caches are filled in, not discarded.
       const expectedImageCount = (
         project.brandBrief.current.applications?.length > 0
           ? project.brandBrief.current.applications
           : DEFAULT_CONTEXT_APPLICATIONS
-      ).slice(0, 4).length;
+      ).slice(0, MAX_CONTEXT_APPLICATIONS).length;
       const shouldRegenerateContext = cacheContextImages.filter(Boolean).length < expectedImageCount;
-      setDirectionLoading(false);
+      const cachedTextReady = hasDirectionText(cache);
+      setDirectionLoading(!cachedTextReady);
       setContextLoading(shouldRegenerateContext);
       setRationales({
-        logo: cache.rationales.logo ?? "",
-        color: cache.rationales.color ?? "",
-        typography: cache.rationales.typography ?? "",
-        artStyle: cache.rationales.artStyle ?? "",
+        logo: cache.rationales?.logo ?? "",
+        color: cache.rationales?.color ?? "",
+        typography: cache.rationales?.typography ?? "",
+        artStyle: cache.rationales?.artStyle ?? "",
       });
       if (cache.colorNames?.length) setColorNames(cache.colorNames);
       setContextDescription(cache.brandInContextDescription ?? DEFAULT_CONTEXT_DESCRIPTION);
       setContextImages(cacheContextImages);
 
-      if (shouldRegenerateContext) {
-        // Pass existing partial images so only the missing slots are generated.
-        runFetch(activeVersionId, cacheContextImages);
-        return;
+      if (cachedTextReady && !hasDirectionText(version?.cache)) {
+        setVersions((prev) =>
+          prev.map((v) => (v.id === activeVersionId ? { ...v, cache } : v)),
+        );
       }
-      if (token === hydrationTokenRef.current) {
-        suppressRationalePersistRef.current = false;
-      }
+
+      if (cachedTextReady && !shouldRegenerateContext) return;
+      // Reuse cached/remembered rationale so filling in mockups does not
+      // regenerate copy or flip the rationale rows back to "Generating...".
+      runFetch(activeVersionId, cacheContextImages, cachedTextReady);
       return;
     }
 
+    setDirectionLoading(true);
     runFetch(activeVersionId);
-  }, [activeVersionId, versions, fetchDirectionAndContext]);
-
-  // ── Persist rationale edits to current version's directionCache ─────────────────
-  useEffect(() => {
-    if (suppressRationalePersistRef.current) return;
-    if (!versions.some((v) => v.id === activeVersionId)) return;
-    setVersions((prev) =>
-      prev.map((v) =>
-        v.id === activeVersionId
-          ? {
-              ...v,
-              cache: {
-                ...v.cache,
-                rationales: {
-                  logo: rationales.logo ?? "",
-                  color: rationales.color ?? "",
-                  typography: rationales.typography ?? "",
-                  artStyle: rationales.artStyle ?? "",
-                },
-                colorNames: v.cache?.colorNames ?? [],
-                logoImageUrl: v.cache?.logoImageUrl ?? logoImageUrl,
-                brandInContextDescription: v.cache?.brandInContextDescription ?? "",
-                contextImageUrls: v.cache?.contextImageUrls ?? [],
-                visualConceptName: v.cache?.visualConceptName,
-                synthesizedVisualConcept: v.cache?.synthesizedVisualConcept,
-              },
-            }
-          : v,
-      ),
-    );
-  }, [activeVersionId, rationales.logo, rationales.color, rationales.typography, rationales.artStyle, setVersions]);
+  }, [activeVersionId, versions, setVersions, logoImageUrl]);
 
   // ── Export static HTML ──────────────────────────────────────────────────────
   const handleExport = async () => {
@@ -1170,9 +1285,9 @@ export function DirectionPage({
               if (!contextLoading && !hasAnyContextImage) {
                 const unavailableBody = directionError
                   ? "Direction content failed to load, so context mockups were not generated."
-                  : !visualSnapshotUrl
-                    ? "Select or generate a visual snapshot on the board first; context mockups use it as reference."
-                    : "Mockups could not be generated. Try again later or switch the bound visual snapshot.";
+                  : !logoImageUrl
+                    ? "Select or generate a logo first; context mockups use it as the visual reference."
+                    : "Mockups could not be generated. Try again later.";
 
                 return (
                   <div

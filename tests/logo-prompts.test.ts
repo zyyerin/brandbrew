@@ -7,6 +7,8 @@ import {
   attachAssignedLogoComposition,
   buildLogoImagePrompt,
   collectExcludedLogoCompositions,
+  formatColorSchemeSpec,
+  formatTypefaceCharacterSpec,
   pickLogoCompositionMode,
   validateLogoComposition,
   validateOptionalLogoComposition,
@@ -360,4 +362,29 @@ test("logo→art-style card merge replaces the lockup on the style board", () =>
   assert.match(visualDesigner, /sourceId,\s*brandName,/);
   assert.match(mergeHook, /resolveMergeHint\("card", sourceId, targetId/);
   assert.match(mergeHook, /referenceImageUrl: sourceRefUrl/);
+});
+
+test("color spec names the values as inks, not as a Brand colors caption", () => {
+  const spec = formatColorSchemeSpec(["#14213D", "#FCA311", "#FFFFFF"]);
+  assert.match(spec, /fills and inks only/);
+  assert.match(spec, /#14213D/);
+  assert.doesNotMatch(spec, /Brand colors:/);
+  assert.doesNotMatch(spec, /"#14213D"/);
+});
+
+test("logo-mark color spec keeps palette colors off the canvas", () => {
+  const spec = formatColorSchemeSpec(["#14213D", "#FCA311", "#FFFFFF"], { applyTo: "logo-mark" });
+  assert.match(spec, /fills and inks of the mark and wordmark only/);
+  assert.match(spec, /never as the canvas, paper, or background/);
+  assert.match(spec, /#FCA311/);
+  assert.doesNotMatch(spec, /"#FCA311"/);
+  assert.doesNotMatch(spec, /Brand colors:/);
+});
+
+test("typeface spec stays unquoted and talks about visual character", () => {
+  const spec = formatTypefaceCharacterSpec("Fraunces", "Source Sans 3");
+  assert.match(spec, /visual character of Fraunces/);
+  assert.match(spec, /Source Sans 3/);
+  assert.doesNotMatch(spec, /"Fraunces"/);
+  assert.doesNotMatch(spec, /Typography:/);
 });

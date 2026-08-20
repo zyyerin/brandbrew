@@ -217,6 +217,37 @@ export interface DirectionData {
   synthesizedVisualConcept?: string;
 }
 
+const rememberedDirectionByVersionId = new Map<string, DirectionData>();
+const rememberedDirectionBySnapshotId = new Map<string, DirectionData>();
+
+/** Keep the latest direction text in memory so DirectionPage can reuse App's pre-generation. */
+export function rememberGeneratedDirection(
+  keys: { versionId: string; snapshotId?: string | null },
+  data: DirectionData,
+): void {
+  rememberedDirectionByVersionId.set(keys.versionId, data);
+  if (keys.snapshotId) rememberedDirectionBySnapshotId.set(keys.snapshotId, data);
+}
+
+export function getRememberedDirection(
+  keys: { versionId?: string | null; snapshotId?: string | null },
+): DirectionData | undefined {
+  if (keys.versionId) {
+    const byVersion = rememberedDirectionByVersionId.get(keys.versionId);
+    if (byVersion) return byVersion;
+  }
+  if (keys.snapshotId) return rememberedDirectionBySnapshotId.get(keys.snapshotId);
+  return undefined;
+}
+
+export function directionDataHasText(data?: DirectionData | null): boolean {
+  const r = data?.rationales;
+  if (!r) return false;
+  return [r.logo, r.color, r.typography, r.artStyle].some(
+    (text) => typeof text === "string" && text.trim().length > 0,
+  );
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }

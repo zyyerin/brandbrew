@@ -2,13 +2,9 @@
 // shared/snapshot-prompts.ts — Visual snapshot (identity board) prompt
 //
 // A snapshot is a filled bento of brand assets, including color blocks and
-// live type specimens. Hex codes and typeface names must not appear as
-// captions, but the lettering itself belongs in the board. Mockups must not
-// photocopy this board onto packaging — that constraint lives on the
-// packaging purpose of the text policy, not here.
+// live type specimens. Hex/typeface-as-caption constraints for mockups live
+// on the mockup text policy, not here.
 // ─────────────────────────────────────────────────────────────────────────────
-
-import { buildImageTextPolicy } from "./image-text-policy.ts";
 
 export interface SnapshotPromptContext {
   brandName?: string;
@@ -74,12 +70,5 @@ export function buildSnapshotPrompt(ctx: SnapshotPromptContext): string {
   const intro =
     "A filled modular brand identity snapshot in a bento-box grid. Every compartment contains a finished visual asset — no blank panels, no white voids, no empty cells. The composition features:";
 
-  return [
-    intro,
-    compositionLines.join("\n"),
-    buildImageTextPolicy({
-      purpose: "identity-board",
-      renderable: [ctx.brandName],
-    }),
-  ].filter((part) => part.trim().length > 0).join("\n\n");
+  return [intro, compositionLines.join("\n")].filter((part) => part.trim().length > 0).join("\n\n");
 }

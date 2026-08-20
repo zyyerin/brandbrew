@@ -65,7 +65,8 @@ export interface BrandContextMockupParams {
   brandName?: string;
   /** Appended to the image prompt on the server (after the base mockup instruction). */
   brandDescription?: string;
-  visualSnapshotUrl?: string;
+  /** Finished logo lockup. Context mockups use this as the sole visual reference. */
+  logoImageUrl?: string;
 }
 
 /**
@@ -381,13 +382,12 @@ export async function generateVisualSnapshotFromElements(
 
 /**
  * Generates a single Brand in Context mockup image for a given application.
- * Uses the brand's visual snapshot (if available) as a reference image plus
- * the fixed prompt required by the direction spec.
+ * Uses the finished logo lockup (if available) as the sole visual reference.
  */
 export async function generateBrandContextMockup(
   params: BrandContextMockupParams,
 ): Promise<ImageGenResult | null> {
-  const { application, brandName, brandDescription, visualSnapshotUrl } = params;
+  const { application, brandName, brandDescription, logoImageUrl } = params;
 
   const body: Record<string, unknown> = {
     application,
@@ -399,8 +399,8 @@ export async function generateBrandContextMockup(
     body.brandDescription = brandDescription.trim();
   }
 
-  if (visualSnapshotUrl) {
-    body.referenceImageUrls = [visualSnapshotUrl];
+  if (logoImageUrl) {
+    body.referenceImageUrls = [logoImageUrl];
   }
 
   let lastError: unknown;

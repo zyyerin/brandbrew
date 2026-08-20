@@ -1,8 +1,3 @@
-import {
-  buildImageTextPolicy,
-  formatColorSchemeSpec,
-} from "./image-text-policy.ts";
-
 export const LOGO_COMPOSITION_MODES = [
   "symbol-wordmark-horizontal",
   "symbol-wordmark-stacked",
@@ -42,6 +37,51 @@ function formatSentence(value: string): string {
   if (!trimmed) return "";
   const normalized = trimmed.replace(/\.+$/u, ".");
   return /[.!?。！？]$/u.test(normalized) ? normalized : `${normalized}.`;
+}
+
+function cleanList(values: (string | undefined | null)[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const value of values) {
+    if (typeof value !== "string") continue;
+    const trimmed = value.trim();
+    if (!trimmed || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    out.push(trimmed);
+  }
+  return out;
+}
+
+export type ColorSchemeApplyTo = "any" | "logo-mark";
+
+export function formatColorSchemeSpec(
+  colors?: (string | undefined | null)[] | null,
+  opts?: { applyTo?: ColorSchemeApplyTo },
+): string {
+  const cleaned = cleanList(colors ?? []);
+  if (cleaned.length === 0) return "";
+  const values = cleaned.join(", ");
+  if (opts?.applyTo === "logo-mark") {
+    return (
+      `Apply this color scheme as fills and inks of the mark and wordmark only — `
+      + `never as the canvas, paper, or background, and do not write the values: ${values}.`
+    );
+  }
+  return `Apply this color scheme as fills and inks only — do not write the values: ${values}.`;
+}
+
+export function formatTypefaceCharacterSpec(
+  titleFont?: string | null,
+  bodyFont?: string | null,
+): string {
+  const title = titleFont?.trim() ?? "";
+  const body = bodyFont?.trim() ?? "";
+  if (title && body && title !== body) {
+    return `Where lettering appears, give headings the visual character of ${title} and body copy the visual character of ${body}.`;
+  }
+  const one = title || body;
+  if (!one) return "";
+  return `Where lettering appears, give it the visual character of ${one}.`;
 }
 
 export function validateLogoComposition(value: unknown): LogoComposition {
@@ -262,7 +302,6 @@ export function buildLogoImagePrompt(ctx: LogoPromptContext): string {
     `Show no tagline, subtitle, explanation, label, or any other text or characters. `,
     `Create one cohesive lockup only — no logo sheet, no alternate variants, and no application mockup. `,
     `Use a minimal flat vector style. ${LOGO_WHITE_CANVAS_RULE} `,
-    `Any symbol must be simple and abstract — not an illustration, scene, mascot, badge, or detailed drawing. `,
-    buildImageTextPolicy({ renderable: [ctx.brandName] }),
+    `Any symbol must be simple and abstract — not an illustration, scene, mascot, badge, or detailed drawing.`,
   ].join("");
 }
