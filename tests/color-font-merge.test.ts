@@ -6,6 +6,7 @@ import { resolveMergeUiHint } from "../supabase/functions/server/shared/merge-ui
 import { SUPPORTED_MERGE_PAIRS } from "../supabase/functions/server/shared/merge-pairs.ts";
 import {
   mergeCardIdToField,
+  omitCurrentPaletteIfSlotExtract,
   omitsCurrentPaletteInSlotExtract,
   omitsCurrentTargetInTextMerge,
   prepareTextMerge,
@@ -179,4 +180,24 @@ test("slot extract-palette omits the checked palette; card extract keeps it", ()
   assert.equal(omitsCurrentPaletteInSlotExtract("color-palette", "var_palette"), false);
   assert.equal(omitsCurrentPaletteInSlotExtract("font"), false);
   assert.equal(omitsCurrentPaletteInSlotExtract("font", "var_font"), false);
+
+  const slotCtx = omitCurrentPaletteIfSlotExtract(
+    { colorPalette: PALETTE, font: EXISTING_FONT },
+    "color-palette",
+  );
+  assert.equal(slotCtx.colorPalette, null);
+  assert.deepEqual(slotCtx.font, EXISTING_FONT);
+
+  const uploadCtx = omitCurrentPaletteIfSlotExtract(
+    { colorPalette: PALETTE },
+    "color-palette",
+  );
+  assert.equal(uploadCtx.colorPalette, null);
+
+  const cardCtx = omitCurrentPaletteIfSlotExtract(
+    { colorPalette: PALETTE },
+    "color-palette",
+    "var_palette",
+  );
+  assert.deepEqual(cardCtx.colorPalette, PALETTE);
 });

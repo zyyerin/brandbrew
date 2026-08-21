@@ -18,15 +18,27 @@ export function omitsCurrentTargetInTextMerge(sourceId: string, targetId: string
 }
 
 /**
- * Queue-slot extract-palette (logo / art-style → color-palette, no target card).
- * If the checked palette stays in brandData, extract-palette anchors to it, the
- * model copies those hexes, and the client dedupes the new card away.
+ * Queue-slot extract-palette (logo / art-style → color-palette, no target card)
+ * and upload-image extract share this path. If the current palette stays in
+ * brandData, extract-palette anchors to those hexes and the new card is a clone.
  */
 export function omitsCurrentPaletteInSlotExtract(
   targetId: string,
   targetVarId?: string,
 ): boolean {
   return targetId === "color-palette" && !targetVarId;
+}
+
+/** Drop the current palette so extract-palette cannot copy those hexes into a new card. */
+export function omitCurrentPaletteIfSlotExtract<T extends { colorPalette?: unknown | null }>(
+  brandData: T,
+  targetId: string,
+  targetVarId?: string,
+): T {
+  if (omitsCurrentPaletteInSlotExtract(targetId, targetVarId)) {
+    brandData.colorPalette = null;
+  }
+  return brandData;
 }
 
 export type TextMergePrepareResult =

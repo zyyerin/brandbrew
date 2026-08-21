@@ -14,7 +14,7 @@ import type { ImageCardType } from "../utils/generate-image";
 import { resolveMergeKind } from "@server-shared/merge-routes.ts";
 import { resolveMergeHint, formatSourceForHint } from "@server-shared/merge-specs.tsx";
 import { omitTaglineForLogo } from "@server-shared/brand-context.ts";
-import { omitsCurrentPaletteInSlotExtract } from "@server-shared/merge-text.ts";
+import { omitCurrentPaletteIfSlotExtract } from "@server-shared/merge-text.ts";
 import type { MergeBrandContext } from "../utils/variation-helpers";
 import { normalizeColorPalette, paletteToBase64 } from "../utils/helpers";
 import {
@@ -221,9 +221,7 @@ export function useMergeGeneration({
         if (!sourceImageUrl) return;
         const mergeContext = buildMergeFullBrandContext(p);
         overrideContextField(mergeContext, targetId, targetVarId);
-        if (omitsCurrentPaletteInSlotExtract(targetId, targetVarId)) {
-          mergeContext.colorPalette = null;
-        }
+        omitCurrentPaletteIfSlotExtract(mergeContext, targetId, targetVarId);
         const { patch, _meta: img2txtMeta } = await withDebugLog(
           debugInterceptor,
           {

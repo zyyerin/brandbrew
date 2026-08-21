@@ -6,6 +6,7 @@ import { generateBrandImage, designPaletteAndFonts, performImg2Txt } from "../ut
 import type { ImageCardType } from "../utils/generate-image";
 import { collectExcludedLogoCompositions, type LogoComposition } from "@server-shared/logo-prompts.ts";
 import { omitTaglineForLogo } from "@server-shared/brand-context.ts";
+import { omitCurrentPaletteIfSlotExtract } from "@server-shared/merge-text.ts";
 import type { DebugInterceptor } from "./usePipelineDebugger";
 import { toast } from "sonner";
 import { getUserFacingApiErrorMessage } from "../utils/apiClient";
@@ -447,7 +448,10 @@ export function useBrandGeneration({
         try {
           const base64 = await readFileAsBase64(file);
           const { imageUrl: signedUrl } = await uploadImage(base64, validation.mimeType, "color-palette");
-          const mergeContext = buildFullBrandContext(projectRef.current);
+          const mergeContext = omitCurrentPaletteIfSlotExtract(
+            buildFullBrandContext(projectRef.current),
+            "color-palette",
+          );
           const { patch, _meta } = await performImg2Txt("logo", "color-palette", signedUrl, mergeContext, { throwOnError: true });
           const normalized = normalizeColorPalette(
             patch ? (patch as Record<string, unknown>).colorPalette : null,
