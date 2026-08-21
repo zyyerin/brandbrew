@@ -717,7 +717,8 @@ export const ElementQueue = React.memo(function ElementQueue({
                   ...(commentHighlightShadow ? { boxShadow: commentHighlightShadow, borderRadius: 12 } : {}),
                 }}
                 draggable={canStartCardDrag}
-                onClick={commentMode ? (e) => {
+                onClickCapture={commentMode ? (e) => {
+                  // Capture: inner card click would otherwise toggle checked first.
                   e.stopPropagation();
                   onCommentClick?.(elementType, variation.id);
                 } : undefined}
@@ -736,7 +737,7 @@ export const ElementQueue = React.memo(function ElementQueue({
                   peerVariationIds={sortedVersions.map((v) => v.id).filter((id) => id !== variation.id)}
                   brandBrief={brandBrief}
                   onEditSave={onEditSave}
-                  onToggleVariationChecked={onToggleVariationChecked}
+                  onToggleVariationChecked={commentMode ? undefined : onToggleVariationChecked}
                   onDeleteVariation={onDeleteVariation}
                   onImageAspectRatioChange={handleImageAspectRatioChange}
                 />

@@ -441,6 +441,13 @@ export function useMergeGeneration({
           setProject((prev) => addVariationToProject(prev, targetEid, variation));
         } else {
           const mergeContext = buildMergeFullBrandContext(p);
+          const field = ELEMENT_TO_CONTEXT_FIELD[targetId];
+          const targetVariation = commentVarId
+            ? p.elements[targetEid].variations.find((v) => v.id === commentVarId)
+            : null;
+          if (field && targetVariation?.data != null) {
+            (mergeContext as Record<string, unknown>)[field] = targetVariation.data;
+          }
           const { patch, _meta: commentMeta } = await withDebugLog(
             debugInterceptor,
             { label: "Comment Modify (text)", agent: "visual-designer", endpoint: "comment-modify", request: { targetId, comment, brandData: mergeContext } },
